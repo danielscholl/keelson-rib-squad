@@ -9,7 +9,12 @@ import type {
   RibAgentTurnResult,
 } from "@keelson/shared";
 import { dispatchFanout } from "../src/dispatch.ts";
-import { type MemberRecord, scaffoldMember } from "../src/member-store.ts";
+import {
+  type MemberRecord,
+  readMemberDoc,
+  scaffoldMember,
+  writeMemory,
+} from "../src/member-store.ts";
 import type { Member } from "../src/types.ts";
 
 // dispatchFanout takes the agent-turn seam as a parameter, so these drive it
@@ -214,6 +219,109 @@ describe("dispatchFanout", () => {
     expect(outcome.perMember.every((r) => r.status === "aborted")).toBe(true);
     expect(outcome.synthesis).toBeUndefined();
     expect(outcome.notes.length).toBeGreaterThan(0);
+  });
+
+  test("reflection is OFF by default — no extra turn, memory untouched", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    let reflectionCalls = 0;
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      if (req.prompt.includes("Curate your long-term memory")) reflectionCalls++;
+      return fakeTurn(Promise.resolve(okResult("substantive reply")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "T",
+      synthesize: false,
+    });
+    expect(reflectionCalls).toBe(0);
+    expect(await readMemberDoc(root, "a", "memory.md")).toContain("_(empty)_");
+  });
+
+  test("reflect: writes a member's memory.md from its reflection turn on substance", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      if (req.prompt.includes("Curate your long-term memory")) {
+        // The reflection turn's reply IS the new memory document.
+        return fakeTurn(Promise.resolve(okResult("# Memory\n\nThe operator prefers Bun.")));
+      }
+      return fakeTurn(Promise.resolve(okResult("substantive answer")));
+    };
+    const outcome = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "T",
+      synthesize: false,
+      reflect: true,
+    });
+    expect(await readMemberDoc(root, "a", "memory.md")).toContain("The operator prefers Bun.");
+    expect(outcome.notes.some((n) => n.includes("reflection updated a memory"))).toBe(true);
+  });
+
+  test("reflect: skips a member with no substance — no reflection turn, memory untouched", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    let reflectionCalls = 0;
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      if (req.prompt.includes("Curate your long-term memory")) reflectionCalls++;
+      return fakeTurn(Promise.resolve(okResult(""))); // ok but empty -> no substance
+    };
+    const outcome = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "T",
+      synthesize: false,
+      reflect: true,
+    });
+    expect(reflectionCalls).toBe(0);
+    expect(await readMemberDoc(root, "a", "memory.md")).toContain("_(empty)_");
+    expect(outcome.notes.some((n) => n.includes("no member produced substance"))).toBe(true);
+  });
+
+  test("reflect: a failed reflection turn leaves the prior memory intact", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    await writeMemory(root, "a", "PRIOR DURABLE MEMORY");
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      if (req.prompt.includes("Curate your long-term memory")) {
+        return fakeTurn(
+          Promise.resolve({ status: "error", text: "", error: "reflection blew up" }),
+        );
+      }
+      return fakeTurn(Promise.resolve(okResult("substantive answer")));
+    };
+    const outcome = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "T",
+      synthesize: false,
+      reflect: true,
+    });
+    expect(await readMemberDoc(root, "a", "memory.md")).toContain("PRIOR DURABLE MEMORY");
+    expect(outcome.notes.some((n) => n.includes("reflection for a error"))).toBe(true);
+  });
+
+  test("reflect: an over-cap reflection reply is rejected, prior memory kept", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    await writeMemory(root, "a", "PRIOR DURABLE MEMORY");
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      if (req.prompt.includes("Curate your long-term memory")) {
+        return fakeTurn(Promise.resolve(okResult("x".repeat(5000)))); // over MEMORY_DOC_CAP
+      }
+      return fakeTurn(Promise.resolve(okResult("substantive answer")));
+    };
+    const outcome = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "T",
+      synthesize: false,
+      reflect: true,
+    });
+    expect(await readMemberDoc(root, "a", "memory.md")).toContain("PRIOR DURABLE MEMORY");
+    expect(outcome.notes.some((n) => n.includes("not persisted"))).toBe(true);
   });
 
   test("a turn whose result outlives the timeout is reported as timeout", async () => {

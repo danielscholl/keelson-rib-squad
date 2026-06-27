@@ -133,6 +133,29 @@ export async function readMemberDoc(
   }
 }
 
+// The hard cap on a member's memory.md, enforced at the reflection write seam.
+// The chat composer budgets the whole system prompt to MEMBER_PROMPT_BUDGET, of
+// which the charter is the protected core; capping memory well under that keeps a
+// populated memory from crowding identity out on read. A write over the cap is
+// rejected (the prior memory stands), not silently truncated, so the on-disk doc
+// always matches what was authored. Mirrors chamber's MEMORY_DOC_CAP.
+export const MEMORY_DOC_CAP = 4000;
+
+// Overwrite a member's memory.md with the consolidated text — the WHOLE new
+// document, not an append, so a reflection revises in place rather than the store
+// merging. Fails closed: an unsafe slug, a missing member, or over-cap text all
+// throw, leaving the prior memory untouched.
+export async function writeMemory(membersRoot: string, slug: string, text: string): Promise<void> {
+  assertSafeSlug(slug);
+  const dir = join(membersRoot, slug);
+  if (!(await exists(dir))) throw new Error(`member '${slug}' not found`);
+  const body = text.trim();
+  if (body.length > MEMORY_DOC_CAP) {
+    throw new Error(`memory exceeds ${MEMORY_DOC_CAP} chars (got ${body.length})`);
+  }
+  await writeFile(join(dir, "memory.md"), ensureTrailingNewline(body));
+}
+
 export async function retireMember(membersRoot: string, slug: string): Promise<void> {
   assertSafeSlug(slug);
   const dir = join(membersRoot, slug);

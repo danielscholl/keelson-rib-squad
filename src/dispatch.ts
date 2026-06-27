@@ -6,6 +6,7 @@ import type {
 } from "@keelson/shared";
 import { errText } from "@keelson/shared";
 import { composeMemberSystemPrompt } from "./compose.ts";
+import { MEMORY_DOC_CAP, readMemberDoc, writeMemory } from "./member-store.ts";
 import type { Member } from "./types.ts";
 
 // The fan-out coordinator: one turn per member in parallel, then one synthesis
@@ -48,6 +49,11 @@ export interface DispatchFanoutOptions {
   // The member that authors the synthesis turn; absent runs a generic synthesis
   // with no charter.
   synthesizer?: Member;
+  // Opt-in post-wave reflection: after the wave, each member that returned a
+  // substantive answer runs ONE more (paid) turn to curate its own memory.md from
+  // what it just learned. OFF by default — it DOUBLES the per-member turn cost, so
+  // normal dispatch is unchanged unless a caller asks for it.
+  reflect?: boolean;
   abortSignal?: AbortSignal;
 }
 
@@ -118,12 +124,125 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
     }
   }
 
+  // Post-wave reflection (opt-in). Runs after synthesis so a reflection turn never
+  // delays the answer's assembly; each member curates its own memory from its own
+  // reply. Gated, fail-closed — a member with no substance, or a reflection that
+  // errors/empties/over-caps, leaves the prior memory standing.
+  if (opts.reflect) {
+    await reflectMembers(opts, members, perMember, concurrency, perTurnTimeoutMs, notes);
+  }
+
   return {
     task: opts.task,
     perMember,
     ...(synthesis !== undefined ? { synthesis } : {}),
     notes,
   };
+}
+
+// One reflection turn per member that produced substance, bounded by the same pool
+// width as the wave. Each member is distinct, so the turns run in parallel — no
+// per-member serialization is needed (unlike chamber, where concurrent room closes
+// can target one Mind). The reflection's full reply IS the new memory document;
+// writeMemory caps it. Every skip/failure is surfaced as a note, never silent.
+async function reflectMembers(
+  opts: DispatchFanoutOptions,
+  members: readonly Member[],
+  perMember: readonly DispatchResult[],
+  concurrency: number,
+  perTurnTimeoutMs: number,
+  notes: string[],
+): Promise<void> {
+  if (opts.abortSignal?.aborted) {
+    notes.push("reflection skipped — dispatch aborted");
+    return;
+  }
+  // Members and perMember are index-aligned (perMember is built from `members`
+  // in order, after truncation), so zip them to pair each reply with its author.
+  const reflectors = members
+    .map((member, i) => ({ member, result: perMember[i] }))
+    .filter(
+      (r): r is { member: Member; result: DispatchResult } =>
+        r.result?.status === "ok" && r.result.text.trim().length > 0,
+    );
+  if (reflectors.length === 0) {
+    notes.push("reflection skipped — no member produced substance");
+    return;
+  }
+
+  await runPool(reflectors, concurrency, async ({ member, result }) => {
+    if (opts.abortSignal?.aborted) return;
+    const prior = (await readMemberDoc(opts.membersRoot, member.slug, "memory.md")) ?? "";
+    const system = await composeMemberSystemPrompt(opts.membersRoot, member);
+    const outcome = await executeTurn(
+      opts.runAgentTurn,
+      {
+        system,
+        prompt: buildReflectionPrompt(member, opts.task, result.text, prior),
+        allowedTools: [],
+        ...(member.model ? { model: member.model } : {}),
+        ...(member.model && member.provider ? { provider: member.provider } : {}),
+      },
+      perTurnTimeoutMs,
+      opts.abortSignal,
+    );
+    if (outcome.status !== "ok") {
+      notes.push(
+        `reflection for ${member.slug} ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""} — prior memory kept`,
+      );
+      return;
+    }
+    const next = outcome.text.trim();
+    if (next.length === 0) {
+      notes.push(`reflection for ${member.slug} returned empty — prior memory kept`);
+      return;
+    }
+    // A shutdown landing during the (paid) turn drops the late write (mirrors the
+    // chamber reflection gate) so a disposing run can't resurrect memory.
+    if (opts.abortSignal?.aborted) return;
+    try {
+      await writeMemory(opts.membersRoot, member.slug, next);
+      notes.push(`reflection updated ${member.slug} memory`);
+    } catch (e) {
+      // Over-cap / unsafe / missing — fail closed: the prior memory stands.
+      notes.push(`reflection for ${member.slug} not persisted (${errText(e)}) — prior memory kept`);
+    }
+  });
+}
+
+// The reflection doctrine, mirrored from chamber: curate (don't summarize), a high
+// bar for what persists, decontextualize, and CONSOLIDATE the whole document so
+// pruning is in-band rather than a blind append. The reply is the COMPLETE new
+// memory (plain Markdown — no tool, no JSON), written to the member it reflects for.
+function buildReflectionPrompt(
+  member: Member,
+  task: string,
+  reply: string,
+  priorMemory: string,
+): string {
+  const role = member.role?.trim() ? member.role.trim() : "member";
+  return `You are ${member.name}. You just answered a task dispatched to your squad. Curate your long-term memory before moving on.
+
+You are NOT summarizing the task. Decide what — if anything — your future self should carry into a DIFFERENT task. Most of this belongs to this task alone and should be forgotten. Persist only what would make you a sharper ${role} weeks from now: a durable fact about the project, the operator, or the domain; or a lesson about how you work. When unsure, keep nothing. Do NOT restate your charter — identity is not memory.
+
+The task you answered:
+---
+${task}
+---
+
+Your answer:
+---
+${reply}
+---
+
+Your CURRENT memory:
+---
+${priorMemory.trim() || "(empty)"}
+---
+
+Return the COMPLETE updated memory document (Markdown), not an addition. For each existing item: keep it, sharpen it, fold this task's learning into it, or DELETE it if it is now wrong or stale. Then add only genuinely new durable facts. Merge near-duplicates. Keep the whole document under ${MEMORY_DOC_CAP} characters. Write every item so a future you with no memory of this task understands it alone (name who/what/when with absolute dates).
+
+Reply with ONLY the memory document text and nothing else. To change nothing, return your current memory verbatim. Writing nothing new is the common, correct outcome.`;
 }
 
 const GENERIC_SYNTH_SYSTEM =

@@ -1,8 +1,28 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import type { RibContext } from "@keelson/shared";
 import rib from "../src/index.ts";
-import { ROSTER_KEY, SQUAD_SURFACE_ID } from "../src/keys.ts";
+import { DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "../src/keys.ts";
 import { setSquadDataHome } from "../src/paths.ts";
+
+// The shapes the host parses out of contributeWorkflows — typed loosely here since
+// the rib never imports the @keelson/workflows schema (it only peer-deps shared).
+type RawNode = {
+  id?: string;
+  bash?: string;
+  prompt?: string;
+  output_schema?: unknown;
+  memory?: {
+    recall?: { query?: string; limits?: { maxItems?: number } };
+    writeback?: { on?: string; type?: string; summary?: string; content?: string };
+  };
+};
+function wf(name: string) {
+  const wfs = rib.contributeWorkflows?.({} as RibContext) ?? [];
+  return wfs.find((w) => (w.definition as { name?: string }).name === name);
+}
+function nodes(name: string): RawNode[] {
+  return ((wf(name)?.definition as { nodes?: RawNode[] }).nodes ?? []) as RawNode[];
+}
 
 // registerTools (exercised below) captures the data home into a module global;
 // clear it after this file so the bootstrap doesn't leak a home into the next.
@@ -59,11 +79,12 @@ describe("rib-squad", () => {
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
 
-  it("registers the always-on write/read/cleanup/dispatch tools without any seams", () => {
+  it("registers the always-on write/read/cleanup/remember/dispatch tools without any seams", () => {
     expect((rib.registerTools?.(bareCtx) ?? []).map((t) => t.name).sort()).toEqual([
       "squad_dispatch",
       "squad_emit_member",
       "squad_list_members",
+      "squad_remember",
       "squad_retire_member",
     ]);
   });
@@ -106,6 +127,75 @@ describe("rib-squad", () => {
       expect(data.effect).toBe("run-workflow");
       expect(data.workflow).toBe("squad-genesis");
       expect(data.args.brief.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("declares the decisions view and a cadence-less Decisions surface region", () => {
+    const view = rib.views?.find((v) => v.key === DECISIONS_KEY);
+    expect(view?.canvasKind).toBe("view");
+    const region = rib.surfaces?.[0]?.layout.rows?.[0]?.columns.find(
+      (c) => c.key === DECISIONS_KEY,
+    );
+    expect(region?.workflow).toBe("squad-decisions");
+    // Cost-safety: an agent-turn board must NOT carry a cadence (it would burn
+    // paid turns on the heartbeat).
+    expect(region?.cadenceMs).toBeUndefined();
+  });
+
+  it("contributes squad-decide carrying a project-scope decision writeback block", () => {
+    const node = nodes("squad-decide")[0];
+    // A cheap bash node (no paid turn) carries the declarative writeback — the only
+    // supported path for a rib to reach the governed ledger.
+    expect(typeof node?.bash).toBe("string");
+    expect(wf("squad-decide")?.bindSnapshotKey).toBeUndefined();
+    expect(node?.memory?.writeback?.type).toBe("decision");
+    expect(node?.memory?.writeback?.on).toBe("success");
+    expect(node?.memory?.writeback?.summary).toBe("$inputs.summary");
+    expect(node?.memory?.writeback?.content).toBe("$inputs.content");
+  });
+
+  it("contributes squad-decisions: a bound recall->board render workflow", () => {
+    const contribution = wf("squad-decisions");
+    expect(contribution?.bindSnapshotKey).toBe(DECISIONS_KEY);
+    const node = nodes("squad-decisions")[0];
+    expect(node?.memory?.recall?.query).toBeTruthy();
+    expect(node?.memory?.recall?.limits?.maxItems).toBe(50);
+    expect(typeof node?.prompt).toBe("string");
+    // The prompt embeds the buildDecisionsBoard contract so the model emits a board
+    // matching the tested builder, and includes the record action.
+    expect(node?.prompt).toContain('"view":"board"');
+    expect(node?.prompt).toContain("record-decision");
+    expect(node?.output_schema).toBeDefined();
+  });
+
+  it("validate on squad-decisions rejects a non-board frame (fail closed)", () => {
+    const validate = wf("squad-decisions")?.validate;
+    expect(validate).toBeDefined();
+    expect(() => validate?.({ view: "table", columns: [], rows: [] })).toThrow();
+    expect(validate?.({ view: "board", sections: [] })).toEqual({ view: "board", sections: [] });
+  });
+
+  it("record-decision requires both fields and otherwise launches squad-decide", async () => {
+    const noSummary = await rib.onAction?.(
+      { type: "record-decision", payload: { content: "details" } },
+      bareCtx,
+    );
+    expect(noSummary?.ok).toBe(false);
+    const noContent = await rib.onAction?.(
+      { type: "record-decision", payload: { summary: "we decided X" } },
+      bareCtx,
+    );
+    expect(noContent?.ok).toBe(false);
+    const ok = await rib.onAction?.(
+      { type: "record-decision", payload: { summary: "we decided X", content: "because Y" } },
+      bareCtx,
+    );
+    expect(ok?.ok).toBe(true);
+    if (ok?.ok) {
+      const data = ok.data as { effect: string; workflow: string; args: Record<string, string> };
+      expect(data.effect).toBe("run-workflow");
+      expect(data.workflow).toBe("squad-decide");
+      expect(data.args).toEqual({ summary: "we decided X", content: "because Y" });
     }
   });
 

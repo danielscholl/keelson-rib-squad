@@ -3,3 +3,7 @@
 // registerRegion target and the bound producer can't drift from each other.
 export const SQUAD_SURFACE_ID = "squad";
 export const ROSTER_KEY = "rib:squad:roster";
+// The governed shared-decision ledger panel. Bound to the squad-decisions
+// workflow (a `memory: { recall }` block feeding a board) and rendered on the
+// Squad surface; decisions are written by squad-decide (a `memory: { writeback }`).
+export const DECISIONS_KEY = "rib:squad:decisions";

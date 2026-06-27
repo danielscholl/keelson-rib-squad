@@ -10,16 +10,19 @@ import type {
 } from "@keelson/shared";
 import { asNonEmptyString, errText, expectView, z } from "@keelson/shared";
 import { listAgents, resolveAgent } from "./agents.ts";
+import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
 import { buildSeedFor } from "./compose.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import { slugify } from "./genesis.ts";
-import { ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
+import { DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
 import {
+  appendLog,
   type MemberRecord,
   readMembers,
   retireMember,
   scaffoldMember,
   setMemberModel,
+  writeMemory,
 } from "./member-store.ts";
 import { isSquadDataHomeWritable, membersDir, setSquadDataHome, squadDataHome } from "./paths.ts";
 import { GENESIS_STARTERS } from "./starters.ts";
@@ -67,6 +70,43 @@ Compose:
     ## Voice    — how it speaks (tone, length, habits)
 
 Then call the squad_emit_member tool EXACTLY ONCE with { name, role, charter } to persist the member — do NOT print the JSON as your reply. After the tool returns, reply with EXACTLY one line: "Authored <name> (<slug>)", using the name you authored and the tool-returned slug verbatim.`;
+
+// The exact board shape the squad-decisions prompt must emit, generated from the
+// pure builder so the worked example can't drift from buildDecisionsBoard (the
+// tested contract). One representative decision; the live turn re-shapes the
+// recalled rows into the same structure.
+const DECISIONS_BOARD_EXAMPLE = JSON.stringify(
+  buildDecisionsBoard([
+    {
+      summary: "Adopt trunk-based development",
+      type: "decision",
+      content: "Merge small PRs to main daily rather than maintain long-lived feature branches.",
+      provenance: "generated",
+      createdAt: "2026-06-20T00:00:00.000Z",
+    },
+  ]),
+);
+
+// The squad-decisions render turn: the node's `memory: { recall }` block runs first
+// and substitutes the recalled decision/lesson rows into $memory.recall.items; this
+// prompt turns them into the decisions board. The model authors the board to match
+// the buildDecisionsBoard contract above (output_schema only checks view+sections;
+// expectView re-validates at the binding edge). Deterministic, action-guaranteed
+// rendering would need a tool+publish or bash-collector producer — a later refinement.
+const DECISIONS_WF_PROMPT = `You render the squad's governed decision ledger as a Keelson canvas board.
+
+Recalled decisions and lessons (a JSON array; empty if none recorded): $memory.recall.items
+
+Each item carries: { memoryId, type, summary, content, provenance, scope, createdAt, rankingScore }.
+
+Emit EXACTLY ONE canvas board object as your entire reply — no prose, no code fence. Match this shape exactly:
+${DECISIONS_BOARD_EXAMPLE}
+
+Rules:
+- One card per recalled item, most relevant first (highest rankingScore). Card title = the item's summary; pill.label = its type; add fields for provenance and the recorded date (createdAt's calendar date, YYYY-MM-DD); put a short excerpt of content on the card's reason line (label "context").
+- If the array is empty, return a board whose only content section is one rows item explaining no decisions are recorded yet.
+- ALWAYS include the final "Record a decision" actions section exactly as shown, so the operator can always add one.
+- Set header.status.label to the decision count (e.g. "3 decisions", "1 decision", "0 decisions").`;
 
 // Tool results stream to chat as `tool_result` chunks; keep each well under the
 // chat context budget. Truncation is signalled, never silent.
@@ -186,6 +226,45 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
   };
 }
 
+// Record a learning into a member's PRIVATE per-agent memory (the rib data dir —
+// the governed ledger has no per-agent scope). `target: "log"` (default) appends a
+// timestamped bullet to log.md, the accumulating journal; `target: "memory"`
+// overwrites memory.md with `text` as the whole consolidated durable doc (the same
+// seam reflection uses). Fail-closed on an unsafe slug / missing member / over-cap.
+const rememberSchema = z.object({
+  slug: z.string().min(1),
+  text: z.string().min(1),
+  target: z.enum(["log", "memory"]).optional(),
+});
+
+function makeRememberTool(): ToolDefinition {
+  return {
+    name: "squad_remember",
+    description:
+      'Record a learning into a squad member\'s private memory. `slug` is the member (see squad_list_members); `text` is the learning. `target` selects where: "log" (default) appends one timestamped line to the member\'s running journal; "memory" overwrites the member\'s durable memory doc with `text` as the whole consolidated document. Fails closed on an unknown member or over-cap text. NOT for the shared decision ledger (run squad-decide) or for authoring a member (squad-genesis).',
+    inputSchema: rememberSchema,
+    state_changing: true,
+    async execute(input, ctx) {
+      const parsed = rememberSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_remember: ${parsed.error.message}`, true);
+        return;
+      }
+      const { slug, text, target = "log" } = parsed.data;
+      try {
+        if (target === "memory") {
+          await writeMemory(membersDir(), slug, text);
+        } else {
+          await appendLog(membersDir(), slug, text, new Date().toISOString());
+        }
+        emitResult(ctx, JSON.stringify({ ok: true, slug, target }));
+      } catch (e) {
+        emitResult(ctx, `squad_remember failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
 // The fan-out coordinator as a tool: dispatch ONE task to several members in
 // parallel, then synthesize their replies into one answer. Dispatched turns are
 // text-only (no Bash/Edit/Write, no cwd) — the spike proves the shape safely.
@@ -260,9 +339,12 @@ const rib: Rib = {
   id: "squad",
   displayName: "Squad",
 
-  // Binds the roster key to the canvas renderer; data arrives when the squad-roster
-  // collector runs.
-  views: [{ key: ROSTER_KEY, canvasKind: "view", title: "Roster" }],
+  // Binds the rib's keys to the canvas renderer; data arrives when the bound
+  // collector/render workflow runs (squad-roster, squad-decisions).
+  views: [
+    { key: ROSTER_KEY, canvasKind: "view", title: "Roster" },
+    { key: DECISIONS_KEY, canvasKind: "view", title: "Decisions" },
+  ],
 
   // The Squad nav tab. The roster sits in the header (the members you author); each
   // member is a card with Enter / Set model / Retire. No static actions[]: a
@@ -284,7 +366,24 @@ const rib: Rib = {
           cadenceMs: 120_000,
           glyph: { char: "◆", tone: "brand" },
         },
-        rows: [],
+        rows: [
+          {
+            columns: [
+              {
+                key: DECISIONS_KEY,
+                workflow: "squad-decisions",
+                title: "Decisions",
+                // NO cadenceMs by design: squad-decisions runs a paid agent turn to
+                // render the recalled ledger, so a heartbeat would burn turns idle.
+                // Client SWR refreshes it on open/focus (the region has no cadence);
+                // re-open the panel after recording a decision to see it. A self-
+                // gating, cost-bounded refresh (chamber-digest style) is Phase 3.
+                collapsible: true,
+                glyph: { char: "§", tone: "accent" },
+              },
+            ],
+          },
+        ],
       },
     },
   ],
@@ -335,6 +434,65 @@ const rib: Rib = {
         ],
       },
     },
+    {
+      // The governed-decision write path. A rib runs in-process and has NO seam to
+      // call the memory ledger directly, so the supported path is a declarative
+      // `memory: { writeback }` block the executor runs SERVER-SIDE after the node.
+      // A cheap bash node (no paid turn) carries it; the decision's summary/content
+      // come from $inputs (the record-decision board action / a CLI run). The
+      // executor hard-codes provenance "generated" (evidence-default — a decision
+      // is reviewable, not auto-instruction). `decision` needs no sourceRef. The
+      // bash body is a constant (never interpolates $inputs) so a typed summary can't
+      // reach the shell. No bindSnapshotKey — it writes a ledger row, not a board.
+      definition: {
+        name: "squad-decide",
+        description:
+          'Use when: the squad reaches a decision worth remembering across sessions. Triggers: "record a decision", "we decided", the Decisions panel\'s Record action. Does: writes one governed `decision` row to the project memory ledger from { summary, content } (server-side, evidence-default). NOT for: a member\'s private note (squad_remember) or viewing the ledger (squad-decisions).',
+        nodes: [
+          {
+            id: "record",
+            bash: "echo 'squad: decision recorded to the ledger'",
+            memory: {
+              writeback: {
+                on: "success",
+                type: "decision",
+                summary: "$inputs.summary",
+                content: "$inputs.content",
+              },
+            },
+          },
+        ],
+      },
+    },
+    {
+      // The governed-decision READ path: one node whose `memory: { recall }` block
+      // runs server-side first (substituting the recalled rows into
+      // $memory.recall.items), then a prompt turn renders them into the decisions
+      // board. output_schema gates the shape; bindSnapshotKey republishes the board
+      // to the Decisions panel; expectView re-validates fail-closed at the edge.
+      // Costs one paid turn per render — the surface region carries NO cadence so it
+      // only runs on open/refresh (see the layout note).
+      definition: {
+        name: "squad-decisions",
+        description:
+          'Use when: you want to see the squad\'s governed decisions and lessons. Triggers: "show decisions", "what have we decided", opening the Decisions panel. Does: recalls decision/lesson rows from the project memory ledger and renders them as a board on the Squad Decisions canvas. NOT for: recording a decision (squad-decide) or a member\'s private memory (squad_remember).',
+        nodes: [
+          {
+            id: "render",
+            memory: {
+              recall: {
+                query: "team decisions and lessons",
+                limits: { maxItems: 50 },
+              },
+            },
+            prompt: DECISIONS_WF_PROMPT,
+            output_schema: { type: "object", required: ["view", "sections"] },
+          },
+        ],
+      },
+      bindSnapshotKey: DECISIONS_KEY,
+      validate: expectView(DECISIONS_KEY, "board"),
+    },
   ],
 
   registerTools: (ctx: RibContext) => {
@@ -354,6 +512,7 @@ const rib: Rib = {
       makeEmitMemberTool(ctx.refreshWorkflow),
       makeListMembersTool(),
       makeRetireMemberTool(ctx.refreshWorkflow),
+      makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
     ];
   },
@@ -377,6 +536,8 @@ const rib: Rib = {
         return setModelAction(action);
       case "retire":
         return retireAction(action);
+      case RECORD_DECISION_ACTION:
+        return recordDecisionAction(action);
       default:
         return { ok: false, error: `unknown action '${action.type}'` };
     }
@@ -487,6 +648,34 @@ async function retireAction(action: RibAction): Promise<RibActionResult> {
   } catch (e) {
     return { ok: false, error: errText(e) };
   }
+}
+
+// The operator-typed decision text is unbounded, user-controlled input; clamp it
+// before it rides into a workflow run (the ledger re-caps at MEMORY_TEXT_LIMIT).
+const MAX_DECISION_CHARS = 4000;
+
+// Record a decision: launch squad-decide with the form fields as $inputs. The
+// governed write happens server-side in squad-decide's memory writeback block, so
+// there is no rib hook to refresh the panel on completion — the Decisions region
+// carries no cadence and re-runs on open/focus (client SWR), surfacing the new row.
+function recordDecisionAction(action: RibAction): RibActionResult {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const summary = asNonEmptyString(payload.summary);
+  const content = asNonEmptyString(payload.content);
+  if (!summary) return { ok: false, error: "Describe the decision first — what was decided?" };
+  if (!content)
+    return { ok: false, error: "Add the decision's details (why, context, consequences)." };
+  return {
+    ok: true,
+    data: {
+      effect: "run-workflow",
+      workflow: "squad-decide",
+      args: {
+        summary: summary.slice(0, MAX_DECISION_CHARS),
+        content: content.slice(0, MAX_DECISION_CHARS),
+      },
+    },
+  };
 }
 
 export default rib;
