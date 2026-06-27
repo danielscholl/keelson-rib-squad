@@ -20,6 +20,7 @@ import {
   retireCastingName,
   themeLabel,
 } from "./casting/registry.ts";
+import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import { CAST_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
@@ -34,7 +35,10 @@ import {
   writeMemory,
 } from "./member-store.ts";
 import { isSquadDataHomeWritable, membersDir, setSquadDataHome, squadDataHome } from "./paths.ts";
+import { squadPolicies } from "./policies.ts";
 import { GENESIS_STARTERS } from "./starters.ts";
+import type { TurnOutcome } from "./turn-runner.ts";
+import type { Member } from "./types.ts";
 
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
 // dispose. refreshWorkflow re-runs a bound collector (squad-roster, squad-cast)
@@ -394,6 +398,99 @@ function summarizeDispatch(outcome: DispatchOutcome): string {
   return lines.join("\n");
 }
 
+// Code mode as a tool: dispatch a confined coding turn to a code-capable member that
+// actually edits the selected project's repo (write rail, bounded to the project
+// root). The RAI floor (contributePolicies) hard-denies merging/force-pushing from
+// the turn, so the squad does the work without owning integration. Fails closed
+// without the agent-turn / projects seams, or on an unknown / inactive / non-code
+// member, or an unresolved project — granting write tools is the thing to refuse on
+// any doubt.
+const codeSchema = z.object({
+  member: z.string().min(1),
+  task: z.string().min(1),
+  project: z.string().optional(),
+});
+
+function makeCodeTool(
+  turnSeam: RibContext["runAgentTurn"],
+  projectsSeam: RibContext["getProjects"],
+): ToolDefinition {
+  return {
+    name: "squad_code",
+    description:
+      "Dispatch a confined coding turn to a code-capable squad member: it edits the selected project's repository directly (Read/Glob/Grep/Edit/Write/Bash, confined to the project root) to implement `task`. `member` is the slug of a member carrying the \"code\" capability tag (see squad_list_members); `task` is what to implement; `project` (optional id or name) selects the repo, defaulting to the sole / `default` project. The turn may NOT open, merge, or push a pull request — the squad's RAI floor denies it. NOT for text-only reasoning (squad_dispatch) or 1:1 chat (enter a member).",
+    inputSchema: codeSchema,
+    state_changing: true,
+    async execute(input, ctx) {
+      const parsed = codeSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_code: ${parsed.error.message}`, true);
+        return;
+      }
+      if (!turnSeam) {
+        emitResult(ctx, "squad_code: agent-turn seam unavailable on this harness", true);
+        return;
+      }
+      if (!projectsSeam) {
+        emitResult(ctx, "squad_code: projects seam unavailable on this harness", true);
+        return;
+      }
+      const { member: slug, task, project: selector } = parsed.data;
+      try {
+        const resolved = resolveProject(projectsSeam(), selector);
+        if (!resolved.ok) {
+          emitResult(ctx, `squad_code: ${resolved.error}`, true);
+          return;
+        }
+        const member = (await readMembers(membersDir())).find((m) => m.slug === slug);
+        if (!member) {
+          emitResult(ctx, `squad_code: unknown member "${slug}"`, true);
+          return;
+        }
+        if (member.status !== "active") {
+          emitResult(ctx, `squad_code: member "${slug}" is not active`, true);
+          return;
+        }
+        if (!memberCanCode(member)) {
+          emitResult(
+            ctx,
+            `squad_code: member "${slug}" lacks the "code" capability — only code-tagged members may modify the repo`,
+            true,
+          );
+          return;
+        }
+        const result = await runCodeTurn({
+          runAgentTurn: turnSeam,
+          membersRoot: membersDir(),
+          member,
+          project: { name: resolved.project.name, rootPath: resolved.project.rootPath },
+          task,
+        });
+        if (!result.ok) {
+          emitResult(ctx, `squad_code: ${result.error}`, true);
+          return;
+        }
+        emitResult(
+          ctx,
+          summarizeCode(member, resolved.project.name, result.outcome),
+          result.outcome.status !== "ok",
+        );
+      } catch (e) {
+        emitResult(ctx, `squad_code failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+function summarizeCode(member: Member, projectName: string, outcome: TurnOutcome): string {
+  const head = `Code turn — ${member.name} (${member.slug}) on "${projectName}" — ${outcome.status}`;
+  const body =
+    outcome.status === "ok"
+      ? outcome.text.trim() || "(no output)"
+      : (outcome.error ?? outcome.status);
+  return `${head}\n\n${body}`;
+}
+
 const rib: Rib = {
   id: "squad",
   displayName: "Squad",
@@ -590,6 +687,12 @@ const rib: Rib = {
     },
   ],
 
+  // The governance floor chamber skips: a non-overridable RAI policy the harness
+  // evaluates first-deny-wins on every squad agent turn (deny a self-merge /
+  // force-push, fail a BLOCK review verdict). Collected once at boot like
+  // contributeWorkflows; the policies are pure, so the ctx is unused.
+  contributePolicies: () => squadPolicies(),
+
   registerTools: (ctx: RibContext) => {
     // Capture the data home from the blessed ctx.getDataDir seam once, before
     // contributeWorkflows bakes the path into the roster bash node. When the seam is
@@ -609,6 +712,7 @@ const rib: Rib = {
       makeRetireMemberTool(ctx.refreshWorkflow),
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
+      makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
     ];
   },
 
@@ -727,12 +831,12 @@ function describeOwnAction(action: RibAction): RibActionResult {
 // it rides into a billed scan turn.
 const MAX_MISSION_CHARS = 2000;
 
-// Resolve the project to cast for from a free-text selector (a project name or id),
-// matched LIVE against getProjects() at action time so it never goes stale. Blank
-// selects the sole project, else the conventional `default`; an ambiguous or
-// unknown selector fails closed listing the choices, so the scan only ever runs
-// against a real, confinable root.
-function resolveCastProject(
+// Resolve a project from a free-text selector (a project name or id), matched LIVE
+// against getProjects() at action time so it never goes stale. Blank selects the sole
+// project, else the conventional `default`; an ambiguous or unknown selector fails
+// closed listing the choices, so a confined turn (cast scan / code mode) only ever
+// runs against a real, confinable root.
+function resolveProject(
   projects: readonly Project[],
   selector: string | undefined,
 ): { ok: true; project: Project } | { ok: false; error: string } {
@@ -765,7 +869,7 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   if (!getProjects) {
     return { ok: false, error: "casting needs the projects seam (unavailable on this harness)" };
   }
-  const resolved = resolveCastProject(getProjects(), asNonEmptyString(payload.project));
+  const resolved = resolveProject(getProjects(), asNonEmptyString(payload.project));
   if (!resolved.ok) return resolved;
   const missionRaw = asNonEmptyString(payload.mission);
   try {
