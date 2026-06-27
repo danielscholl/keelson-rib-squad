@@ -1,0 +1,208 @@
+import { describe, expect, test } from "bun:test";
+import type { DispatchOutcome } from "../src/dispatch.ts";
+import {
+  DEFAULT_LIMITS,
+  type DecideInput,
+  decideOrchestratorStep,
+  executeStep,
+  type OrchestratorLimits,
+  type OrchestratorState,
+  type ProgressLedger,
+} from "../src/orchestrator.ts";
+import type { Member } from "../src/types.ts";
+
+// The decider is pure (same inputs -> same OrchestratorStep), so it tests with plain
+// objects and no harness. executeStep tests with a fake dispatch fn.
+
+const ROSTER: Pick<Member, "slug" | "tools">[] = [
+  { slug: "atlas", tools: ["code", "read"] },
+  { slug: "vera", tools: ["read"] },
+];
+
+function ledger(over: Partial<ProgressLedger> = {}): ProgressLedger {
+  return {
+    isRequestSatisfied: false,
+    isInLoop: false,
+    isProgressBeingMade: true,
+    nextSpeaker: "atlas",
+    instructionOrQuestion: "do the next step",
+    ...over,
+  };
+}
+function state(over: Partial<OrchestratorState> = {}): OrchestratorState {
+  return { round: 0, stallCount: 0, resetCount: 0, ...over };
+}
+function decide(input: Partial<DecideInput> & { progress: ProgressLedger }) {
+  return decideOrchestratorStep({ state: state(), roster: ROSTER, ...input });
+}
+
+describe("decideOrchestratorStep", () => {
+  test("satisfied request ends the loop (over everything else)", () => {
+    const out = decide({
+      progress: ledger({ isRequestSatisfied: true, isInLoop: true, isProgressBeingMade: false }),
+    });
+    expect(out.step.kind).toBe("end");
+    if (out.step.kind === "end") expect(out.step.reason).toContain("satisfied");
+  });
+
+  test("executes the next instruction for the named speaker when progressing", () => {
+    const out = decide({
+      progress: ledger({ nextSpeaker: "vera", instructionOrQuestion: "review it" }),
+    });
+    expect(out.step).toEqual({
+      kind: "execute",
+      mode: "dispatch",
+      speaker: "vera",
+      instruction: "review it",
+    });
+    expect(out.state.stallCount).toBe(0);
+  });
+
+  test("progress resets a primed stall counter", () => {
+    const out = decide({
+      progress: ledger({ isProgressBeingMade: true }),
+      state: state({ stallCount: 2 }),
+    });
+    expect(out.step.kind).toBe("execute");
+    expect(out.state.stallCount).toBe(0);
+  });
+
+  test("a stalled round increments the counter but still executes below threshold", () => {
+    const out = decide({
+      progress: ledger({ isProgressBeingMade: false }),
+      state: state({ stallCount: 0 }),
+      limits: { maxRounds: 24, maxStall: 3, maxResets: 2 },
+    });
+    expect(out.step.kind).toBe("execute");
+    expect(out.state.stallCount).toBe(1);
+  });
+
+  test("isInLoop counts as a stall", () => {
+    const out = decide({ progress: ledger({ isInLoop: true }), state: state({ stallCount: 0 }) });
+    expect(out.state.stallCount).toBe(1);
+  });
+
+  test("crossing maxStall triggers a re-plan and spends a reset", () => {
+    const out = decide({
+      progress: ledger({ isProgressBeingMade: false }),
+      state: state({ stallCount: 2, resetCount: 0 }),
+      limits: { maxRounds: 24, maxStall: 3, maxResets: 2 },
+    });
+    expect(out.step.kind).toBe("replan");
+    expect(out.state.stallCount).toBe(0);
+    expect(out.state.resetCount).toBe(1);
+  });
+
+  test("gives up when re-plans are exhausted", () => {
+    const out = decide({
+      progress: ledger({ isProgressBeingMade: false }),
+      state: state({ stallCount: 2, resetCount: 2 }),
+      limits: { maxRounds: 24, maxStall: 3, maxResets: 2 },
+    });
+    expect(out.step.kind).toBe("end");
+    if (out.step.kind === "end") expect(out.step.reason).toContain("gave up");
+  });
+
+  test("the hard round ceiling ends the loop", () => {
+    const out = decide({ progress: ledger(), state: state({ round: 24 }) });
+    expect(out.step.kind).toBe("end");
+    if (out.step.kind === "end") expect(out.step.reason).toContain("max rounds");
+  });
+
+  test("an unknown next-speaker falls back to the first roster member", () => {
+    const out = decide({ progress: ledger({ nextSpeaker: "ghost" }) });
+    expect(out.step.kind).toBe("execute");
+    if (out.step.kind === "execute") expect(out.step.speaker).toBe("atlas");
+  });
+
+  test("an empty roster ends the loop (no one to act)", () => {
+    const out = decideOrchestratorStep({ progress: ledger(), state: state(), roster: [] });
+    expect(out.step.kind).toBe("end");
+    if (out.step.kind === "end") expect(out.step.reason).toContain("no member");
+  });
+
+  test("a blank instruction falls back to a default", () => {
+    const out = decide({ progress: ledger({ instructionOrQuestion: "  " }) });
+    if (out.step.kind === "execute") expect(out.step.instruction).toMatch(/next step/i);
+  });
+
+  test("DEFAULT_LIMITS are the documented bounds", () => {
+    expect(DEFAULT_LIMITS).toEqual({
+      maxRounds: 24,
+      maxStall: 3,
+      maxResets: 2,
+    } satisfies OrchestratorLimits);
+  });
+});
+
+describe("executeStep (P0 dispatch arm)", () => {
+  const fullRoster: Member[] = [
+    {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "x",
+      status: "active",
+      tools: ["code"],
+    },
+    {
+      slug: "vera",
+      name: "Vera",
+      role: "Reviewer",
+      charter: "x",
+      status: "active",
+      tools: ["read"],
+    },
+  ];
+  function fakeOutcome(task: string): DispatchOutcome {
+    return { task, perMember: [], synthesis: "ok", notes: [] };
+  }
+
+  test("routes an execute/dispatch step to the named speaker only", async () => {
+    let dispatched: { members: Member[]; instruction: string } | undefined;
+    const res = await executeStep(
+      { kind: "execute", mode: "dispatch", speaker: "vera", instruction: "review it" },
+      {
+        roster: fullRoster,
+        dispatch: async (members, instruction) => {
+          dispatched = { members, instruction };
+          return fakeOutcome(instruction);
+        },
+      },
+    );
+    expect(dispatched?.members.map((m) => m.slug)).toEqual(["vera"]);
+    expect(dispatched?.instruction).toBe("review it");
+    expect(res.dispatch?.synthesis).toBe("ok");
+  });
+
+  test("with no speaker, fans out to the whole roster", async () => {
+    let count = 0;
+    await executeStep(
+      { kind: "execute", mode: "dispatch", instruction: "all hands" },
+      {
+        roster: fullRoster,
+        dispatch: async (members) => {
+          count = members.length;
+          return fakeOutcome("all hands");
+        },
+      },
+    );
+    expect(count).toBe(2);
+  });
+
+  test("does not dispatch for replan/end or non-dispatch arms", async () => {
+    let called = false;
+    const deps = {
+      roster: fullRoster,
+      dispatch: async () => {
+        called = true;
+        return fakeOutcome("x");
+      },
+    };
+    await executeStep({ kind: "replan", reason: "x" }, deps);
+    await executeStep({ kind: "end", reason: "x" }, deps);
+    await executeStep({ kind: "execute", mode: "code", instruction: "edit" }, deps);
+    await executeStep({ kind: "execute", mode: "workflow", instruction: "author" }, deps);
+    expect(called).toBe(false);
+  });
+});
