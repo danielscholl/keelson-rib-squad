@@ -59,12 +59,24 @@ describe("rib-squad", () => {
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
 
-  it("registers the always-on write/read/cleanup tools without any seams", () => {
+  it("registers the always-on write/read/cleanup/dispatch tools without any seams", () => {
     expect((rib.registerTools?.(bareCtx) ?? []).map((t) => t.name).sort()).toEqual([
+      "squad_dispatch",
       "squad_emit_member",
       "squad_list_members",
       "squad_retire_member",
     ]);
+  });
+
+  it("squad_dispatch fails closed when the agent-turn seam is absent", async () => {
+    const dispatch = (rib.registerTools?.(bareCtx) ?? []).find((t) => t.name === "squad_dispatch");
+    expect(dispatch?.state_changing).toBe(true);
+    const chunks: { content?: string; isError?: boolean }[] = [];
+    await dispatch?.execute({ task: "do the thing" }, {
+      emit: (c: { content?: string; isError?: boolean }) => chunks.push(c),
+    } as never);
+    expect(chunks[0]?.isError).toBe(true);
+    expect(chunks[0]?.content).toContain("agent-turn seam unavailable");
   });
 
   it("rejects any action relayed from an HTML canvas (no chart iframe in Phase 0)", async () => {

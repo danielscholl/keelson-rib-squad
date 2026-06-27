@@ -11,6 +11,7 @@ import type {
 import { asNonEmptyString, errText, expectView, z } from "@keelson/shared";
 import { listAgents, resolveAgent } from "./agents.ts";
 import { buildSeedFor } from "./compose.ts";
+import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import { slugify } from "./genesis.ts";
 import { ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
 import {
@@ -26,8 +27,8 @@ import { GENESIS_STARTERS } from "./starters.ts";
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
 // dispose. refreshWorkflow re-runs the bound squad-roster collector after a
 // mutation so the roster updates promptly instead of waiting on cadence;
-// runAgentTurn and getProjects are captured for later phases (a member taking a
-// turn, project-targeted work) and only reported on in authStatus today.
+// runAgentTurn backs squad_dispatch (the fan-out coordinator); getProjects is
+// captured for later project-targeted work and only reported on in authStatus today.
 let refreshWorkflow: RibContext["refreshWorkflow"];
 let runAgentTurn: RibContext["runAgentTurn"];
 let getProjects: RibContext["getProjects"];
@@ -185,6 +186,76 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
   };
 }
 
+// The fan-out coordinator as a tool: dispatch ONE task to several members in
+// parallel, then synthesize their replies into one answer. Dispatched turns are
+// text-only (no Bash/Edit/Write, no cwd) — the spike proves the shape safely.
+// Fails closed when the agent-turn seam is absent (an older harness). Cost is one
+// billed turn per dispatched member + one synthesis turn.
+const dispatchSchema = z.object({
+  task: z.string().min(1),
+  members: z.array(z.string()).optional(),
+  synthesize: z.boolean().optional(),
+});
+
+function makeDispatchTool(turnSeam: RibContext["runAgentTurn"]): ToolDefinition {
+  return {
+    name: "squad_dispatch",
+    description:
+      "Fan a single task out to multiple squad members at once — each answers independently and in parallel — then synthesize their replies into one coherent answer. `task` is the shared brief; `members` (optional slugs) selects who runs (default: all active members); `synthesize` (default true) adds a final synthesis turn. Read-only/text-only per member. NOT for 1:1 chat (enter a member) or authoring/retiring members.",
+    inputSchema: dispatchSchema,
+    state_changing: true,
+    async execute(input, ctx) {
+      const parsed = dispatchSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_dispatch: ${parsed.error.message}`, true);
+        return;
+      }
+      if (!turnSeam) {
+        emitResult(ctx, "squad_dispatch: agent-turn seam unavailable on this harness", true);
+        return;
+      }
+      try {
+        const { task, members: requested, synthesize } = parsed.data;
+        const active = (await readMembers(membersDir())).filter((m) => m.status === "active");
+        const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
+        const members = wanted ? active.filter((m) => wanted.has(m.slug)) : active;
+        if (members.length === 0) {
+          emitResult(ctx, "squad_dispatch: no matching active members to dispatch to", true);
+          return;
+        }
+        const outcome = await dispatchFanout({
+          runAgentTurn: turnSeam,
+          membersRoot: membersDir(),
+          members,
+          task,
+          ...(synthesize !== undefined ? { synthesize } : {}),
+        });
+        emitResult(ctx, summarizeDispatch(outcome));
+      } catch (e) {
+        emitResult(ctx, `squad_dispatch failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+// Per-member excerpt cap inside the summary so one long reply can't crowd out the
+// others before emitResult's overall bound applies.
+const DISPATCH_MEMBER_EXCERPT = 1200;
+
+function summarizeDispatch(outcome: DispatchOutcome): string {
+  const lines: string[] = [`Task: ${outcome.task}`, "", `Members (${outcome.perMember.length}):`];
+  for (const r of outcome.perMember) {
+    const body =
+      r.status === "ok" ? r.text.trim().slice(0, DISPATCH_MEMBER_EXCERPT) : (r.error ?? r.status);
+    lines.push(`- ${r.name} (${r.slug}) — ${r.status}: ${body}`);
+  }
+  lines.push("", "Synthesis:", outcome.synthesis?.trim() || "(none)");
+  if (outcome.notes.length > 0) {
+    lines.push("", "Notes:", ...outcome.notes.map((n) => `- ${n}`));
+  }
+  return lines.join("\n");
+}
+
 const rib: Rib = {
   id: "squad",
   displayName: "Squad",
@@ -283,6 +354,7 @@ const rib: Rib = {
       makeEmitMemberTool(ctx.refreshWorkflow),
       makeListMembersTool(),
       makeRetireMemberTool(ctx.refreshWorkflow),
+      makeDispatchTool(ctx.runAgentTurn),
     ];
   },
 
