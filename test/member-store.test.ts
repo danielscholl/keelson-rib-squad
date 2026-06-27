@@ -9,6 +9,7 @@ import {
   LOG_ENTRY_CAP,
   LOG_MAX_ENTRIES,
   listMemberRecords,
+  MEMORY_DOC_CAP,
   type MemberRecord,
   readMember,
   readMemberDoc,
@@ -16,6 +17,7 @@ import {
   retireMember,
   scaffoldMember,
   setMemberModel,
+  writeMemory,
 } from "../src/member-store.ts";
 
 let root: string;
@@ -245,6 +247,34 @@ describe("setMemberModel", () => {
     expect(rec.role).toBe("Researcher");
     expect(rec.status).toBe("active");
     expect(rec.tools).toEqual(["read"]);
+  });
+});
+
+describe("writeMemory", () => {
+  test("overwrites memory.md in place with the consolidated text", async () => {
+    await scaffoldMember(root, record());
+    await writeMemory(root, "scout", "# Memory\n\nThe operator prefers terse answers.");
+    const memory = await readMemberDoc(root, "scout", "memory.md");
+    expect(memory).toContain("The operator prefers terse answers.");
+    // A second write replaces rather than appends — the store never merges.
+    await writeMemory(root, "scout", "Only this now.");
+    const after = (await readMemberDoc(root, "scout", "memory.md")) ?? "";
+    expect(after).toContain("Only this now.");
+    expect(after).not.toContain("terse answers");
+  });
+
+  test("rejects over-cap text and leaves the prior memory intact (fail closed)", async () => {
+    await scaffoldMember(root, record());
+    await writeMemory(root, "scout", "kept");
+    await expect(writeMemory(root, "scout", "x".repeat(MEMORY_DOC_CAP + 1))).rejects.toThrow(
+      /exceeds/,
+    );
+    expect(await readMemberDoc(root, "scout", "memory.md")).toContain("kept");
+  });
+
+  test("fails closed on a missing member and an unsafe slug", async () => {
+    await expect(writeMemory(root, "ghost", "x")).rejects.toThrow(/not found/);
+    await expect(writeMemory(root, "../escape", "x")).rejects.toThrow();
   });
 });
 
