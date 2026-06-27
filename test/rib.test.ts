@@ -79,14 +79,31 @@ describe("rib-squad", () => {
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
 
-  it("registers the always-on write/read/cleanup/remember/dispatch tools without any seams", () => {
+  it("registers the write/read/remember/dispatch/code tools without any seams", () => {
     expect((rib.registerTools?.(bareCtx) ?? []).map((t) => t.name).sort()).toEqual([
+      "squad_code",
       "squad_dispatch",
       "squad_emit_member",
       "squad_list_members",
       "squad_remember",
       "squad_retire_member",
     ]);
+  });
+
+  it("contributes the RAI policy floor via contributePolicies", () => {
+    const policies = rib.contributePolicies?.(bareCtx) ?? [];
+    expect(policies.map((p) => p.id)).toContain("rai-floor");
+  });
+
+  it("squad_code fails closed when the agent-turn seam is absent", async () => {
+    const code = (rib.registerTools?.(bareCtx) ?? []).find((t) => t.name === "squad_code");
+    expect(code?.state_changing).toBe(true);
+    const chunks: { content?: string; isError?: boolean }[] = [];
+    await code?.execute({ member: "atlas", task: "do the thing" }, {
+      emit: (c: { content?: string; isError?: boolean }) => chunks.push(c),
+    } as never);
+    expect(chunks[0]?.isError).toBe(true);
+    expect(chunks[0]?.content).toContain("seam");
   });
 
   it("squad_dispatch fails closed when the agent-turn seam is absent", async () => {
