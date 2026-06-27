@@ -138,11 +138,13 @@ export function decideOrchestratorStep(input: DecideInput): DecideOutput {
   }
   const instruction =
     progress.instructionOrQuestion?.trim() || "Continue with the next step of the plan.";
-  // The manager may ask for a code turn, but only a code-capable speaker gets one;
-  // anything else (incl. the not-yet-built workflow arm) runs as a dispatch.
+  // The manager may ask for a code turn (only a code-capable speaker gets one) or a
+  // workflow-authoring turn (any member); anything else runs as a dispatch. The arm may
+  // still be unbound at execute time, in which case executeStep falls back to dispatch.
   const speakerMember = roster.find((m) => m.slug === speaker);
-  const mode: OrchestratorMode =
-    progress.mode === "code" && memberCanCode(speakerMember ?? { tools: [] }) ? "code" : "dispatch";
+  let mode: OrchestratorMode = "dispatch";
+  if (progress.mode === "code" && memberCanCode(speakerMember ?? { tools: [] })) mode = "code";
+  else if (progress.mode === "workflow") mode = "workflow";
   return {
     step: { kind: "execute", mode, speaker, instruction },
     state: { round, stallCount, resetCount },
@@ -164,9 +166,20 @@ export interface CodeStepOutcome {
   error?: string;
 }
 
+// The normalized outcome of a workflow-authoring arm (#20 P3): a workflow DAG authored,
+// validated, and persisted as an artifact (running it stays an operator step).
+export interface WorkflowStepOutcome {
+  status: "ok" | "error";
+  text: string;
+  name?: string;
+  path?: string;
+  nodeCount?: number;
+}
+
 export interface ExecuteStepDeps {
   dispatch: (members: Member[], instruction: string) => Promise<DispatchOutcome>;
   code?: (member: Member, instruction: string) => Promise<CodeStepOutcome>;
+  workflow?: (member: Member, instruction: string) => Promise<WorkflowStepOutcome>;
   roster: Member[];
 }
 
@@ -175,6 +188,7 @@ export interface OrchestratorStepResult {
   // Present only for the arm that actually ran.
   dispatch?: DispatchOutcome;
   code?: CodeStepOutcome;
+  workflow?: WorkflowStepOutcome;
 }
 
 export async function executeStep(
@@ -191,7 +205,15 @@ export async function executeStep(
     }
   }
 
-  // dispatch arm — also the fallback for a code/workflow step with no code seam.
+  if (step.mode === "workflow" && deps.workflow && step.speaker) {
+    const member = deps.roster.find((m) => m.slug === step.speaker);
+    if (member) {
+      const workflow = await deps.workflow(member, step.instruction);
+      return { step, workflow };
+    }
+  }
+
+  // dispatch arm — also the fallback for a code/workflow step with no bound arm.
   const selected = step.speaker ? deps.roster.filter((m) => m.slug === step.speaker) : deps.roster;
   const members = selected.length > 0 ? selected : deps.roster;
   if (members.length === 0) return { step };

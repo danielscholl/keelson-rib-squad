@@ -73,6 +73,11 @@ describe("decideOrchestratorStep", () => {
     if (out.step.kind === "execute") expect(out.step.mode).toBe("dispatch");
   });
 
+  test("passes mode:workflow through for any member", () => {
+    const out = decide({ progress: ledger({ nextSpeaker: "vera", mode: "workflow" }) });
+    expect(out.step).toMatchObject({ kind: "execute", mode: "workflow", speaker: "vera" });
+  });
+
   test("progress resets a primed stall counter", () => {
     const out = decide({
       progress: ledger({ isProgressBeingMade: true }),
@@ -252,5 +257,39 @@ describe("executeStep (P0 dispatch arm)", () => {
     expect(dispatched).toBe(true);
     expect(res.dispatch).toBeDefined();
     expect(res.code).toBeUndefined();
+  });
+
+  test("routes a workflow step to the workflow arm", async () => {
+    let authored: { slug: string; instruction: string } | undefined;
+    const res = await executeStep(
+      { kind: "execute", mode: "workflow", speaker: "atlas", instruction: "author a lint flow" },
+      {
+        roster: fullRoster,
+        dispatch: async () => fakeOutcome("x"),
+        workflow: async (member, instruction) => {
+          authored = { slug: member.slug, instruction };
+          return { status: "ok", text: "authored", name: "lint", nodeCount: 2 };
+        },
+      },
+    );
+    expect(authored).toEqual({ slug: "atlas", instruction: "author a lint flow" });
+    expect(res.workflow?.status).toBe("ok");
+    expect(res.dispatch).toBeUndefined();
+  });
+
+  test("a workflow step falls back to dispatch when no workflow arm is bound", async () => {
+    let dispatched = false;
+    const res = await executeStep(
+      { kind: "execute", mode: "workflow", speaker: "atlas", instruction: "author" },
+      {
+        roster: fullRoster,
+        dispatch: async () => {
+          dispatched = true;
+          return fakeOutcome("x");
+        },
+      },
+    );
+    expect(dispatched).toBe(true);
+    expect(res.workflow).toBeUndefined();
   });
 });
