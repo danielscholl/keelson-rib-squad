@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import type { RibContext } from "@keelson/shared";
 import rib from "../src/index.ts";
-import { DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "../src/keys.ts";
+import { CAST_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "../src/keys.ts";
 import { setSquadDataHome } from "../src/paths.ts";
 
 // The shapes the host parses out of contributeWorkflows — typed loosely here since
@@ -197,6 +197,37 @@ describe("rib-squad", () => {
       expect(data.workflow).toBe("squad-decide");
       expect(data.args).toEqual({ summary: "we decided X", content: "because Y" });
     }
+  });
+
+  it("declares the cast view and a cadence-less Proposed-squad surface region", () => {
+    const view = rib.views?.find((v) => v.key === CAST_KEY);
+    expect(view?.canvasKind).toBe("view");
+    const region = rib.surfaces?.[0]?.layout.rows
+      ?.flatMap((r) => r.columns)
+      .find((c) => c.key === CAST_KEY);
+    expect(region?.workflow).toBe("squad-cast");
+    // The cast collector is cheap, but the panel only changes on propose/approve/
+    // discard — no heartbeat (it would just re-render the idle board).
+    expect(region?.cadenceMs).toBeUndefined();
+    expect(region?.collapsed).toBe(true);
+  });
+
+  it("contributes squad-cast: a bound deterministic cast collector", () => {
+    const contribution = wf("squad-cast");
+    expect(contribution?.bindSnapshotKey).toBe(CAST_KEY);
+    const node = nodes("squad-cast")[0];
+    expect(node?.bash).toContain("collect-cast.ts");
+    expect(node?.output_schema).toBeDefined();
+    // Fail-closed validator: a non-board frame is rejected at the binding edge.
+    const validate = contribution?.validate;
+    expect(() => validate?.({ view: "table", columns: [], rows: [] })).toThrow();
+  });
+
+  it("cast-propose fails closed without the agent-turn / projects seams", async () => {
+    rib.registerTools?.(bareCtx);
+    const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, bareCtx);
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("seam");
   });
 
   it("describe-own requires a brief and otherwise resolves to a run-workflow effect", async () => {

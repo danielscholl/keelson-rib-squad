@@ -7,3 +7,8 @@ export const ROSTER_KEY = "rib:squad:roster";
 // workflow (a `memory: { recall }` block feeding a board) and rendered on the
 // Squad surface; decisions are written by squad-decide (a `memory: { writeback }`).
 export const DECISIONS_KEY = "rib:squad:decisions";
+// The auto-cast proposal panel. Bound to the squad-cast collector (it renders the
+// pending cast-proposal.json) and rendered on the Squad surface; the proposal is
+// produced by the cast-propose board action (a confined repo-scan turn) and consumed
+// by approve-cast (scaffold) / discard-cast (clear).
+export const CAST_KEY = "rib:squad:cast";

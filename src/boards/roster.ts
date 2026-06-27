@@ -2,6 +2,7 @@ import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import { stableHash } from "../genesis.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
 import type { Member } from "../types.ts";
+import { CAST_PROPOSE_ACTION } from "./cast.ts";
 
 // The full canvas tone ramp, used to give each member a deterministic identity dot
 // hashed from its slug — a stable per-member hue, not a status.
@@ -129,8 +130,10 @@ function cardFor(member: Member) {
   };
 }
 
-// The cold-start launchpad: an anchor sentence, an "Author a member" section (the
-// role archetypes + a describe-your-own brief), and a "what's next" line.
+// The cold-start launchpad: an anchor sentence, a "Cast a squad" section (the
+// defining capability — auto-compose the team from the project), an "Author a
+// member" section (the manual escape hatch: archetypes + a describe-your-own
+// brief), and a "what's next" line.
 function coldStartSections(): CanvasBoardView["sections"] {
   return [
     {
@@ -138,7 +141,34 @@ function coldStartSections(): CanvasBoardView["sections"] {
       items: [
         {
           glyph: "brand",
-          text: "A Squad is a team of members you author — each becomes a chat agent you can talk to directly. Author your first member to start the squad.",
+          text: "A Squad is a team of members tuned to your project. Cast one to auto-compose the team from the repo, or author members yourself — each becomes a chat agent you can talk to directly.",
+        },
+      ],
+    },
+    {
+      kind: "actions",
+      title: "Cast a squad",
+      items: [
+        {
+          // The defining verb: scan a project and propose the team best suited to
+          // it. Project is a free-text name resolved live against getProjects() at
+          // action time (blank = the default / only project); mission is optional.
+          type: CAST_PROPOSE_ACTION,
+          label: "Cast a squad for a project",
+          glyph: "✦",
+          fields: [
+            {
+              name: "project",
+              label: "Project",
+              placeholder: "project name (blank = the default / only project)",
+            },
+            {
+              name: "mission",
+              label: "Mission (optional)",
+              placeholder: 'What is this squad for? e.g. "ship the new search rib"',
+              multiline: true,
+            },
+          ],
         },
       ],
     },

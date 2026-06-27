@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type {
+  Project,
   Rib,
   RibAction,
   RibActionResult,
@@ -8,19 +9,28 @@ import type {
   ToolContext,
   ToolDefinition,
 } from "@keelson/shared";
-import { asNonEmptyString, errText, expectView, z } from "@keelson/shared";
+import { asNonEmptyString, DEFAULT_PROJECT_NAME, errText, expectView, z } from "@keelson/shared";
 import { listAgents, resolveAgent } from "./agents.ts";
+import { APPROVE_CAST_ACTION, CAST_PROPOSE_ACTION, DISCARD_CAST_ACTION } from "./boards/cast.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
+import {
+  type CastProposalRecord,
+  clearProposal,
+  proposeCast,
+  readProposal,
+  writeProposal,
+} from "./cast.ts";
 import { buildSeedFor } from "./compose.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import { slugify } from "./genesis.ts";
-import { DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
+import { CAST_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
 import {
   appendLog,
   type MemberRecord,
   readMembers,
   retireMember,
   scaffoldMember,
+  scaffoldRoster,
   setMemberModel,
   writeMemory,
 } from "./member-store.ts";
@@ -28,10 +38,10 @@ import { isSquadDataHomeWritable, membersDir, setSquadDataHome, squadDataHome } 
 import { GENESIS_STARTERS } from "./starters.ts";
 
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
-// dispose. refreshWorkflow re-runs the bound squad-roster collector after a
-// mutation so the roster updates promptly instead of waiting on cadence;
-// runAgentTurn backs squad_dispatch (the fan-out coordinator); getProjects is
-// captured for later project-targeted work and only reported on in authStatus today.
+// dispose. refreshWorkflow re-runs a bound collector (squad-roster, squad-cast)
+// after a mutation so the panel updates promptly instead of waiting on cadence;
+// runAgentTurn backs squad_dispatch (the fan-out coordinator) and the cast-propose
+// repo-scan; getProjects resolves the project a cast scan is confined to.
 let refreshWorkflow: RibContext["refreshWorkflow"];
 let runAgentTurn: RibContext["runAgentTurn"];
 let getProjects: RibContext["getProjects"];
@@ -41,6 +51,10 @@ let getProjects: RibContext["getProjects"];
 // (not URL.pathname) decodes %20 etc. so an install path with a space resolves;
 // it is shell-quoted where interpolated into the bash node below.
 const ROSTER_COLLECTOR = fileURLToPath(new URL("../bin/collect-roster.ts", import.meta.url));
+// The cast collector: renders the pending cast-proposal.json as the Proposed-squad
+// board. Resolved at module load like ROSTER_COLLECTOR so the squad-cast bash node
+// runs the right file regardless of the run's cwd; shell-quoted where interpolated.
+const CAST_COLLECTOR = fileURLToPath(new URL("../bin/collect-cast.ts", import.meta.url));
 
 // POSIX single-quote: wrap a value and escape any embedded quote so a path
 // (spaces, `$`, backticks, backslashes) reaches `bash -c` literally — never
@@ -344,6 +358,7 @@ const rib: Rib = {
   views: [
     { key: ROSTER_KEY, canvasKind: "view", title: "Roster" },
     { key: DECISIONS_KEY, canvasKind: "view", title: "Decisions" },
+    { key: CAST_KEY, canvasKind: "view", title: "Proposed squad" },
   ],
 
   // The Squad nav tab. The roster sits in the header (the members you author); each
@@ -383,6 +398,22 @@ const rib: Rib = {
               },
             ],
           },
+          {
+            columns: [
+              {
+                key: CAST_KEY,
+                workflow: "squad-cast",
+                title: "Proposed squad",
+                // NO cadenceMs: the cast collector only changes on propose/approve/
+                // discard, so a heartbeat would just re-render the idle board. The
+                // propose action publishes it via refreshWorkflow and opens it in the
+                // drawer; collapsed by default so an empty panel doesn't clutter.
+                collapsible: true,
+                collapsed: true,
+                glyph: { char: "✦", tone: "brand" },
+              },
+            ],
+          },
         ],
       },
     },
@@ -410,6 +441,25 @@ const rib: Rib = {
       },
       bindSnapshotKey: ROSTER_KEY,
       validate: expectView(ROSTER_KEY, "board"),
+    },
+    {
+      // The cast producer: a deterministic collector that renders the pending
+      // cast-proposal.json as the Proposed-squad board. cast-propose writes the
+      // proposal then refreshes this; approve/discard clear it and refresh again.
+      definition: {
+        name: "squad-cast",
+        description:
+          'Use when: review the squad auto-composed for a project. Triggers: the roster "Cast a squad" action, opening the Proposed squad panel. Does: reads the pending cast proposal from the Squad data home and publishes a "Proposed squad" board (one card per proposed member) to the Squad Cast canvas. NOT for: scanning a project (the cast-propose board action) or scaffolding the members (the Approve action).',
+        nodes: [
+          {
+            id: "collect",
+            bash: `bun ${shQuote(CAST_COLLECTOR)} ${shQuote(squadDataHome())}`,
+            output_schema: { type: "object", required: ["view", "sections"] },
+          },
+        ],
+      },
+      bindSnapshotKey: CAST_KEY,
+      validate: expectView(CAST_KEY, "board"),
     },
     {
       // Genesis as a workflow: one prompt turn authors the charter and calls
@@ -532,6 +582,12 @@ const rib: Rib = {
         return authorArchetypeAction(action);
       case "describe-own":
         return describeOwnAction(action);
+      case CAST_PROPOSE_ACTION:
+        return castProposeAction(action);
+      case APPROVE_CAST_ACTION:
+        return approveCastAction();
+      case DISCARD_CAST_ACTION:
+        return discardCastAction();
       case "set-model":
         return setModelAction(action);
       case "retire":
@@ -620,6 +676,124 @@ function describeOwnAction(action: RibAction): RibActionResult {
       args: { brief: brief.slice(0, MAX_BRIEF_CHARS) },
     },
   };
+}
+
+// The operator-typed mission is unbounded, user-controlled input; clamp it before
+// it rides into a billed scan turn.
+const MAX_MISSION_CHARS = 2000;
+
+// Resolve the project to cast for from a free-text selector (a project name or id),
+// matched LIVE against getProjects() at action time so it never goes stale. Blank
+// selects the sole project, else the conventional `default`; an ambiguous or
+// unknown selector fails closed listing the choices, so the scan only ever runs
+// against a real, confinable root.
+function resolveCastProject(
+  projects: readonly Project[],
+  selector: string | undefined,
+): { ok: true; project: Project } | { ok: false; error: string } {
+  if (projects.length === 0) {
+    return { ok: false, error: "no projects to cast for — add a project first" };
+  }
+  const names = projects.map((p) => p.name).join(", ");
+  if (selector) {
+    const match = projects.find((p) => p.id === selector || p.name === selector);
+    return match
+      ? { ok: true, project: match }
+      : { ok: false, error: `unknown project "${selector}" — known projects: ${names}` };
+  }
+  if (projects.length === 1) return { ok: true, project: projects[0]! };
+  const fallback = projects.find((p) => p.name === DEFAULT_PROJECT_NAME);
+  if (fallback) return { ok: true, project: fallback };
+  return { ok: false, error: `several projects — name one to cast for: ${names}` };
+}
+
+// Cast-propose: resolve a project, run ONE confined read-only repo-scan turn that
+// auto-composes the roster, persist the proposal, refresh the Proposed-squad panel,
+// and open it in the drawer. The scan is read-only and bounded to the project root
+// inside proposeCast (cwd + allowedDirectories + read-only tools); scaffolding waits
+// for approve. Fails closed when the agent-turn / projects seams are absent.
+async function castProposeAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  if (!runAgentTurn) {
+    return { ok: false, error: "casting needs the agent-turn seam (unavailable on this harness)" };
+  }
+  if (!getProjects) {
+    return { ok: false, error: "casting needs the projects seam (unavailable on this harness)" };
+  }
+  const resolved = resolveCastProject(getProjects(), asNonEmptyString(payload.project));
+  if (!resolved.ok) return resolved;
+  const missionRaw = asNonEmptyString(payload.mission);
+  try {
+    const result = await proposeCast({
+      runAgentTurn,
+      project: {
+        id: resolved.project.id,
+        name: resolved.project.name,
+        rootPath: resolved.project.rootPath,
+      },
+      ...(missionRaw ? { mission: missionRaw.slice(0, MAX_MISSION_CHARS) } : {}),
+    });
+    if (!result.ok) return { ok: false, error: result.error };
+    await writeProposal(squadDataHome(), result.proposal);
+    await refreshWorkflow?.("squad-cast");
+    return { ok: true, data: { effect: "open-canvas", key: CAST_KEY, title: "Proposed squad" } };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
+// One proposed member -> the on-disk record the batch scaffold writes. Carries the
+// capability tags through to the member record (#14) so a cast member is routable.
+function castRecordFor(member: CastProposalRecord["members"][number], at: string): MemberRecord {
+  return {
+    slug: slugify(member.name),
+    name: member.name,
+    role: member.role,
+    charter: member.charter,
+    status: "active",
+    createdAt: at,
+    ...(member.model ? { model: member.model } : {}),
+    ...(member.model && member.provider ? { provider: member.provider } : {}),
+    ...(member.tools && member.tools.length > 0 ? { tools: member.tools } : {}),
+  };
+}
+
+// Approve-cast: scaffold the proposed members (collision-safe — an existing slug is
+// kept, never clobbered; member-capped with truncation surfaced), clear the
+// proposal, and refresh the roster + cast panels. Reads the persisted proposal as
+// the source of truth, so a stale board button can't approve a discarded proposal.
+async function approveCastAction(): Promise<RibActionResult> {
+  try {
+    const proposal = await readProposal(squadDataHome());
+    if (!proposal) return { ok: false, error: "no proposal to approve — cast a squad first" };
+    const at = new Date().toISOString();
+    const records = proposal.members.map((m) => castRecordFor(m, at));
+    const outcome = await scaffoldRoster(membersDir(), records);
+    await clearProposal(squadDataHome());
+    await refreshWorkflow?.("squad-roster");
+    await refreshWorkflow?.("squad-cast");
+    return {
+      ok: true,
+      data: {
+        created: outcome.created,
+        skipped: outcome.skipped,
+        truncated: outcome.truncated,
+      },
+    };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
+// Discard-cast: drop the pending proposal and refresh the (now idle) cast panel.
+async function discardCastAction(): Promise<RibActionResult> {
+  try {
+    await clearProposal(squadDataHome());
+    await refreshWorkflow?.("squad-cast");
+    return { ok: true, data: { discarded: true } };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
 }
 
 async function setModelAction(action: RibAction): Promise<RibActionResult> {

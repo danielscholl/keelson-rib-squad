@@ -69,7 +69,20 @@ describe("buildRosterBoard cold start", () => {
   test("no cards section at cold start; the documented sections render", () => {
     const board = buildRosterBoard([]);
     expect(board.sections.some((s) => s.kind === "cards")).toBe(false);
-    expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "rows"]);
+    expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "actions", "rows"]);
+  });
+
+  test("leads with a cast-a-squad CTA carrying project + mission fields", () => {
+    const board = buildRosterBoard([]);
+    const cast = actionItems(board).find((i) => i.type === "cast-propose");
+    expect(cast).toBeDefined();
+    expect(cast?.fields?.map((f) => f.name)).toEqual(["project", "mission"]);
+    expect(cast?.fields?.find((f) => f.name === "mission")?.multiline).toBe(true);
+    // The cast section leads the manual author section (the defining capability first).
+    const actionTitles = board.sections
+      .filter((s) => s.kind === "actions")
+      .map((s) => (s.kind === "actions" ? s.title : undefined));
+    expect(actionTitles).toEqual(["Cast a squad", "Author a member"]);
   });
 });
 
