@@ -1,0 +1,11 @@
+@keelson/rib-squad
+Copyright 2026 Daniel Scholl
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
+
+This rib brings a "squad" model of repo development to Keelson as an installable
+extension: a roster of named team members you author, each surfaced as a
+first-class Keelson chat agent and rendered on the canvas substrate. It imports
+no harness internals; it attaches solely through the `Rib` contract from
+@keelson/shared. Its structure follows the @keelson/rib-chamber rib's surface +
+genesis + canvas-board patterns.

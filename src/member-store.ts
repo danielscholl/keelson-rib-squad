@@ -1,0 +1,228 @@
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { assertSafeSlug } from "./genesis.ts";
+import type { Member, MemberStatus } from "./types.ts";
+
+// File-based member persistence. One directory per member under the data home's
+// members/ root; `member.json` is the structured record the roster reads and
+// charter.md is the authored identity doc. `membersRoot` is injected so the store
+// is testable against a temp dir and the env-based path resolution stays in
+// paths.ts (the only thing the collector and the handlers share).
+
+// member.json — the on-disk record. A superset of the chat-facing Member: it also
+// keeps createdAt for stable, newest-first ordering.
+export interface MemberRecord {
+  slug: string;
+  name: string;
+  role: string;
+  charter: string;
+  status: MemberStatus;
+  model?: string;
+  provider?: string;
+  tools?: readonly string[];
+  createdAt: string;
+}
+
+const SEED_DOCS: Record<string, () => string> = {
+  "memory.md": () => "# Working memory\n\n_(empty)_\n",
+  "rules.md": () => "# Rules\n\n_(none yet)_\n",
+};
+
+export async function scaffoldMember(membersRoot: string, record: MemberRecord): Promise<void> {
+  assertSafeSlug(record.slug);
+  const dir = join(membersRoot, record.slug);
+  // Fail closed on collision: a re-genesis under an existing slug would clobber a
+  // member's authored charter. Refuse and let the caller surface it.
+  if (await exists(dir)) throw new Error(`member '${record.slug}' already exists`);
+
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "member.json"), `${JSON.stringify(record, null, 2)}\n`);
+  await writeFile(join(dir, "charter.md"), ensureTrailingNewline(record.charter));
+  for (const [file, seed] of Object.entries(SEED_DOCS)) {
+    await writeFile(join(dir, file), seed());
+  }
+  await writeFile(
+    join(dir, "log.md"),
+    `# Log\n\n- ${record.createdAt} — genesis: authored from brief (role: ${record.role}).\n`,
+  );
+}
+
+// Read every member's record back, newest first, KEEPING the server-stamped
+// createdAt the chat-facing readMembers drops. Degrades per entry: a directory
+// without a parseable member.json is skipped, not fatal, so one corrupt member
+// can't blank the whole roster.
+export async function listMemberRecords(
+  membersRoot: string,
+): Promise<(Member & { createdAt: string })[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(membersRoot);
+  } catch {
+    return []; // no members/ yet — nothing has been authored
+  }
+
+  const records: (Member & { createdAt: string })[] = [];
+  for (const slug of entries) {
+    try {
+      const raw = await readFile(join(membersRoot, slug, "member.json"), "utf8");
+      const rec = JSON.parse(raw) as Partial<MemberRecord>;
+      // A cast is compile-time only: validate the shape and take the *directory*
+      // name as the authoritative slug. So a drifted/partial member.json (missing
+      // fields, slug diverging from the dir) is skipped or corrected here rather
+      // than crashing the sort/map and blanking the roster.
+      if (typeof rec !== "object" || rec === null) continue;
+      if (typeof rec.name !== "string" || typeof rec.charter !== "string") continue;
+      records.push({
+        slug,
+        name: rec.name,
+        role: typeof rec.role === "string" && rec.role ? rec.role : "",
+        charter: rec.charter,
+        status: rec.status === "inactive" ? "inactive" : "active",
+        createdAt: typeof rec.createdAt === "string" ? rec.createdAt : "",
+        ...(typeof rec.model === "string" && rec.model ? { model: rec.model } : {}),
+        ...(typeof rec.provider === "string" && rec.provider ? { provider: rec.provider } : {}),
+        ...(Array.isArray(rec.tools) && rec.tools.length > 0
+          ? { tools: rec.tools.filter((t): t is string => typeof t === "string") }
+          : {}),
+      });
+    } catch {
+      // skip non-member dirs / unreadable records
+    }
+  }
+
+  records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return records;
+}
+
+// Read every member back as the chat-facing shape, newest first — the roster +
+// agents source.
+export async function readMembers(membersRoot: string): Promise<Member[]> {
+  const records = await listMemberRecords(membersRoot);
+  return records.map((r) => ({
+    slug: r.slug,
+    name: r.name,
+    role: r.role,
+    charter: r.charter,
+    status: r.status,
+    ...(r.model ? { model: r.model } : {}),
+    ...(r.provider ? { provider: r.provider } : {}),
+    ...(r.tools && r.tools.length > 0 ? { tools: r.tools } : {}),
+  }));
+}
+
+export async function readMember(membersRoot: string, slug: string): Promise<Member | undefined> {
+  return (await readMembers(membersRoot)).find((m) => m.slug === slug);
+}
+
+// Read one of a member's authored docs (charter.md, memory.md, rules.md, log.md)
+// by name. Returns undefined on any miss (no such member, empty/unreadable file,
+// unsafe slug) and never throws, so a composer can fall back to the record's
+// charter rather than crash. assertSafeSlug is inside the try so an unsafe slug
+// returns undefined (no read) rather than rejecting the await.
+export async function readMemberDoc(
+  membersRoot: string,
+  slug: string,
+  file: string,
+): Promise<string | undefined> {
+  try {
+    assertSafeSlug(slug);
+    const text = await readFile(join(membersRoot, slug, file), "utf8");
+    return text.trim().length > 0 ? text : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function retireMember(membersRoot: string, slug: string): Promise<void> {
+  assertSafeSlug(slug);
+  const dir = join(membersRoot, slug);
+  if (!(await exists(dir))) throw new Error(`member '${slug}' not found`);
+  await rm(dir, { recursive: true, force: true });
+}
+
+export async function setMemberModel(
+  membersRoot: string,
+  slug: string,
+  pin: { model?: string; provider?: string },
+): Promise<void> {
+  assertSafeSlug(slug);
+  const dir = join(membersRoot, slug);
+  if (!(await exists(dir))) throw new Error(`member '${slug}' not found`);
+
+  const rec = JSON.parse(await readFile(join(dir, "member.json"), "utf8")) as MemberRecord;
+  const model = pin.model?.trim();
+  const provider = pin.provider?.trim();
+  if (provider && !model) throw new Error("provider requires a model");
+
+  if (model) {
+    rec.model = model;
+    if (provider) rec.provider = provider;
+    else delete rec.provider;
+  } else {
+    delete rec.model;
+    delete rec.provider;
+  }
+
+  await writeFile(join(dir, "member.json"), `${JSON.stringify(rec, null, 2)}\n`);
+}
+
+// Keep only the most recent entries so a member's journal can't grow without
+// bound; the chat composer only tail-reads the log anyway, so older lines earn
+// no keep.
+export const LOG_MAX_ENTRIES = 50;
+
+// Per-entry character cap. LOG_MAX_ENTRIES bounds the COUNT; this bounds each
+// bullet — together they cap log.md's size regardless of caller.
+export const LOG_ENTRY_CAP = 280;
+
+// Append one timestamped line to a member's log.md and trim to the last
+// LOG_MAX_ENTRIES entries. Fails closed on an unsafe slug or a missing member.
+// The line is collapsed to a single physical line so one entry stays one bullet,
+// and capped so a runaway line can't bloat the journal.
+export async function appendLog(
+  membersRoot: string,
+  slug: string,
+  line: string,
+  at: string,
+): Promise<void> {
+  assertSafeSlug(slug);
+  const dir = join(membersRoot, slug);
+  if (!(await exists(dir))) throw new Error(`member '${slug}' not found`);
+  const entry = `- ${at} — ${line.replace(/\s+/g, " ").trim()}`.slice(0, LOG_ENTRY_CAP);
+  let existing: string;
+  try {
+    existing = await readFile(join(dir, "log.md"), "utf8");
+  } catch (e) {
+    // Only a missing log starts fresh; a permission/I/O error must surface, or the
+    // next append would rewrite log.md from just this entry and drop the journal.
+    if (!isNodeError(e) || e.code !== "ENOENT") throw e;
+    existing = "# Log\n";
+  }
+  const lines = existing.split("\n");
+  const header = lines[0]?.startsWith("#") ? lines[0] : "# Log";
+  const bullets = lines.filter((l) => l.trimStart().startsWith("- "));
+  const kept = [...bullets, entry].slice(-LOG_MAX_ENTRIES);
+  await writeFile(join(dir, "log.md"), `${header}\n\n${kept.join("\n")}\n`);
+}
+
+// A Node fs error carrying an errno `code`, so a not-found read can be told apart
+// from a real I/O/permission failure.
+function isNodeError(value: unknown): value is NodeJS.ErrnoException {
+  return value instanceof Error && "code" in value;
+}
+
+// stat, not readdir: readdir only succeeds on a directory, so a non-directory
+// entry at the path would read as absent and silently bypass the collision /
+// not-found guards.
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureTrailingNewline(text: string): string {
+  return text.endsWith("\n") ? text : `${text}\n`;
+}

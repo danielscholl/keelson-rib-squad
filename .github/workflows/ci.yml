@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout rib
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # Pin to the runtime Keelson validates against. Bump deliberately.
+          bun-version: 1.3.13
+
+      - name: Install rib deps
+        run: bun install --frozen-lockfile
+
+      # @keelson/shared is an optional peer the harness home provides at runtime;
+      # CI resolves it the same way dev does — a symlink to a keelson checkout's
+      # packages/shared, sourced from `main` so a harness contract change that
+      # breaks this rib turns CI red here. Nested under node_modules so biome and
+      # tsc (which both ignore node_modules) never scan the whole harness.
+      - name: Checkout keelson (provides @keelson/shared)
+        uses: actions/checkout@v7
+        with:
+          repository: danielscholl/keelson
+          path: node_modules/.keelson-src
+
+      - name: Install keelson deps (so @keelson/shared resolves zod)
+        run: cd node_modules/.keelson-src && bun install --frozen-lockfile
+
+      - name: Link @keelson/shared
+        run: |
+          mkdir -p node_modules/@keelson
+          ln -sfn "$PWD/node_modules/.keelson-src/packages/shared" node_modules/@keelson/shared
+
+      - name: Lint + format check
+        run: bun run check
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+        env:
+          KEELSON_USE_STUBS: "1"
