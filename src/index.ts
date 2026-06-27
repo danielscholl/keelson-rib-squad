@@ -508,6 +508,7 @@ const coordinateSchema = z.object({
 function makeCoordinateTool(
   turnSeam: RibContext["runAgentTurn"],
   projectsSeam: RibContext["getProjects"],
+  runWorkflowSeam: RibContext["runWorkflow"],
 ): ToolDefinition {
   return {
     name: "squad_coordinate",
@@ -559,6 +560,7 @@ function makeCoordinateTool(
           roster,
           task,
           ...(project ? { project } : {}),
+          ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
           ...(maxRounds
             ? {
                 limits: {
@@ -826,7 +828,7 @@ const rib: Rib = {
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
-      makeCoordinateTool(ctx.runAgentTurn, ctx.getProjects),
+      makeCoordinateTool(ctx.runAgentTurn, ctx.getProjects, ctx.runWorkflow),
     ];
   },
 

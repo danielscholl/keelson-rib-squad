@@ -15,7 +15,7 @@ import {
 } from "./orchestrator.ts";
 import { runConfinedTurn } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
-import { authorWorkflow } from "./workflow-authoring.ts";
+import { authorWorkflow, screenWorkflowForRun } from "./workflow-authoring.ts";
 
 // The standing Magentic coordinator (#20 P1). Each round runs ONE coordinator
 // runAgentTurn — the manager reasons over the Task Ledger + roster and ENDS with a
@@ -287,6 +287,10 @@ export interface RunCoordinatorOptions {
   code?: (member: Member, instruction: string) => Promise<CodeStepOutcome>;
   // Injected for testability; default binds authorWorkflow (no project needed).
   workflow?: (member: Member, instruction: string) => Promise<WorkflowStepOutcome>;
+  // The host seam that runs an authored workflow DAG. When present (and a project is
+  // bound + the safety screen passes), the workflow arm author-AND-runs; absent leaves
+  // it author-only. Optional so an older harness / a test rig degrades cleanly.
+  runWorkflow?: RibContext["runWorkflow"];
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
 }
@@ -360,6 +364,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
 
   // The workflow-authoring arm: always available (it needs no project — it writes an
   // artifact under the data home).
+  const runWorkflowSeam = opts.runWorkflow;
   const workflow =
     opts.workflow ??
     (async (member: Member, instruction: string): Promise<WorkflowStepOutcome> => {
@@ -371,15 +376,29 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         task: instruction,
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       });
-      return r.ok
-        ? {
-            status: "ok",
-            text: `authored workflow "${r.name}" (${r.nodeCount} node${r.nodeCount === 1 ? "" : "s"}) → ${r.path}`,
-            name: r.name,
-            path: r.path,
-            nodeCount: r.nodeCount,
-          }
-        : { status: "error", text: r.error };
+      if (!r.ok) return { status: "error", text: r.error };
+      const base = { name: r.name, path: r.path, nodeCount: r.nodeCount };
+      const authored = `authored workflow "${r.name}" (${r.nodeCount} node${r.nodeCount === 1 ? "" : "s"}) → ${r.path}`;
+      // Run it ourselves only when confined to a project, the host seam is present, and
+      // the safety screen passes; otherwise it stays a durable artifact for the operator.
+      if (!project || !runWorkflowSeam) {
+        const why = !project ? "no project bound" : "run seam unavailable";
+        return { status: "ok", text: `${authored} (not run: ${why})`, ...base };
+      }
+      const screen = screenWorkflowForRun(r.def);
+      if (!screen.ok) {
+        return { status: "ok", text: `${authored} (not run: ${screen.reason})`, ...base };
+      }
+      const run = await runWorkflowSeam(r.def, {}, { cwd: project.rootPath });
+      const failed = Object.entries(run.nodes)
+        .filter(([, n]) => n.state === "failed")
+        .map(([id]) => id);
+      const detail = failed.length > 0 ? ` failed: ${failed.join(", ")}` : "";
+      return {
+        status: run.status === "succeeded" ? "ok" : "error",
+        text: `${authored}; RAN → ${run.status}.${detail}${run.error ? ` ${run.error}` : ""}`,
+        ...base,
+      };
     });
 
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());

@@ -311,6 +311,84 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.facts.some((f) => f.includes("authored workflow"))).toBe(true);
   });
 
+  test("the workflow arm authors AND runs when a project + run seam are present", async () => {
+    const ran: unknown[] = [];
+    const validWf = JSON.stringify({
+      name: "verify",
+      description: "d",
+      nodes: [{ id: "a", bash: "echo hi" }],
+    });
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runWorkflow: async (def) => {
+        ran.push(def);
+        return { status: "succeeded" as const, nodes: { a: { state: "completed", output: "hi" } } };
+      },
+      runAgentTurn: queuedRun([
+        'plan\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","mode":"workflow","instruction":"author a verify flow"}',
+        validWf,
+        'done\n{"action":"done","summary":"ok"}',
+      ]),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.status).toBe("done");
+    expect(ran).toHaveLength(1);
+    expect(res.ledger.transcript.some((e) => e.kind === "workflow" && e.text.includes("RAN"))).toBe(
+      true,
+    );
+  });
+
+  test("the workflow arm is author-only without a project (run seam never called)", async () => {
+    let ranCalled = false;
+    const validWf = JSON.stringify({
+      name: "verify",
+      description: "d",
+      nodes: [{ id: "a", bash: "echo hi" }],
+    });
+    const res = await runCoordinator({
+      ...base(),
+      runWorkflow: async () => {
+        ranCalled = true;
+        return { status: "succeeded" as const, nodes: {} };
+      },
+      runAgentTurn: queuedRun([
+        'plan\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","mode":"workflow","instruction":"author"}',
+        validWf,
+        'done\n{"action":"done","summary":"ok"}',
+      ]),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(ranCalled).toBe(false);
+    expect(
+      res.ledger.transcript.some((e) => e.kind === "workflow" && e.text.includes("not run")),
+    ).toBe(true);
+  });
+
+  test("the workflow arm authors but refuses to run a forbidden-op workflow", async () => {
+    let ranCalled = false;
+    const dangerWf = JSON.stringify({
+      name: "danger",
+      description: "d",
+      nodes: [{ id: "a", bash: "gh pr merge 1" }],
+    });
+    await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runWorkflow: async () => {
+        ranCalled = true;
+        return { status: "succeeded" as const, nodes: {} };
+      },
+      runAgentTurn: queuedRun([
+        'plan\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","mode":"workflow","instruction":"x"}',
+        dangerWf,
+        'done\n{"action":"done","summary":"ok"}',
+      ]),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(ranCalled).toBe(false);
+  });
+
   test("folds a single member's reply when the dispatch ran no synthesis", async () => {
     const dispatch = async (_members: Member[], instruction: string): Promise<DispatchOutcome> => ({
       task: instruction,

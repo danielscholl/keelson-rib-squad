@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MessageChunk, RibAgentTurn, RibContext } from "@keelson/shared";
 import type { Member } from "../src/types.ts";
-import { authorWorkflow, validateWorkflowDef } from "../src/workflow-authoring.ts";
+import {
+  type AuthoredWorkflow,
+  authorWorkflow,
+  screenWorkflowForRun,
+  validateWorkflowDef,
+} from "../src/workflow-authoring.ts";
 
 async function* stream(text: string): AsyncGenerator<MessageChunk> {
   yield { type: "text", content: text };
@@ -93,6 +98,45 @@ describe("validateWorkflowDef", () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("ghost");
+  });
+});
+
+describe("screenWorkflowForRun", () => {
+  function wf(nodes: Array<Record<string, unknown>>): AuthoredWorkflow {
+    return { name: "x", description: "d", nodes: nodes as AuthoredWorkflow["nodes"] };
+  }
+
+  test("passes a safe workflow", () => {
+    expect(
+      screenWorkflowForRun(
+        wf([
+          { id: "a", bash: "bun run check" },
+          { id: "b", prompt: "report" },
+        ]),
+      ).ok,
+    ).toBe(true);
+  });
+
+  test("flags merge / force-push / destructive rm / sudo in a bash node", () => {
+    for (const bash of [
+      "gh pr merge 1",
+      "git push --force",
+      "git push -f origin main",
+      "rm -rf /",
+      "rm -rf ~",
+      "rm -rf *",
+      "sudo rm x",
+    ]) {
+      expect(screenWorkflowForRun(wf([{ id: "a", bash }])).ok).toBe(false);
+    }
+  });
+
+  test("flags a forbidden op in a script node too", () => {
+    expect(screenWorkflowForRun(wf([{ id: "a", script: "sudo reboot" }])).ok).toBe(false);
+  });
+
+  test("does not flag a targeted clean (rm -rf ./build)", () => {
+    expect(screenWorkflowForRun(wf([{ id: "a", bash: "rm -rf ./build" }])).ok).toBe(true);
   });
 });
 

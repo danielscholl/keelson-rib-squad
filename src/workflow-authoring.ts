@@ -118,8 +118,46 @@ export interface AuthorWorkflowOptions {
 }
 
 export type AuthorWorkflowResult =
-  | { ok: true; name: string; path: string; nodeCount: number; description: string }
+  | {
+      ok: true;
+      name: string;
+      path: string;
+      nodeCount: number;
+      description: string;
+      def: AuthoredWorkflow;
+    }
   | { ok: false; error: string };
+
+// Destructive operations a squad-authored workflow must not auto-run. Workflow
+// bash/script/command nodes execute deterministically (they do NOT pass through the
+// policy engine the way an agent's tool calls do), so the RAI floor can't gate them —
+// this scan extends that floor's spirit to authored workflows the squad would run
+// itself: merging, force-pushing, destructive recursive removes of root/home/glob, and
+// privilege escalation. A flagged workflow is still authored (a durable artifact), just
+// not auto-run.
+const FORBIDDEN_RUN_PATTERNS: readonly RegExp[] = [
+  /\bgh\s+pr\s+merge\b/i,
+  /\bgit\s+push\b[^\n]*(?:--force|\s-f\b)/i,
+  /\brm\s+-[a-z]*r[a-z]*\b[^\n]*(?:\s\/(?:\s|$)|\s~|\s\*)/i,
+  /\bsudo\b/i,
+];
+
+export function screenWorkflowForRun(
+  def: AuthoredWorkflow,
+): { ok: true } | { ok: false; reason: string } {
+  for (const node of def.nodes) {
+    for (const key of ["bash", "script", "command"] as const) {
+      const v = node[key];
+      if (typeof v !== "string") continue;
+      for (const pattern of FORBIDDEN_RUN_PATTERNS) {
+        if (pattern.test(v)) {
+          return { ok: false, reason: `node "${node.id}" contains a forbidden operation` };
+        }
+      }
+    }
+  }
+  return { ok: true };
+}
 
 // Run one authoring turn (the member's identity as system, the task framing in the
 // prompt), validate the result, and persist it. Never throws; every failure maps to an
@@ -162,5 +200,6 @@ export async function authorWorkflow(opts: AuthorWorkflowOptions): Promise<Autho
     path,
     nodeCount: validated.def.nodes.length,
     description: validated.def.description,
+    def: validated.def,
   };
 }
