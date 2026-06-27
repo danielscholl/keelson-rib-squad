@@ -13,16 +13,15 @@ import { asNonEmptyString, DEFAULT_PROJECT_NAME, errText, expectView, z } from "
 import { listAgents, resolveAgent } from "./agents.ts";
 import { APPROVE_CAST_ACTION, CAST_PROPOSE_ACTION, DISCARD_CAST_ACTION } from "./boards/cast.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
+import { clearProposal, proposeCast, readProposal, writeProposal } from "./cast.ts";
 import {
-  type CastProposalRecord,
-  clearProposal,
-  proposeCast,
-  readProposal,
-  writeProposal,
-} from "./cast.ts";
+  assignThemedIdentity,
+  foldThemedCharter,
+  retireCastingName,
+  themeLabel,
+} from "./casting/registry.ts";
 import { buildSeedFor } from "./compose.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
-import { slugify } from "./genesis.ts";
 import { CAST_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
 import {
   appendLog,
@@ -139,6 +138,52 @@ function emitResult(ctx: ToolContext, content: string, isError = false): void {
   });
 }
 
+// The single themed-casting intercept (#16): turn a proposed { name, role } into the
+// persisted member record. assignThemedIdentity replaces the proposed name with a
+// best-fit ensemble character (deterministic, registry-backed) and the character's
+// voice is folded into the charter so compose.ts carries it. Both genesis
+// (squad_emit_member) and auto-cast (the approve/scaffold path) build their records
+// through here, so the two theme with one code path. Theming off / exhausted keeps
+// the proposed name (assignThemedIdentity returns no themeId).
+async function themedRecord(base: {
+  name: string;
+  role: string;
+  charter: string;
+  createdAt: string;
+  model?: string;
+  provider?: string;
+  tools?: readonly string[];
+}): Promise<MemberRecord> {
+  const id = await assignThemedIdentity(squadDataHome(), {
+    proposedName: base.name,
+    role: base.role,
+  });
+  const charter =
+    id.themeId && id.personality
+      ? foldThemedCharter(base.charter, {
+          name: id.name,
+          personality: id.personality,
+          backstory: id.backstory ?? "",
+          themeLabel: themeLabel(id.themeId) ?? id.themeId,
+        })
+      : base.charter;
+  return {
+    slug: id.slug,
+    name: id.name,
+    role: base.role,
+    charter,
+    status: "active",
+    createdAt: base.createdAt,
+    ...(id.themeId ? { themeId: id.themeId } : {}),
+    ...(id.personality ? { personality: id.personality } : {}),
+    ...(id.backstory ? { backstory: id.backstory } : {}),
+    ...(id.originalName !== id.name ? { originalName: id.originalName } : {}),
+    ...(base.model ? { model: base.model } : {}),
+    ...(base.model && base.provider ? { provider: base.provider } : {}),
+    ...(base.tools && base.tools.length > 0 ? { tools: [...base.tools] } : {}),
+  };
+}
+
 // The genesis write seam: the squad-genesis workflow's prompt node authors the
 // charter and calls this tool to persist the member. Deterministic and in-process
 // (it reuses scaffoldMember), so the generative half stays in the prompt and the
@@ -173,17 +218,15 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
         const dedupedTools = tools
           ? [...new Set(tools.map((t) => t.trim()).filter((t) => t.length > 0))]
           : [];
-        const record: MemberRecord = {
-          slug: slugify(name),
+        const record = await themedRecord({
           name,
           role,
           charter,
-          status: "active",
           createdAt: new Date().toISOString(),
           ...(model ? { model } : {}),
           ...(model && provider ? { provider } : {}),
           ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
-        };
+        });
         await scaffoldMember(membersDir(), record);
         // Re-run the bound squad-roster collector so the new member appears
         // promptly instead of waiting on cadence. Fail-soft (the seam resolves on
@@ -231,6 +274,8 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
       }
       try {
         await retireMember(membersDir(), parsed.data.slug);
+        // Free the cast name so the ensemble can reuse it (fail-soft, never throws).
+        await retireCastingName(squadDataHome(), parsed.data.slug);
         await refresh?.("squad-roster");
         emitResult(ctx, JSON.stringify({ ok: true, slug: parsed.data.slug }));
       } catch (e) {
@@ -742,32 +787,32 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   }
 }
 
-// One proposed member -> the on-disk record the batch scaffold writes. Carries the
-// capability tags through to the member record (#14) so a cast member is routable.
-function castRecordFor(member: CastProposalRecord["members"][number], at: string): MemberRecord {
-  return {
-    slug: slugify(member.name),
-    name: member.name,
-    role: member.role,
-    charter: member.charter,
-    status: "active",
-    createdAt: at,
-    ...(member.model ? { model: member.model } : {}),
-    ...(member.model && member.provider ? { provider: member.provider } : {}),
-    ...(member.tools && member.tools.length > 0 ? { tools: member.tools } : {}),
-  };
-}
-
-// Approve-cast: scaffold the proposed members (collision-safe — an existing slug is
-// kept, never clobbered; member-capped with truncation surfaced), clear the
-// proposal, and refresh the roster + cast panels. Reads the persisted proposal as
-// the source of truth, so a stale board button can't approve a discarded proposal.
+// Approve-cast: theme each proposed member (the shared casting intercept) and
+// scaffold them (collision-safe — an existing slug is kept, never clobbered;
+// member-capped with truncation surfaced), clear the proposal, and refresh the
+// roster + cast panels. Reads the persisted proposal as the source of truth, so a
+// stale board button can't approve a discarded proposal. Themed sequentially:
+// each assignThemedIdentity reserves into the registry, so the next member draws a
+// distinct character from the same ensemble.
 async function approveCastAction(): Promise<RibActionResult> {
   try {
     const proposal = await readProposal(squadDataHome());
     if (!proposal) return { ok: false, error: "no proposal to approve — cast a squad first" };
     const at = new Date().toISOString();
-    const records = proposal.members.map((m) => castRecordFor(m, at));
+    const records: MemberRecord[] = [];
+    for (const m of proposal.members) {
+      records.push(
+        await themedRecord({
+          name: m.name,
+          role: m.role,
+          charter: m.charter,
+          createdAt: at,
+          ...(m.model ? { model: m.model } : {}),
+          ...(m.model && m.provider ? { provider: m.provider } : {}),
+          ...(m.tools && m.tools.length > 0 ? { tools: m.tools } : {}),
+        }),
+      );
+    }
     const outcome = await scaffoldRoster(membersDir(), records);
     await clearProposal(squadDataHome());
     await refreshWorkflow?.("squad-roster");
@@ -817,6 +862,8 @@ async function retireAction(action: RibAction): Promise<RibActionResult> {
   if (!slug) return { ok: false, error: "retire requires payload { slug }" };
   try {
     await retireMember(membersDir(), slug);
+    // Free the cast name so the ensemble can reuse it (fail-soft, never throws).
+    await retireCastingName(squadDataHome(), slug);
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
     return { ok: true, data: { slug } };
   } catch (e) {
