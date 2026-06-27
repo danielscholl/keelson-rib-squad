@@ -1,4 +1,5 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
+import { themeLabel } from "../casting/themes.ts";
 import { stableHash } from "../genesis.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
 import type { Member } from "../types.ts";
@@ -73,20 +74,27 @@ function pulseSection(pulse: RosterPulse): CanvasBoardView["sections"][number] {
   };
 }
 
-// One member -> one card: a hashed identity dot, the role in a single pill,
-// charter (and model when set) as fields, and three actions — Enter (the primary
-// verb, rendered inline), Set model, and Retire (destructive overflow with a
-// confirm). The slug rides every action payload + the dot hash.
+// One member -> one card: a hashed identity dot, the role in a single pill, the
+// ensemble (when cast) + charter (and model when set) as fields, a personality
+// sub-line on the reason row, and three actions — Enter (the primary verb, rendered
+// inline), Set model, and Retire (destructive overflow with a confirm). The slug
+// rides every action payload + the dot hash.
 function cardFor(member: Member) {
-  const fields: { label: string; value: string }[] = [
-    { label: "charter", value: truncate(member.charter) },
-  ];
+  const fields: { label: string; value: string }[] = [];
+  if (member.themeId) {
+    fields.push({ label: "cast", value: themeLabel(member.themeId) ?? member.themeId });
+  }
+  fields.push({ label: "charter", value: truncate(member.charter) });
   if (member.model) fields.push({ label: "model", value: member.model });
   return {
     title: member.name,
     dot: dotFor(member.slug),
     pill: { label: member.role.trim() || "Member" },
     fields,
+    // The character's personality as a sub-line, only when the member was cast.
+    ...(member.personality
+      ? { reason: { label: "personality", text: truncate(member.personality, 160) } }
+      : {}),
     actions: [
       {
         type: "enter-member",

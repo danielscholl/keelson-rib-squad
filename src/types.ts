@@ -23,4 +23,12 @@ export interface Member {
   // Free-form capability slugs (unconstrained in Phase 0). Omitting yields a
   // text-only chat agent.
   tools?: readonly string[];
+  // Themed-casting identity (#16). Set when the member was cast from an ensemble:
+  // themeId is the ensemble it belongs to, personality/backstory its character's
+  // voice (also folded into the charter), and originalName the proposed name casting
+  // replaced. All optional/back-compat — a pre-casting or opted-out member has none.
+  themeId?: string;
+  personality?: string;
+  backstory?: string;
+  originalName?: string;
 }

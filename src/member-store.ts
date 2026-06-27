@@ -20,6 +20,12 @@ export interface MemberRecord {
   model?: string;
   provider?: string;
   tools?: readonly string[];
+  // Themed-casting identity (#16) — persisted so the roster card and the charter
+  // composer carry the character's voice. Optional/back-compat.
+  themeId?: string;
+  personality?: string;
+  backstory?: string;
+  originalName?: string;
   createdAt: string;
 }
 
@@ -125,6 +131,14 @@ export async function listMemberRecords(
         ...(Array.isArray(rec.tools) && rec.tools.length > 0
           ? { tools: rec.tools.filter((t): t is string => typeof t === "string") }
           : {}),
+        ...(typeof rec.themeId === "string" && rec.themeId ? { themeId: rec.themeId } : {}),
+        ...(typeof rec.personality === "string" && rec.personality
+          ? { personality: rec.personality }
+          : {}),
+        ...(typeof rec.backstory === "string" && rec.backstory ? { backstory: rec.backstory } : {}),
+        ...(typeof rec.originalName === "string" && rec.originalName
+          ? { originalName: rec.originalName }
+          : {}),
       });
     } catch {
       // skip non-member dirs / unreadable records
@@ -148,6 +162,10 @@ export async function readMembers(membersRoot: string): Promise<Member[]> {
     ...(r.model ? { model: r.model } : {}),
     ...(r.provider ? { provider: r.provider } : {}),
     ...(r.tools && r.tools.length > 0 ? { tools: r.tools } : {}),
+    ...(r.themeId ? { themeId: r.themeId } : {}),
+    ...(r.personality ? { personality: r.personality } : {}),
+    ...(r.backstory ? { backstory: r.backstory } : {}),
+    ...(r.originalName ? { originalName: r.originalName } : {}),
   }));
 }
 

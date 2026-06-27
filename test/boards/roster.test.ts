@@ -149,6 +149,29 @@ describe("buildRosterBoard populated", () => {
   test("the slug still rides the serialized board (guards collect-roster toContain)", () => {
     expect(JSON.stringify(buildRosterBoard([member({ slug: "lead" })]))).toContain("lead");
   });
+
+  test("a cast member shows its ensemble and a personality sub-line", () => {
+    const card = cards(
+      buildRosterBoard([
+        member({
+          slug: "mcmanus",
+          name: "McManus",
+          themeId: "usual-suspects",
+          personality: "Bold and direct; ships fast.",
+        }),
+      ]),
+    )[0];
+    expect(card?.title).toBe("McManus");
+    expect(card?.fields?.find((f) => f.label === "cast")?.value).toBe("The Usual Suspects");
+    expect(card?.reason?.label).toBe("personality");
+    expect(card?.reason?.text).toContain("Bold and direct");
+  });
+
+  test("an un-cast member shows no cast field and no personality line", () => {
+    const card = cards(buildRosterBoard([member()]))[0];
+    expect(card?.fields?.some((f) => f.label === "cast")).toBe(false);
+    expect(card?.reason).toBeUndefined();
+  });
 });
 
 describe("buildRosterBoard pulse", () => {

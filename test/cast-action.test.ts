@@ -133,18 +133,25 @@ describe("cast-propose action", () => {
 });
 
 describe("approve-cast / discard-cast actions", () => {
-  test("approve scaffolds the proposed members (with tags) and clears the proposal", async () => {
+  test("approve themes + scaffolds the proposed members (with tags) and clears the proposal", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
     await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
       const data = res.data as { created: string[]; skipped: string[]; truncated: number };
-      expect(data.created.sort()).toEqual(["atlas", "vera"]);
+      // Two members scaffolded under their themed (cast) slugs, not the proposed ones.
+      expect(data.created).toHaveLength(2);
     }
     const members = await readMembers(membersDir());
-    const atlas = members.find((m) => m.slug === "atlas");
+    // The proposed names became originalName; casting routes the tags through.
+    const atlas = members.find((m) => m.originalName === "Atlas");
     expect(atlas?.tools).toEqual(["code", "read"]);
+    expect(atlas?.themeId).toBeDefined();
+    expect(atlas?.personality).toBeTruthy();
+    expect(atlas?.name).not.toBe("Atlas");
+    // The whole roster is cast from ONE ensemble (a coherent squad).
+    expect(new Set(members.map((m) => m.themeId)).size).toBe(1);
     // The proposal was consumed; the roster + cast panels refreshed.
     expect(await readProposal(home)).toBeUndefined();
     expect(refreshed).toContain("squad-roster");
@@ -167,9 +174,12 @@ describe("approve-cast / discard-cast actions", () => {
     expect(res?.ok).toBe(true);
     if (res?.ok) {
       const data = res.data as { created: string[]; skipped: string[] };
+      // Stable casting: the same proposed names re-resolve to the same themed slugs,
+      // so the second approve skips them — no duplicate members under fresh names.
       expect(data.created).toEqual([]);
-      expect(data.skipped.sort()).toEqual(["atlas", "vera"]);
+      expect(data.skipped).toHaveLength(2);
     }
+    expect(await readMembers(membersDir())).toHaveLength(2);
   });
 
   test("discard clears the pending proposal", async () => {

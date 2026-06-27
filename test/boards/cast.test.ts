@@ -86,4 +86,22 @@ describe("buildCastBoard with a proposal", () => {
   test("the propose action constant is distinct from approve/discard", () => {
     expect(new Set([CAST_PROPOSE_ACTION, APPROVE_CAST_ACTION, DISCARD_CAST_ACTION]).size).toBe(3);
   });
+
+  test("the charter excerpt prefers the Mission line over the one-word Role body (#12)", () => {
+    const board = buildCastBoard(
+      proposal({
+        members: [
+          {
+            name: "Atlas",
+            role: "Engineer",
+            charter:
+              "# Atlas\n\n## Role\n\nEngineer\n\n## Mission\n\nBuild and ship the search rib.",
+          },
+        ],
+      }),
+    );
+    const card = cards(board).find((c) => c.title === "Atlas");
+    expect(card?.reason?.text).toBe("Build and ship the search rib.");
+    expect(card?.reason?.text).not.toBe("Engineer");
+  });
 });

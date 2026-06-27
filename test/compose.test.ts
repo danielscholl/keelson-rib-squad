@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { foldThemedCharter } from "../src/casting/registry.ts";
 import {
   buildSeedFor,
   composeMemberSystemPrompt,
@@ -84,6 +85,26 @@ describe("composeMemberSystemPrompt", () => {
     expect(prompt).toContain("Prefers primary sources.");
     expect(prompt).toContain("## Operating rules");
     expect(prompt).toContain("Never pad a thin answer.");
+  });
+
+  test("a cast member's folded charter carries the character voice into the prompt", async () => {
+    await scaffoldMember(
+      root,
+      record({
+        name: "McManus",
+        charter: foldThemedCharter("# Atlas\n\n## Mission\n\nShip the search rib.", {
+          name: "McManus",
+          personality: "Bold and direct; ships fast.",
+          backstory: "The hotshot operator who dives in headfirst.",
+          themeLabel: "The Usual Suspects",
+        }),
+      }),
+    );
+    const prompt = await composeMemberSystemPrompt(root, member());
+    expect(prompt).toContain("Cast from The Usual Suspects");
+    expect(prompt).toContain("Bold and direct");
+    expect(prompt).toContain("The hotshot operator");
+    expect(prompt).toContain("Ship the search rib.");
   });
 
   test("falls back to the record's charter when charter.md is missing", async () => {

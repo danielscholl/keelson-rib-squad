@@ -122,13 +122,17 @@ function idleBoard(): CanvasBoardView {
   };
 }
 
-// The charter's first substantive line (past the "# Name" header), trimmed — a
-// preview of who the member is without dumping the whole doc on the card.
+// A charter preview for the card. Prefers the first line of the "## Mission"
+// section (higher signal — what the member is FOR) over the charter's first
+// substantive line, which is the one-word "## Role" body. Falls back to the first
+// non-heading line when there's no Mission section.
 function charterExcerpt(charter: string, max = 200): string {
-  const line = charter
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l.length > 0 && !l.startsWith("#"));
+  const lines = charter.split("\n").map((l) => l.trim());
+  const missionIdx = lines.findIndex((l) => /^##\s+mission\b/i.test(l));
+  const line =
+    (missionIdx >= 0
+      ? lines.slice(missionIdx + 1).find((l) => l.length > 0 && !l.startsWith("#"))
+      : undefined) ?? lines.find((l) => l.length > 0 && !l.startsWith("#"));
   if (!line) return "";
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
