@@ -1,9 +1,11 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { RibContext } from "@keelson/shared";
+import { runCodeTurn } from "./code.ts";
 import { parseTrailingDirective } from "./control-json.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import {
+  type CodeStepOutcome,
   DEFAULT_LIMITS,
   decideOrchestratorStep,
   executeStep,
@@ -44,7 +46,7 @@ export interface CoordinatorLedger {
 
 export interface CoordinatorEntry {
   round: number;
-  kind: "coordinator" | "dispatch" | "replan";
+  kind: "coordinator" | "dispatch" | "code" | "replan";
   speaker?: string;
   instruction?: string;
   text: string;
@@ -102,6 +104,7 @@ export function parseCoordinatorDirective(text: string): ParsedDirective | null 
       head: match.head,
     };
   }
+  const mode = asStr(p.mode);
   const progress: ProgressLedger = {
     isRequestSatisfied: asBool(p.satisfied) ?? false,
     isInLoop: asBool(p.in_loop ?? p.inLoop) ?? false,
@@ -112,6 +115,7 @@ export function parseCoordinatorDirective(text: string): ParsedDirective | null 
     ...(asStr(p.instruction ?? p.instructionOrQuestion ?? p.question)
       ? { instructionOrQuestion: asStr(p.instruction ?? p.instructionOrQuestion ?? p.question) }
       : {}),
+    ...(mode === "code" || mode === "dispatch" ? { mode } : {}),
   };
   return { progress, facts, plan, ...(summary ? { summary } : {}), head: match.head };
 }
@@ -223,6 +227,7 @@ function coordinatorPrompt(
   ledger: CoordinatorLedger,
   roster: readonly Member[],
   replan: boolean,
+  canCode: boolean,
 ): string {
   const planBlock = ledger.plan.length
     ? ledger.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
@@ -232,6 +237,11 @@ function coordinatorPrompt(
     : "(none yet)";
   const replanNote = replan
     ? "\nPROGRESS HAS STALLED. Rebuild the plan from scratch — a different approach, or a different member. Do not repeat the step that stalled.\n"
+    : "";
+  // The code arm is only offered when a project is bound (the turn is confined to it);
+  // a code-tagged member then EDITS the repo instead of just reasoning.
+  const codeNote = canCode
+    ? '\n- to have a code-capable member EDIT the project repo for a step, add "mode":"code" (the next_speaker MUST have the "code" tool); omit it (or "mode":"dispatch") for a reasoning/analysis step.'
     : "";
   return `Goal:\n${ledger.task}
 ${replanNote}
@@ -249,7 +259,7 @@ ${renderTranscript(ledger.transcript)}
 
 Assess the state, then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to continue: {"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"<member slug>","instruction":"<the single next instruction for that member>","plan":["step","step"],"facts":["any new finding"]}
-- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}
+- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}
 Set "satisfied" true only when the goal is genuinely complete. Pick next_speaker from the members above. Keep the instruction to ONE concrete step.`;
 }
 
@@ -261,12 +271,16 @@ export interface RunCoordinatorOptions {
   dataHome: string;
   roster: Member[];
   task: string;
-  projectId?: string;
+  // The project the run targets. Required for the code arm (it confines the coding
+  // turn to project.rootPath); absent means dispatch-only.
+  project?: { id: string; name: string; rootPath: string };
   limits?: OrchestratorLimits;
   perTurnTimeoutMs?: number;
   abortSignal?: AbortSignal;
-  // Injected for testability; defaults to dispatchFanout bound to the live seams.
+  // Injected for testability; default binds dispatchFanout to the live seams.
   dispatch?: (members: Member[], instruction: string) => Promise<DispatchOutcome>;
+  // Injected for testability; default binds runCodeTurn when a project is present.
+  code?: (member: Member, instruction: string) => Promise<CodeStepOutcome>;
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
 }
@@ -299,6 +313,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   const now = opts.now ?? (() => new Date().toISOString());
   const limits = opts.limits ?? DEFAULT_LIMITS;
   const timeoutMs = opts.perTurnTimeoutMs ?? DEFAULT_COORDINATOR_TIMEOUT_MS;
+  // A single-member step needs no synthesis turn — fold that one reply directly (saves
+  // a paid turn and the "only one response came back" narration).
   const dispatch =
     opts.dispatch ??
     ((members: Member[], instruction: string) =>
@@ -307,10 +323,36 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         membersRoot: opts.membersRoot,
         members,
         task: instruction,
+        synthesize: members.length > 1,
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       }));
 
-  let ledger = await loadOrInit(opts.dataHome, opts.task, opts.projectId, now());
+  // The code arm: a confined coding turn for the speaker, bound only when a project is
+  // present (it confines to project.rootPath). Absent → a code step falls to dispatch.
+  const project = opts.project;
+  const code =
+    opts.code ??
+    (project
+      ? async (member: Member, instruction: string): Promise<CodeStepOutcome> => {
+          const r = await runCodeTurn({
+            runAgentTurn: opts.runAgentTurn,
+            membersRoot: opts.membersRoot,
+            member,
+            project: { name: project.name, rootPath: project.rootPath },
+            task: instruction,
+            ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+          });
+          return r.ok
+            ? {
+                status: r.outcome.status,
+                text: r.outcome.text,
+                ...(r.outcome.error ? { error: r.outcome.error } : {}),
+              }
+            : { status: "error", text: "", error: r.error };
+        }
+      : undefined);
+
+  let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
   let replanRequested = false;
   let status: RunCoordinatorResult["status"] = "max-rounds";
 
@@ -328,7 +370,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       opts.runAgentTurn,
       {
         system: COORDINATOR_SYSTEM,
-        prompt: coordinatorPrompt(ledger, opts.roster, replanRequested),
+        prompt: coordinatorPrompt(ledger, opts.roster, replanRequested, Boolean(code)),
       },
       timeoutMs,
       opts.abortSignal,
@@ -394,10 +436,18 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       continue;
     }
 
-    // execute: the dispatch arm (P1)
-    const result = await executeStep(decided.step, { dispatch, roster: opts.roster });
+    // execute: the dispatch or code arm
+    const result = await executeStep(decided.step, {
+      dispatch,
+      ...(code ? { code } : {}),
+      roster: opts.roster,
+    });
     if (result.dispatch) {
-      const synth = result.dispatch.synthesis?.trim() || "(no synthesis)";
+      // Fall back to the single member's reply when no synthesis ran (1-member step).
+      const synth =
+        result.dispatch.synthesis?.trim() ||
+        result.dispatch.perMember.find((r) => r.status === "ok")?.text?.trim() ||
+        "(no synthesis)";
       ledger = {
         ...ledger,
         facts: foldFacts(ledger.facts, [
@@ -409,6 +459,25 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
           instruction: decided.step.instruction,
           text: synth,
+        }),
+        updatedAt: now(),
+      };
+    } else if (result.code) {
+      const text =
+        result.code.status === "ok"
+          ? result.code.text.trim() || "(no output)"
+          : (result.code.error ?? result.code.status);
+      ledger = {
+        ...ledger,
+        facts: foldFacts(ledger.facts, [
+          cap(`[${decided.step.speaker ?? "member"} edited code] ${text}`, FACT_CAP),
+        ]),
+        transcript: appendEntry(ledger.transcript, {
+          round: ledger.round,
+          kind: "code",
+          ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
+          instruction: decided.step.instruction,
+          text,
         }),
         updatedAt: now(),
       };
