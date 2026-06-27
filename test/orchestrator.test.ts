@@ -58,6 +58,21 @@ describe("decideOrchestratorStep", () => {
     expect(out.state.stallCount).toBe(0);
   });
 
+  test("carries mode:code when the named speaker is code-capable", () => {
+    const out = decide({ progress: ledger({ nextSpeaker: "atlas", mode: "code" }) });
+    expect(out.step).toMatchObject({ kind: "execute", mode: "code", speaker: "atlas" });
+  });
+
+  test("downgrades mode:code to dispatch for a non-code speaker", () => {
+    const out = decide({ progress: ledger({ nextSpeaker: "vera", mode: "code" }) });
+    expect(out.step).toMatchObject({ kind: "execute", mode: "dispatch", speaker: "vera" });
+  });
+
+  test("defaults to dispatch when no mode is requested", () => {
+    const out = decide({ progress: ledger({ nextSpeaker: "atlas" }) });
+    if (out.step.kind === "execute") expect(out.step.mode).toBe("dispatch");
+  });
+
   test("progress resets a primed stall counter", () => {
     const out = decide({
       progress: ledger({ isProgressBeingMade: true }),
@@ -190,7 +205,7 @@ describe("executeStep (P0 dispatch arm)", () => {
     expect(count).toBe(2);
   });
 
-  test("does not dispatch for replan/end or non-dispatch arms", async () => {
+  test("does not dispatch for replan/end", async () => {
     let called = false;
     const deps = {
       roster: fullRoster,
@@ -201,8 +216,41 @@ describe("executeStep (P0 dispatch arm)", () => {
     };
     await executeStep({ kind: "replan", reason: "x" }, deps);
     await executeStep({ kind: "end", reason: "x" }, deps);
-    await executeStep({ kind: "execute", mode: "code", instruction: "edit" }, deps);
-    await executeStep({ kind: "execute", mode: "workflow", instruction: "author" }, deps);
     expect(called).toBe(false);
+  });
+
+  test("routes a code step to the code arm for the named member", async () => {
+    let coded: { slug: string; instruction: string } | undefined;
+    const res = await executeStep(
+      { kind: "execute", mode: "code", speaker: "atlas", instruction: "edit foo" },
+      {
+        roster: fullRoster,
+        dispatch: async () => fakeOutcome("x"),
+        code: async (member, instruction) => {
+          coded = { slug: member.slug, instruction };
+          return { status: "ok", text: "edited" };
+        },
+      },
+    );
+    expect(coded).toEqual({ slug: "atlas", instruction: "edit foo" });
+    expect(res.code?.status).toBe("ok");
+    expect(res.dispatch).toBeUndefined();
+  });
+
+  test("a code step falls back to dispatch when no code arm is bound", async () => {
+    let dispatched = false;
+    const res = await executeStep(
+      { kind: "execute", mode: "code", speaker: "atlas", instruction: "edit foo" },
+      {
+        roster: fullRoster,
+        dispatch: async () => {
+          dispatched = true;
+          return fakeOutcome("x");
+        },
+      },
+    );
+    expect(dispatched).toBe(true);
+    expect(res.dispatch).toBeDefined();
+    expect(res.code).toBeUndefined();
   });
 });

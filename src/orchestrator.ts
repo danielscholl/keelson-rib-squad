@@ -1,3 +1,4 @@
+import { memberCanCode } from "./code.ts";
 import type { DispatchOutcome } from "./dispatch.ts";
 import type { Member } from "./types.ts";
 
@@ -20,6 +21,10 @@ export interface ProgressLedger {
   nextSpeaker?: string;
   // The single instruction/question for that member.
   instructionOrQuestion?: string;
+  // The execution mode the manager wants for the next step: "code" (a confined coding
+  // turn) or "dispatch" (text fan-out, the default). Honored only when the next speaker
+  // is code-capable; anything else is downgraded to dispatch by the decider.
+  mode?: OrchestratorMode;
 }
 
 // The execution arms the orchestrator routes to (the #14 action space). P0 wires only
@@ -133,34 +138,60 @@ export function decideOrchestratorStep(input: DecideInput): DecideOutput {
   }
   const instruction =
     progress.instructionOrQuestion?.trim() || "Continue with the next step of the plan.";
+  // The manager may ask for a code turn, but only a code-capable speaker gets one;
+  // anything else (incl. the not-yet-built workflow arm) runs as a dispatch.
+  const speakerMember = roster.find((m) => m.slug === speaker);
+  const mode: OrchestratorMode =
+    progress.mode === "code" && memberCanCode(speakerMember ?? { tools: [] }) ? "code" : "dispatch";
   return {
-    step: { kind: "execute", mode: "dispatch", speaker, instruction },
+    step: { kind: "execute", mode, speaker, instruction },
     state: { round, stallCount, resetCount },
   };
 }
 
-// --- driver stub (P0: dispatch arm only) ---------------------------------------
-// The effectful side is deliberately thin in P0: it routes an `execute`/`dispatch`
-// step to an injected dispatch function (dispatchFanout bound to live seams in P1) and
-// returns the wave outcome. code/workflow arms and the standing manager turn are P2/
-// P3/P1 — this proves the routing seam against a fake without a provider.
+// --- driver (dispatch + code arms) ---------------------------------------------
+// The effectful side routes an `execute` step to an injected arm: `code` runs a single
+// confined coding turn for the speaker (#3 runCodeTurn, bound to live seams in the
+// coordinator); `dispatch` fans the step out (dispatchFanout). The code arm is optional
+// — absent when no project is bound — so a code step then falls back to dispatch rather
+// than failing. The workflow arm (P3) is not built; such a step also falls to dispatch.
+
+// The normalized outcome of a code arm (a thin projection of runCodeTurn's result, so
+// orchestrator stays decoupled from code.ts internals).
+export interface CodeStepOutcome {
+  status: "ok" | "error" | "timeout" | "aborted";
+  text: string;
+  error?: string;
+}
 
 export interface ExecuteStepDeps {
   dispatch: (members: Member[], instruction: string) => Promise<DispatchOutcome>;
+  code?: (member: Member, instruction: string) => Promise<CodeStepOutcome>;
   roster: Member[];
 }
 
 export interface OrchestratorStepResult {
   step: OrchestratorStep;
-  // Present only when a dispatch wave actually ran.
+  // Present only for the arm that actually ran.
   dispatch?: DispatchOutcome;
+  code?: CodeStepOutcome;
 }
 
 export async function executeStep(
   step: OrchestratorStep,
   deps: ExecuteStepDeps,
 ): Promise<OrchestratorStepResult> {
-  if (step.kind !== "execute" || step.mode !== "dispatch") return { step };
+  if (step.kind !== "execute") return { step };
+
+  if (step.mode === "code" && deps.code && step.speaker) {
+    const member = deps.roster.find((m) => m.slug === step.speaker);
+    if (member) {
+      const code = await deps.code(member, step.instruction);
+      return { step, code };
+    }
+  }
+
+  // dispatch arm — also the fallback for a code/workflow step with no code seam.
   const selected = step.speaker ? deps.roster.filter((m) => m.slug === step.speaker) : deps.roster;
   const members = selected.length > 0 ? selected : deps.roster;
   if (members.length === 0) return { step };

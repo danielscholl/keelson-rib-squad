@@ -512,7 +512,7 @@ function makeCoordinateTool(
   return {
     name: "squad_coordinate",
     description:
-      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member (parallel dispatch), tracks progress in a durable ledger, and stops when the goal is met or it gives up. `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) tags the run; `maxRounds` caps the loop. Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a direct code edit (squad_code).",
+      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is either a text dispatch or — when `project` is set and the member is code-capable — a confined coding turn that edits the repo. `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` caps the loop. Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
     inputSchema: coordinateSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -527,7 +527,7 @@ function makeCoordinateTool(
       }
       const { task, members: requested, maxRounds } = parsed.data;
       try {
-        let projectId: string | undefined;
+        let project: { id: string; name: string; rootPath: string } | undefined;
         const selector = asNonEmptyString(parsed.data.project);
         if (selector) {
           if (!projectsSeam) {
@@ -539,7 +539,11 @@ function makeCoordinateTool(
             emitResult(ctx, `squad_coordinate: ${resolved.error}`, true);
             return;
           }
-          projectId = resolved.project.id;
+          project = {
+            id: resolved.project.id,
+            name: resolved.project.name,
+            rootPath: resolved.project.rootPath,
+          };
         }
         const active = (await readMembers(membersDir())).filter((m) => m.status === "active");
         const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
@@ -554,7 +558,7 @@ function makeCoordinateTool(
           dataHome: squadDataHome(),
           roster,
           task,
-          ...(projectId ? { projectId } : {}),
+          ...(project ? { project } : {}),
           ...(maxRounds
             ? {
                 limits: {
@@ -585,11 +589,14 @@ function summarizeCoordinator(result: RunCoordinatorResult): string {
   if (result.ledger.plan.length > 0) {
     lines.push("", "Plan:", ...result.ledger.plan.map((s, i) => `${i + 1}. ${s}`));
   }
-  const steps = result.ledger.transcript.filter((e) => e.kind === "dispatch");
+  const steps = result.ledger.transcript.filter((e) => e.kind === "dispatch" || e.kind === "code");
   if (steps.length > 0) {
     lines.push("", "Steps:");
     for (const e of steps) {
-      lines.push(`- R${e.round} ${e.speaker ?? "team"}: ${e.text.slice(0, COORD_STEP_EXCERPT)}`);
+      const tag = e.kind === "code" ? " [code]" : "";
+      lines.push(
+        `- R${e.round} ${e.speaker ?? "team"}${tag}: ${e.text.slice(0, COORD_STEP_EXCERPT)}`,
+      );
     }
   }
   return lines.join("\n");

@@ -78,6 +78,17 @@ describe("parseCoordinatorDirective", () => {
     expect(d?.progress.isProgressBeingMade).toBe(true); // defaults true
   });
 
+  test("parses the execution mode (only code/dispatch)", () => {
+    expect(
+      parseCoordinatorDirective('{"action":"progress","next_speaker":"atlas","mode":"code"}')
+        ?.progress.mode,
+    ).toBe("code");
+    expect(
+      parseCoordinatorDirective('{"action":"progress","next_speaker":"atlas","mode":"bogus"}')
+        ?.progress.mode,
+    ).toBeUndefined();
+  });
+
   test("returns null without a valid trailing directive", () => {
     expect(parseCoordinatorDirective("just prose, no json")).toBeNull();
     expect(parseCoordinatorDirective('{"action":"progress"} then more text')).toBeNull();
@@ -229,6 +240,63 @@ describe("runCoordinator loop", () => {
     // Started from round 5 (resumed), not 0 — and the earlier finding survived.
     expect(res.rounds).toBe(5);
     expect(res.ledger.facts).toContain("earlier finding");
+  });
+
+  test("routes a code step through the code arm and folds it into the ledger", async () => {
+    const codeRoster: Member[] = [
+      {
+        slug: "atlas",
+        name: "atlas",
+        role: "Engineer",
+        charter: "x",
+        status: "active",
+        tools: ["code", "read"],
+      },
+      {
+        slug: "vera",
+        name: "vera",
+        role: "Reviewer",
+        charter: "x",
+        status: "active",
+        tools: ["read"],
+      },
+    ];
+    const coded: string[] = [];
+    const res = await runCoordinator({
+      ...base(),
+      roster: codeRoster,
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun([
+        'plan\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","mode":"code","instruction":"add a flag"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: fakeDispatch().fn,
+      code: async (member, instruction) => {
+        coded.push(`${member.slug}:${instruction}`);
+        return { status: "ok", text: "edited foo.ts" };
+      },
+    });
+    expect(res.status).toBe("done");
+    expect(coded).toEqual(["atlas:add a flag"]);
+    expect(res.ledger.transcript.some((e) => e.kind === "code")).toBe(true);
+    expect(res.ledger.facts.some((f) => f.includes("edited foo.ts"))).toBe(true);
+  });
+
+  test("folds a single member's reply when the dispatch ran no synthesis", async () => {
+    const dispatch = async (_members: Member[], instruction: string): Promise<DispatchOutcome> => ({
+      task: instruction,
+      perMember: [{ slug: "atlas", name: "atlas", status: "ok", text: "the lone reply" }],
+      notes: [],
+    });
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"do X"}',
+        'done\n{"action":"done","summary":"ok"}',
+      ]),
+      dispatch,
+    });
+    expect(res.ledger.facts.some((f) => f.includes("the lone reply"))).toBe(true);
   });
 
   test("a different task starts fresh rather than resuming", async () => {
