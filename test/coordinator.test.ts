@@ -78,11 +78,15 @@ describe("parseCoordinatorDirective", () => {
     expect(d?.progress.isProgressBeingMade).toBe(true); // defaults true
   });
 
-  test("parses the execution mode (only code/dispatch)", () => {
+  test("parses the execution mode (code/dispatch/workflow only)", () => {
     expect(
       parseCoordinatorDirective('{"action":"progress","next_speaker":"atlas","mode":"code"}')
         ?.progress.mode,
     ).toBe("code");
+    expect(
+      parseCoordinatorDirective('{"action":"progress","next_speaker":"atlas","mode":"workflow"}')
+        ?.progress.mode,
+    ).toBe("workflow");
     expect(
       parseCoordinatorDirective('{"action":"progress","next_speaker":"atlas","mode":"bogus"}')
         ?.progress.mode,
@@ -280,6 +284,31 @@ describe("runCoordinator loop", () => {
     expect(coded).toEqual(["atlas:add a flag"]);
     expect(res.ledger.transcript.some((e) => e.kind === "code")).toBe(true);
     expect(res.ledger.facts.some((f) => f.includes("edited foo.ts"))).toBe(true);
+  });
+
+  test("routes a workflow step through the workflow arm and folds it", async () => {
+    const authored: string[] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'plan\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","mode":"workflow","instruction":"author a lint flow"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: fakeDispatch().fn,
+      workflow: async (member, instruction) => {
+        authored.push(`${member.slug}:${instruction}`);
+        return {
+          status: "ok",
+          text: 'authored workflow "lint" (2 nodes)',
+          name: "lint",
+          nodeCount: 2,
+        };
+      },
+    });
+    expect(res.status).toBe("done");
+    expect(authored).toEqual(["atlas:author a lint flow"]);
+    expect(res.ledger.transcript.some((e) => e.kind === "workflow")).toBe(true);
+    expect(res.ledger.facts.some((f) => f.includes("authored workflow"))).toBe(true);
   });
 
   test("folds a single member's reply when the dispatch ran no synthesis", async () => {

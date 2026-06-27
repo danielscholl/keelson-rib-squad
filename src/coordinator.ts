@@ -11,9 +11,11 @@ import {
   executeStep,
   type OrchestratorLimits,
   type ProgressLedger,
+  type WorkflowStepOutcome,
 } from "./orchestrator.ts";
 import { runConfinedTurn } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
+import { authorWorkflow } from "./workflow-authoring.ts";
 
 // The standing Magentic coordinator (#20 P1). Each round runs ONE coordinator
 // runAgentTurn — the manager reasons over the Task Ledger + roster and ENDS with a
@@ -46,7 +48,7 @@ export interface CoordinatorLedger {
 
 export interface CoordinatorEntry {
   round: number;
-  kind: "coordinator" | "dispatch" | "code" | "replan";
+  kind: "coordinator" | "dispatch" | "code" | "workflow" | "replan";
   speaker?: string;
   instruction?: string;
   text: string;
@@ -115,7 +117,7 @@ export function parseCoordinatorDirective(text: string): ParsedDirective | null 
     ...(asStr(p.instruction ?? p.instructionOrQuestion ?? p.question)
       ? { instructionOrQuestion: asStr(p.instruction ?? p.instructionOrQuestion ?? p.question) }
       : {}),
-    ...(mode === "code" || mode === "dispatch" ? { mode } : {}),
+    ...(mode === "code" || mode === "dispatch" || mode === "workflow" ? { mode } : {}),
   };
   return { progress, facts, plan, ...(summary ? { summary } : {}), head: match.head };
 }
@@ -243,6 +245,8 @@ function coordinatorPrompt(
   const codeNote = canCode
     ? '\n- to have a code-capable member EDIT the project repo for a step, add "mode":"code" (the next_speaker MUST have the "code" tool); omit it (or "mode":"dispatch") for a reasoning/analysis step.'
     : "";
+  const workflowNote =
+    '\n- to author a REUSABLE workflow (a DAG) for recurring/deterministic sub-work, add "mode":"workflow" with an instruction describing what it should do.';
   return `Goal:\n${ledger.task}
 ${replanNote}
 Members you may assign (use the slug as next_speaker):
@@ -259,7 +263,7 @@ ${renderTranscript(ledger.transcript)}
 
 Assess the state, then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to continue: {"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"<member slug>","instruction":"<the single next instruction for that member>","plan":["step","step"],"facts":["any new finding"]}
-- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}
+- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}
 Set "satisfied" true only when the goal is genuinely complete. Pick next_speaker from the members above. Keep the instruction to ONE concrete step.`;
 }
 
@@ -281,6 +285,8 @@ export interface RunCoordinatorOptions {
   dispatch?: (members: Member[], instruction: string) => Promise<DispatchOutcome>;
   // Injected for testability; default binds runCodeTurn when a project is present.
   code?: (member: Member, instruction: string) => Promise<CodeStepOutcome>;
+  // Injected for testability; default binds authorWorkflow (no project needed).
+  workflow?: (member: Member, instruction: string) => Promise<WorkflowStepOutcome>;
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
 }
@@ -351,6 +357,30 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             : { status: "error", text: "", error: r.error };
         }
       : undefined);
+
+  // The workflow-authoring arm: always available (it needs no project — it writes an
+  // artifact under the data home).
+  const workflow =
+    opts.workflow ??
+    (async (member: Member, instruction: string): Promise<WorkflowStepOutcome> => {
+      const r = await authorWorkflow({
+        runAgentTurn: opts.runAgentTurn,
+        membersRoot: opts.membersRoot,
+        dataHome: opts.dataHome,
+        member,
+        task: instruction,
+        ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+      });
+      return r.ok
+        ? {
+            status: "ok",
+            text: `authored workflow "${r.name}" (${r.nodeCount} node${r.nodeCount === 1 ? "" : "s"}) → ${r.path}`,
+            name: r.name,
+            path: r.path,
+            nodeCount: r.nodeCount,
+          }
+        : { status: "error", text: r.error };
+    });
 
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
   let replanRequested = false;
@@ -436,10 +466,11 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       continue;
     }
 
-    // execute: the dispatch or code arm
+    // execute: the dispatch, code, or workflow-authoring arm
     const result = await executeStep(decided.step, {
       dispatch,
       ...(code ? { code } : {}),
+      workflow,
       roster: opts.roster,
     });
     if (result.dispatch) {
@@ -475,6 +506,22 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         transcript: appendEntry(ledger.transcript, {
           round: ledger.round,
           kind: "code",
+          ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
+          instruction: decided.step.instruction,
+          text,
+        }),
+        updatedAt: now(),
+      };
+    } else if (result.workflow) {
+      const text = result.workflow.text;
+      ledger = {
+        ...ledger,
+        facts: foldFacts(ledger.facts, [
+          cap(`[${decided.step.speaker ?? "member"} authored workflow] ${text}`, FACT_CAP),
+        ]),
+        transcript: appendEntry(ledger.transcript, {
+          round: ledger.round,
+          kind: "workflow",
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
           instruction: decided.step.instruction,
           text,
