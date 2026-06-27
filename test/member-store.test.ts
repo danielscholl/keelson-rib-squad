@@ -16,6 +16,7 @@ import {
   readMembers,
   retireMember,
   scaffoldMember,
+  scaffoldRoster,
   setMemberModel,
   writeMemory,
 } from "../src/member-store.ts";
@@ -311,5 +312,49 @@ describe("appendLog", () => {
   test("fails closed on a missing member and an unsafe slug", async () => {
     await expect(appendLog(root, "ghost", "x", "t")).rejects.toThrow(/not found/);
     await expect(appendLog(root, "../escape", "x", "t")).rejects.toThrow();
+  });
+});
+
+describe("scaffoldRoster (batch)", () => {
+  const rec = (slug: string, over: Partial<MemberRecord> = {}): MemberRecord => ({
+    slug,
+    name: slug,
+    role: "Engineer",
+    charter: `# ${slug}`,
+    status: "active",
+    createdAt: "2026-06-27T00:00:00.000Z",
+    ...over,
+  });
+
+  test("scaffolds every member and persists capability tags", async () => {
+    const result = await scaffoldRoster(root, [
+      rec("atlas", { tools: ["code", "read"] }),
+      rec("vera"),
+    ]);
+    expect(result.created.sort()).toEqual(["atlas", "vera"]);
+    expect(result.skipped).toEqual([]);
+    expect((await readMember(root, "atlas"))?.tools).toEqual(["code", "read"]);
+    // No tags -> a text-only member (tools omitted).
+    expect((await readMember(root, "vera"))?.tools).toBeUndefined();
+  });
+
+  test("is collision-safe — an existing member is skipped, never clobbered", async () => {
+    await scaffoldMember(root, rec("atlas", { charter: "# Atlas (authored)" }));
+    const result = await scaffoldRoster(root, [
+      rec("atlas", { charter: "# Atlas (cast)" }),
+      rec("vera"),
+    ]);
+    expect(result.created).toEqual(["vera"]);
+    expect(result.skipped).toEqual(["atlas"]);
+    // The authored charter stands.
+    expect(await readMemberDoc(root, "atlas", "charter.md")).toContain("authored");
+  });
+
+  test("caps the batch at maxMembers and reports the truncation count", async () => {
+    const records = ["a", "b", "c", "d"].map((s) => rec(s));
+    const result = await scaffoldRoster(root, records, { maxMembers: 2 });
+    expect(result.created).toEqual(["a", "b"]);
+    expect(result.truncated).toBe(2);
+    expect(await readMember(root, "c")).toBeUndefined();
   });
 });

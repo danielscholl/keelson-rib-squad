@@ -47,6 +47,47 @@ export async function scaffoldMember(membersRoot: string, record: MemberRecord):
   );
 }
 
+// Defense-in-depth cap on a batch scaffold (the cast proposal is already capped at
+// propose time; this guards a hand-edited cast-proposal.json). Truncation is
+// surfaced in the result, never silent.
+export const MAX_BATCH_SCAFFOLD = 12;
+
+export interface ScaffoldRosterResult {
+  created: string[];
+  // Slugs skipped because a member already exists — collision-safe by design: a
+  // batch never clobbers an authored member (charter, memory, log).
+  skipped: string[];
+  // Members dropped by the cap.
+  truncated: number;
+}
+
+// Scaffold a whole roster from pre-built records in one pass. Collision-safe: an
+// existing slug is skipped (the authored member stands), so re-casting over a
+// populated roster only adds. Member-capped, with truncation surfaced. Real I/O
+// errors propagate (only a collision is a skip) so a half-written batch can't pass
+// as success. Two records that slugify to the same slug collide in-batch — the
+// first wins, the rest skip.
+export async function scaffoldRoster(
+  membersRoot: string,
+  records: readonly MemberRecord[],
+  opts: { maxMembers?: number } = {},
+): Promise<ScaffoldRosterResult> {
+  const max = Math.max(1, opts.maxMembers ?? MAX_BATCH_SCAFFOLD);
+  const capped = records.slice(0, max);
+  const created: string[] = [];
+  const skipped: string[] = [];
+  for (const rec of capped) {
+    assertSafeSlug(rec.slug);
+    if (await exists(join(membersRoot, rec.slug))) {
+      skipped.push(rec.slug);
+      continue;
+    }
+    await scaffoldMember(membersRoot, rec);
+    created.push(rec.slug);
+  }
+  return { created, skipped, truncated: records.length - capped.length };
+}
+
 // Read every member's record back, newest first, KEEPING the server-stamped
 // createdAt the chat-facing readMembers drops. Degrades per entry: a directory
 // without a parseable member.json is skipped, not fatal, so one corrupt member
