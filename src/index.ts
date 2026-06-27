@@ -22,6 +22,7 @@ import {
 } from "./casting/registry.ts";
 import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
+import { type RunCoordinatorResult, runCoordinator } from "./coordinator.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import { CAST_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
 import {
@@ -34,6 +35,7 @@ import {
   setMemberModel,
   writeMemory,
 } from "./member-store.ts";
+import { DEFAULT_LIMITS } from "./orchestrator.ts";
 import { isSquadDataHomeWritable, membersDir, setSquadDataHome, squadDataHome } from "./paths.ts";
 import { squadPolicies } from "./policies.ts";
 import { GENESIS_STARTERS } from "./starters.ts";
@@ -491,6 +493,108 @@ function summarizeCode(member: Member, projectName: string, outcome: TurnOutcome
   return `${head}\n\n${body}`;
 }
 
+// The standing Magentic coordinator as a tool: run the plan→delegate→observe→re-plan
+// loop on a task. Each round is one coordinator turn that picks the next step and
+// dispatches it to the best-suited member; the durable ledger lets a restart resume.
+// Fails closed without the agent-turn seam, on an unknown project selector, or with no
+// active members to coordinate.
+const coordinateSchema = z.object({
+  task: z.string().min(1),
+  project: z.string().optional(),
+  members: z.array(z.string()).optional(),
+  maxRounds: z.number().int().positive().optional(),
+});
+
+function makeCoordinateTool(
+  turnSeam: RibContext["runAgentTurn"],
+  projectsSeam: RibContext["getProjects"],
+): ToolDefinition {
+  return {
+    name: "squad_coordinate",
+    description:
+      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member (parallel dispatch), tracks progress in a durable ledger, and stops when the goal is met or it gives up. `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) tags the run; `maxRounds` caps the loop. Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a direct code edit (squad_code).",
+    inputSchema: coordinateSchema,
+    state_changing: true,
+    async execute(input, ctx) {
+      const parsed = coordinateSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_coordinate: ${parsed.error.message}`, true);
+        return;
+      }
+      if (!turnSeam) {
+        emitResult(ctx, "squad_coordinate: agent-turn seam unavailable on this harness", true);
+        return;
+      }
+      const { task, members: requested, maxRounds } = parsed.data;
+      try {
+        let projectId: string | undefined;
+        const selector = asNonEmptyString(parsed.data.project);
+        if (selector) {
+          if (!projectsSeam) {
+            emitResult(ctx, "squad_coordinate: projects seam unavailable on this harness", true);
+            return;
+          }
+          const resolved = resolveProject(projectsSeam(), selector);
+          if (!resolved.ok) {
+            emitResult(ctx, `squad_coordinate: ${resolved.error}`, true);
+            return;
+          }
+          projectId = resolved.project.id;
+        }
+        const active = (await readMembers(membersDir())).filter((m) => m.status === "active");
+        const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
+        const roster = wanted ? active.filter((m) => wanted.has(m.slug)) : active;
+        if (roster.length === 0) {
+          emitResult(ctx, "squad_coordinate: no matching active members to coordinate", true);
+          return;
+        }
+        const result = await runCoordinator({
+          runAgentTurn: turnSeam,
+          membersRoot: membersDir(),
+          dataHome: squadDataHome(),
+          roster,
+          task,
+          ...(projectId ? { projectId } : {}),
+          ...(maxRounds
+            ? {
+                limits: {
+                  maxRounds,
+                  maxStall: DEFAULT_LIMITS.maxStall,
+                  maxResets: DEFAULT_LIMITS.maxResets,
+                },
+              }
+            : {}),
+        });
+        emitResult(ctx, summarizeCoordinator(result), result.status === "error");
+      } catch (e) {
+        emitResult(ctx, `squad_coordinate failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+const COORD_STEP_EXCERPT = 400;
+
+function summarizeCoordinator(result: RunCoordinatorResult): string {
+  const lines: string[] = [
+    `Coordinator — ${result.status} after ${result.rounds} round(s)`,
+    "",
+    "Summary:",
+    result.summary,
+  ];
+  if (result.ledger.plan.length > 0) {
+    lines.push("", "Plan:", ...result.ledger.plan.map((s, i) => `${i + 1}. ${s}`));
+  }
+  const steps = result.ledger.transcript.filter((e) => e.kind === "dispatch");
+  if (steps.length > 0) {
+    lines.push("", "Steps:");
+    for (const e of steps) {
+      lines.push(`- R${e.round} ${e.speaker ?? "team"}: ${e.text.slice(0, COORD_STEP_EXCERPT)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 const rib: Rib = {
   id: "squad",
   displayName: "Squad",
@@ -713,6 +817,7 @@ const rib: Rib = {
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
+      makeCoordinateTool(ctx.runAgentTurn, ctx.getProjects),
     ];
   },
 
