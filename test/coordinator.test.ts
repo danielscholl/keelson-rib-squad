@@ -103,6 +103,14 @@ describe("parseCoordinatorDirective", () => {
     ).toBeUndefined();
   });
 
+  test("parses a team-gap recommendation (needs), defaulting to [] when absent", () => {
+    const d = parseCoordinatorDirective(
+      '{"action":"progress","next_speaker":"atlas","instruction":"x","needs":["a security reviewer","a frontend specialist"]}',
+    );
+    expect(d?.needs).toEqual(["a security reviewer", "a frontend specialist"]);
+    expect(parseCoordinatorDirective('{"action":"done","summary":"ok"}')?.needs).toEqual([]);
+  });
+
   test("returns null without a valid trailing directive", () => {
     expect(parseCoordinatorDirective("just prose, no json")).toBeNull();
     expect(parseCoordinatorDirective('{"action":"progress"} then more text')).toBeNull();
@@ -556,6 +564,23 @@ describe("runCoordinator loop", () => {
     expect(reflected[0]?.contribution).toContain("did the work");
     // The reflection is recorded on the run's transcript.
     expect(res.ledger.transcript.some((e) => e.text.includes("reflected on the run"))).toBe(true);
+  });
+
+  test("surfaces the team gaps the manager flags, accumulated across rounds, without mutating the roster", async () => {
+    const d = fakeDispatch();
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"do X","needs":["a security reviewer"]}',
+        'done\n{"action":"done","summary":"shipped","needs":["a perf specialist"]}',
+      ]),
+      dispatch: d.fn,
+    });
+    expect(res.status).toBe("done");
+    // Both rounds' recommendations accumulate (deduped); the roster (atlas, vera) is untouched —
+    // the squad recommends a cast, it does not autonomously mutate its team.
+    expect(res.ledger.teamGaps).toEqual(["a security reviewer", "a perf specialist"]);
+    expect(res.ledger.transcript.some((e) => e.kind === "dispatch")).toBe(true);
   });
 
   test("does not fire per-member reflection when no member participated", async () => {

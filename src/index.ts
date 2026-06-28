@@ -609,6 +609,13 @@ function summarizeCoordinator(result: RunCoordinatorResult): string {
   if (result.ledger.plan.length > 0) {
     lines.push("", "Plan:", ...result.ledger.plan.map((s, i) => `${i + 1}. ${s}`));
   }
+  if (result.ledger.teamGaps && result.ledger.teamGaps.length > 0) {
+    lines.push(
+      "",
+      "Team gaps (consider casting a specialist):",
+      ...result.ledger.teamGaps.map((g) => `- ${g}`),
+    );
+  }
   const steps = result.ledger.transcript.filter(
     (e) => e.kind === "dispatch" || e.kind === "code" || e.kind === "workflow",
   );

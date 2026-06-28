@@ -68,6 +68,16 @@ export function buildCoordinatorBoard(ledger: CoordinatorLedger | undefined): Ca
       })),
     });
   }
+  if (ledger.teamGaps && ledger.teamGaps.length > 0) {
+    sections.push({
+      kind: "rows",
+      title: "Team gaps — consider casting",
+      items: ledger.teamGaps.map((gap) => ({
+        glyph: "caution" as CanvasTone,
+        text: truncate(gap, STEP_CAP),
+      })),
+    });
+  }
   const activity = activitySection(ledger.transcript);
   if (activity) sections.push(activity);
 
