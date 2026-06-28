@@ -215,6 +215,68 @@ async function reflectMembers(
   });
 }
 
+// One participating member paired with everything it contributed across a completed run —
+// the substance a loop-close reflection curates its memory from.
+export interface MemberContribution {
+  member: Member;
+  contribution: string;
+}
+
+export interface ReflectAtCloseOptions {
+  runAgentTurn: NonNullable<RibContext["runAgentTurn"]>;
+  membersRoot: string;
+  task: string;
+  contributions: readonly MemberContribution[];
+  concurrency?: number;
+  perTurnTimeoutMs?: number;
+  abortSignal?: AbortSignal;
+}
+
+// Loop-close reflection: each member that did substantive work in a COMPLETED run curates
+// its own memory.md ONCE, over its whole contribution — the issue #2 boundary-gated cadence,
+// distinct from dispatch's per-wave `reflect` (which would multiply paid turns every round).
+// Members are distinct so the (paid) turns run in a bounded pool; fail-closed per member (an
+// aborted/errored/empty/over-cap reflection leaves the prior memory). Returns the slugs whose
+// memory was updated.
+export async function reflectMembersAtClose(opts: ReflectAtCloseOptions): Promise<string[]> {
+  if (opts.abortSignal?.aborted) return [];
+  const reflectors = opts.contributions.filter((c) => c.contribution.trim().length > 0);
+  if (reflectors.length === 0) return [];
+  const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY);
+  const perTurnTimeoutMs = opts.perTurnTimeoutMs ?? DEFAULT_PER_TURN_TIMEOUT_MS;
+  const updated: string[] = [];
+  await runPool(reflectors, concurrency, async ({ member, contribution }) => {
+    if (opts.abortSignal?.aborted) return;
+    const prior = (await readMemberDoc(opts.membersRoot, member.slug, "memory.md")) ?? "";
+    const system = await composeMemberSystemPrompt(opts.membersRoot, member);
+    const outcome = await executeTurn(
+      opts.runAgentTurn,
+      {
+        system,
+        prompt: buildReflectionPrompt(member, opts.task, contribution, prior),
+        allowedTools: [],
+        ...(member.model ? { model: member.model } : {}),
+        ...(member.model && member.provider ? { provider: member.provider } : {}),
+      },
+      perTurnTimeoutMs,
+      opts.abortSignal,
+    );
+    if (outcome.status !== "ok") return;
+    const next = outcome.text.trim();
+    if (next.length === 0) return;
+    // A shutdown landing during the (paid) turn drops the late write, so a disposing run
+    // can't resurrect memory (mirrors the per-wave reflect gate).
+    if (opts.abortSignal?.aborted) return;
+    try {
+      await writeMemory(opts.membersRoot, member.slug, next);
+      updated.push(member.slug);
+    } catch {
+      // Over-cap / unsafe / missing — fail closed: the prior memory stands.
+    }
+  });
+  return updated;
+}
+
 // The reflection doctrine, mirrored from chamber: curate (don't summarize), a high
 // bar for what persists, decontextualize, and CONSOLIDATE the whole document so
 // pruning is in-band rather than a blind append. The reply is the COMPLETE new

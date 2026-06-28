@@ -501,6 +501,47 @@ describe("runCoordinator loop", () => {
     expect(calls).toBe(0); // neither recall nor writeback fire without a project scope
   });
 
+  test("reflects each participating member once when the run completes", async () => {
+    const reflected: { slug: string; contribution: string }[] = [];
+    const d = fakeDispatch("did the work");
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: d.fn,
+      reflectAtClose: async (contributions) => {
+        for (const c of contributions) {
+          reflected.push({ slug: c.member.slug, contribution: c.contribution });
+        }
+        return contributions.map((c) => c.member.slug);
+      },
+    });
+    expect(res.status).toBe("done");
+    // atlas did the round-0 dispatch, so it reflects once at loop close over its own work; vera
+    // never acted, so it does not reflect.
+    expect(reflected.map((r) => r.slug)).toEqual(["atlas"]);
+    expect(reflected[0]?.contribution).toContain("did the work");
+    // The reflection is recorded on the run's transcript.
+    expect(res.ledger.transcript.some((e) => e.text.includes("reflected on the run"))).toBe(true);
+  });
+
+  test("does not fire per-member reflection when no member participated", async () => {
+    let called = false;
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"nothing to do"}']),
+      dispatch: fakeDispatch().fn,
+      reflectAtClose: async () => {
+        called = true;
+        return [];
+      },
+    });
+    expect(res.status).toBe("done");
+    expect(called).toBe(false); // a straight done with no dispatched work spends no reflection turns
+  });
+
   test("an unparseable coordinator reply counts as a stall (fallback)", async () => {
     const d = fakeDispatch();
     const res = await runCoordinator({

@@ -3,7 +3,12 @@ import { join } from "node:path";
 import type { MemoryTools, RibContext } from "@keelson/shared";
 import { runCodeTurn } from "./code.ts";
 import { parseTrailingDirective } from "./control-json.ts";
-import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
+import {
+  type DispatchOutcome,
+  dispatchFanout,
+  type MemberContribution,
+  reflectMembersAtClose,
+} from "./dispatch.ts";
 import { recallGrounding, reflectOutcome } from "./memory.ts";
 import {
   type CodeStepOutcome,
@@ -329,6 +334,9 @@ export interface RunCoordinatorOptions {
   // the outcome BACK as a governed decision on completion (#15 capstone). Optional and
   // fail-soft — absent (or no project) degrades to no memory, the pre-capstone behavior.
   getMemory?: () => MemoryTools;
+  // Injected for testability; default binds reflectMembersAtClose to the live seams. Each
+  // member that did substantive work in a completed run curates its own memory.md ONCE.
+  reflectAtClose?: (contributions: readonly MemberContribution[]) => Promise<readonly string[]>;
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
 }
@@ -397,6 +405,26 @@ function mergeFailed(prev: readonly string[], added: readonly string[]): string[
     }
   }
   return merged.slice(-MAX_FAILED);
+}
+
+// Pair each member with everything it DID across the run (its dispatch/code outputs), so the
+// loop-close reflection curates memory from real contribution. Workflow-authoring is excluded
+// — minting a reusable DAG isn't the member learning a durable project fact about its own work.
+function collectContributions(
+  transcript: readonly CoordinatorEntry[],
+  roster: readonly Member[],
+): MemberContribution[] {
+  const byMember = new Map<string, string[]>();
+  for (const e of transcript) {
+    if ((e.kind === "dispatch" || e.kind === "code") && e.speaker) {
+      const prior = byMember.get(e.speaker) ?? [];
+      prior.push(e.text);
+      byMember.set(e.speaker, prior);
+    }
+  }
+  return roster
+    .filter((m) => byMember.has(m.slug))
+    .map((m) => ({ member: m, contribution: (byMember.get(m.slug) ?? []).join("\n\n") }));
 }
 
 export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCoordinatorResult> {
@@ -490,6 +518,19 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       };
     });
 
+  // Loop-close per-member reflection: each participant curates its own memory once when the
+  // run completes (issue #2's boundary cadence). Default binds the live seam; fail-soft.
+  const reflectAtClose =
+    opts.reflectAtClose ??
+    ((contributions: readonly MemberContribution[]) =>
+      reflectMembersAtClose({
+        runAgentTurn: opts.runAgentTurn,
+        membersRoot: opts.membersRoot,
+        task: opts.task,
+        contributions,
+        ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+      }));
+
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
   let replanRequested = false;
   let status: RunCoordinatorResult["status"] = "max-rounds";
@@ -579,6 +620,25 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             }),
             updatedAt: now(),
           };
+        }
+        // Per-member reflection at the loop-close boundary: each member that did substantive
+        // work grows its OWN memory.md once over its whole contribution — the per-agent half of
+        // the capstone's "grow memory" arc (the shared half is reflectOutcome above). Bounded to
+        // one paid turn per participant per run; skipped on abort; fail-soft.
+        const contributions = collectContributions(ledger.transcript, opts.roster);
+        if (contributions.length > 0 && !opts.abortSignal?.aborted) {
+          const reflected = await reflectAtClose(contributions);
+          if (reflected.length > 0) {
+            ledger = {
+              ...ledger,
+              transcript: appendEntry(ledger.transcript, {
+                round: ledger.round,
+                kind: "coordinator",
+                text: `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`,
+              }),
+              updatedAt: now(),
+            };
+          }
         }
       }
       await saveLedger(opts.dataHome, ledger);
