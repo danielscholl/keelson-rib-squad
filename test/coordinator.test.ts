@@ -249,6 +249,27 @@ describe("runCoordinator loop", () => {
     expect(failedIdx).toBeLessThan(replanIdx);
   });
 
+  test("a re-plan rebuilds the Task Ledger: clears the abandoned plan, keeps verified facts", async () => {
+    const d = fakeDispatch("a finding");
+    const res = await runCoordinator({
+      ...base(),
+      // Round 0 sets a plan and executes; later rounds stall without restating it, so the
+      // re-plan must be what tears the stale plan down (nothing else clears it afterward).
+      runAgentTurn: queuedRun([
+        'plan\n{"action":"progress","satisfied":false,"in_loop":true,"progress":false,"next_speaker":"atlas","instruction":"do X","plan":["old A","old B"]}',
+        'stuck\n{"action":"progress","satisfied":false,"in_loop":true,"progress":false,"next_speaker":"atlas","instruction":"do X"}',
+      ]),
+      dispatch: d.fn,
+      limits: { maxRounds: 10, maxStall: 2, maxResets: 1 },
+    });
+    expect(res.status).toBe("gave-up");
+    // The abandoned plan was rebuilt from scratch — not left anchoring the manager's prompt.
+    expect(res.ledger.plan).toEqual([]);
+    // Verified findings survive the rebuild; only the plan is torn down.
+    expect(res.ledger.facts.some((f) => f.includes("a finding"))).toBe(true);
+    expect(res.ledger.failedSteps).toContain("atlas: do X");
+  });
+
   test("the hard round ceiling stops a never-satisfied loop", async () => {
     const d = fakeDispatch();
     const res = await runCoordinator({
