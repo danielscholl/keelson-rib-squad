@@ -45,6 +45,9 @@ export interface CoordinatorLedger {
   // own ceiling and returning a stale summary having run zero turns.
   status: "active" | "done" | "gave-up" | "max-rounds";
   transcript: CoordinatorEntry[];
+  // Steps attempted on a now-abandoned plan, swept on a re-plan so the rebuild is told not
+  // to resume them; cleared once a non-stalled round shows the new plan is working again.
+  failedSteps?: string[];
   summary?: string;
   createdAt: string;
   updatedAt: string;
@@ -52,7 +55,7 @@ export interface CoordinatorLedger {
 
 export interface CoordinatorEntry {
   round: number;
-  kind: "coordinator" | "dispatch" | "code" | "workflow" | "replan";
+  kind: "coordinator" | "dispatch" | "code" | "workflow" | "replan" | "failed";
   speaker?: string;
   instruction?: string;
   text: string;
@@ -66,6 +69,8 @@ const FACT_CAP = 600; // per-fact char cap so one long synthesis can't bloat the
 const MAX_FACTS = 60; // ledger keeps the most recent facts
 const MAX_TRANSCRIPT = 40; // bounded so the prompt + file stay sane
 const ENTRY_CAP = 1500; // per-transcript-entry char cap
+const MAX_FAILED = 20; // bounded list of recently-abandoned steps surfaced on a re-plan
+const STEP_DESC_CAP = 200; // per-swept-step char cap so the re-plan prompt stays compact
 const LEDGER_FILE = "coordinator-ledger.json";
 
 interface ParsedDirective {
@@ -259,8 +264,14 @@ function coordinatorPrompt(
   const factsBlock = ledger.facts.length
     ? ledger.facts.map((f) => `- ${f}`).join("\n")
     : "(none yet)";
+  const failedBlock =
+    replan && ledger.failedSteps?.length
+      ? `\nAlready attempted and abandoned on the prior plan — do NOT resume these:\n${ledger.failedSteps
+          .map((s) => `- ${s}`)
+          .join("\n")}`
+      : "";
   const replanNote = replan
-    ? "\nPROGRESS HAS STALLED. Rebuild the plan from scratch — a different approach, or a different member. Do not repeat the step that stalled.\n"
+    ? `\nPROGRESS HAS STALLED. Rebuild the plan from scratch — a different approach, or a different member. Do not repeat the step that stalled.${failedBlock}\n`
     : "";
   // The code arm is only offered when a project is bound (the turn is confined to it);
   // a code-tagged member then EDITS the repo instead of just reasoning.
@@ -352,6 +363,40 @@ function appendEntry(
   entry: CoordinatorEntry,
 ): CoordinatorEntry[] {
   return [...transcript, { ...entry, text: cap(entry.text, ENTRY_CAP) }].slice(-MAX_TRANSCRIPT);
+}
+
+// The execute steps (dispatch/code/workflow) attempted since the last re-plan boundary —
+// the in-flight work a rebuild is about to abandon. Pure, like decideOrchestratorStep, so
+// the driver can sweep it into a durable "do not resume these" record before re-planning
+// instead of trusting the manager to remember a prose hint. Newest-plan-first scan stops at
+// the prior re-plan (those steps were already swept); returns "speaker: instruction"
+// descriptors in chronological order.
+export function failStuckTasks(transcript: readonly CoordinatorEntry[]): string[] {
+  const swept: string[] = [];
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const e = transcript[i];
+    if (!e) continue;
+    if (e.kind === "replan") break;
+    if (e.kind === "dispatch" || e.kind === "code" || e.kind === "workflow") {
+      const desc = (e.instruction?.trim() || e.text.trim()).slice(0, STEP_DESC_CAP);
+      swept.push(e.speaker ? `${e.speaker}: ${desc}` : desc);
+    }
+  }
+  return swept.reverse();
+}
+
+// Accumulate swept steps onto the prior record (deduped, capped) so a multi-re-plan stall
+// episode surfaces every abandoned step, not just the latest window's.
+function mergeFailed(prev: readonly string[], added: readonly string[]): string[] {
+  const seen = new Set(prev);
+  const merged = [...prev];
+  for (const a of added) {
+    if (!seen.has(a)) {
+      seen.add(a);
+      merged.push(a);
+    }
+  }
+  return merged.slice(-MAX_FAILED);
 }
 
 export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCoordinatorResult> {
@@ -542,14 +587,31 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
 
     if (decided.step.kind === "replan") {
       replanRequested = true;
+      // Sweep the steps attempted on the now-abandoned plan into a durable record BEFORE the
+      // rebuild, so the next prompt can name them ("do not resume these") and the abandonment
+      // is observable in the transcript — not just a prose hint the manager may ignore.
+      const swept = failStuckTasks(ledger.transcript);
+      const failedSteps = swept.length
+        ? mergeFailed(ledger.failedSteps ?? [], swept)
+        : ledger.failedSteps;
+      let transcript = ledger.transcript;
+      if (swept.length) {
+        transcript = appendEntry(transcript, {
+          round: ledger.round,
+          kind: "failed",
+          text: `swept ${swept.length} stalled step${swept.length === 1 ? "" : "s"} to failed before rebuild`,
+        });
+      }
+      transcript = appendEntry(transcript, {
+        round: ledger.round,
+        kind: "replan",
+        text: decided.step.reason,
+      });
       ledger = {
         ...ledger,
         round: ledger.round + 1,
-        transcript: appendEntry(ledger.transcript, {
-          round: ledger.round,
-          kind: "replan",
-          text: decided.step.reason,
-        }),
+        ...(failedSteps?.length ? { failedSteps } : {}),
+        transcript,
         updatedAt: now(),
       };
       await saveLedger(opts.dataHome, ledger);
@@ -627,6 +689,12 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         }),
         updatedAt: now(),
       };
+    }
+    // A non-stalled execute round means the (possibly rebuilt) plan is working again, so a
+    // resolved episode's swept steps are no longer the thing to avoid — drop them before a
+    // later, unrelated stall surfaces a stale "do not resume" list.
+    if (decided.state.stallCount === 0 && ledger.failedSteps?.length) {
+      ledger = { ...ledger, failedSteps: [] };
     }
     ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
     await saveLedger(opts.dataHome, ledger);
