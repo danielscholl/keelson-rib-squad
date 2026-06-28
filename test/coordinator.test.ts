@@ -469,6 +469,37 @@ describe("runCoordinator loop", () => {
     expect(memberPrompt).toContain("Your task:");
   });
 
+  test("a project-bound run gives the dispatched member repo READ tools confined to the root", async () => {
+    // The live gap: a member dispatched to verify/review couldn't read the repo (dispatch was
+    // text-only). With a project bound, the dispatched turn now carries the read rail + cwd.
+    const reqs: { cwd?: string; allowedTools?: readonly string[]; prompt: string }[] = [];
+    const replies = [
+      'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"review the file"}',
+      'done\n{"action":"done","summary":"reviewed"}',
+    ];
+    const run: NonNullable<RibContext["runAgentTurn"]> = (req) => {
+      const p = req.prompt ?? "";
+      if (!p.includes("Goal:")) {
+        reqs.push({ cwd: req.cwd, allowedTools: req.allowedTools, prompt: p });
+      }
+      const text = p.includes("Goal:")
+        ? (replies.shift() ?? 'done\n{"action":"done","summary":"ok"}')
+        : "I read greet.py — looks correct.";
+      return { stream: oneShot(), result: Promise.resolve({ status: "ok" as const, text }) };
+    };
+    const res = await runCoordinator({
+      ...base(), // DEFAULT dispatch, so the real dispatchFanout runs with the project
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: run,
+    });
+    expect(res.status).toBe("done");
+    // The dispatched member turn (the one confined to the project) carries the read rail.
+    const dispatched = reqs.find((r) => r.cwd === "/repo");
+    expect(dispatched).toBeDefined();
+    expect(dispatched?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    expect(dispatched?.prompt).toContain("Read, Glob, and Grep");
+  });
+
   test("skips the memory loop when no project is bound (memory is project-scoped)", async () => {
     let calls = 0;
     const memory: MemoryTools = {
