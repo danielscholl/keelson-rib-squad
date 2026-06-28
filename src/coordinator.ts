@@ -15,7 +15,7 @@ import {
 } from "./orchestrator.ts";
 import { runConfinedTurn } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
-import { authorWorkflow } from "./workflow-authoring.ts";
+import { authorWorkflow, screenWorkflowForRun } from "./workflow-authoring.ts";
 
 // The standing Magentic coordinator (#20 P1). Each round runs ONE coordinator
 // runAgentTurn — the manager reasons over the Task Ledger + roster and ENDS with a
@@ -39,7 +39,10 @@ export interface CoordinatorLedger {
   round: number;
   stallCount: number;
   resetCount: number;
-  status: "active" | "done" | "gave-up";
+  // "active" resumes on a same-task re-run; the terminal states (done / gave-up /
+  // max-rounds) do not, so a finished task starts fresh rather than re-tripping its
+  // own ceiling and returning a stale summary having run zero turns.
+  status: "active" | "done" | "gave-up" | "max-rounds";
   transcript: CoordinatorEntry[];
   summary?: string;
   createdAt: string;
@@ -142,7 +145,9 @@ function ledgerPath(dataHome: string): string {
 
 export async function saveLedger(dataHome: string, ledger: CoordinatorLedger): Promise<void> {
   await mkdir(dataHome, { recursive: true });
-  const tmp = `${ledgerPath(dataHome)}.tmp`;
+  // A pid-unique temp keeps two writers (e.g. overlapping coordinate calls) from
+  // interleaving into one `.tmp` and renaming a torn file into place.
+  const tmp = `${ledgerPath(dataHome)}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(ledger, null, 2)}\n`);
   await rename(tmp, ledgerPath(dataHome));
 }
@@ -194,7 +199,17 @@ async function loadOrInit(
   at: string,
 ): Promise<CoordinatorLedger> {
   const existing = await loadLedger(dataHome);
-  if (existing && existing.task === task && existing.status === "active") return existing;
+  if (
+    existing &&
+    existing.task === task &&
+    existing.status === "active" &&
+    // Resume only within the SAME project — a generic task ("fix the failing tests")
+    // run against repo A then repo B must not resume A's facts/plan while the code arm
+    // confines edits to B.
+    (existing.projectId ?? undefined) === (projectId ?? undefined)
+  ) {
+    return existing;
+  }
   return freshLedger(task, projectId, at);
 }
 
@@ -287,6 +302,10 @@ export interface RunCoordinatorOptions {
   code?: (member: Member, instruction: string) => Promise<CodeStepOutcome>;
   // Injected for testability; default binds authorWorkflow (no project needed).
   workflow?: (member: Member, instruction: string) => Promise<WorkflowStepOutcome>;
+  // The host seam that runs an authored workflow DAG. When present (and a project is
+  // bound + the safety screen passes), the workflow arm author-AND-runs; absent leaves
+  // it author-only. Optional so an older harness / a test rig degrades cleanly.
+  runWorkflow?: RibContext["runWorkflow"];
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
 }
@@ -360,6 +379,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
 
   // The workflow-authoring arm: always available (it needs no project — it writes an
   // artifact under the data home).
+  const runWorkflowSeam = opts.runWorkflow;
   const workflow =
     opts.workflow ??
     (async (member: Member, instruction: string): Promise<WorkflowStepOutcome> => {
@@ -371,15 +391,29 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         task: instruction,
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       });
-      return r.ok
-        ? {
-            status: "ok",
-            text: `authored workflow "${r.name}" (${r.nodeCount} node${r.nodeCount === 1 ? "" : "s"}) → ${r.path}`,
-            name: r.name,
-            path: r.path,
-            nodeCount: r.nodeCount,
-          }
-        : { status: "error", text: r.error };
+      if (!r.ok) return { status: "error", text: r.error };
+      const base = { name: r.name, path: r.path, nodeCount: r.nodeCount };
+      const authored = `authored workflow "${r.name}" (${r.nodeCount} node${r.nodeCount === 1 ? "" : "s"}) → ${r.path}`;
+      // Run it ourselves only when confined to a project, the host seam is present, and
+      // the safety screen passes; otherwise it stays a durable artifact for the operator.
+      if (!project || !runWorkflowSeam) {
+        const why = !project ? "no project bound" : "run seam unavailable";
+        return { status: "ok", text: `${authored} (not run: ${why})`, ...base };
+      }
+      const screen = screenWorkflowForRun(r.def);
+      if (!screen.ok) {
+        return { status: "ok", text: `${authored} (not run: ${screen.reason})`, ...base };
+      }
+      const run = await runWorkflowSeam(r.def, {}, { cwd: project.rootPath });
+      const failed = Object.entries(run.nodes)
+        .filter(([, n]) => n.state === "failed")
+        .map(([id]) => id);
+      const detail = failed.length > 0 ? ` failed: ${failed.join(", ")}` : "";
+      return {
+        status: run.status === "succeeded" ? "ok" : "error",
+        text: `${authored}; RAN → ${run.status}.${detail}${run.error ? ` ${run.error}` : ""}`,
+        ...base,
+      };
     });
 
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
@@ -393,6 +427,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     }
     if (ledger.round >= limits.maxRounds) {
       status = "max-rounds";
+      // Persist a TERMINAL status so a same-task re-run starts fresh instead of
+      // resuming this ceiling-hit ledger and short-circuiting straight back here.
+      ledger = { ...ledger, status: "max-rounds", updatedAt: now() };
+      await saveLedger(opts.dataHome, ledger);
       break;
     }
 
@@ -474,11 +512,20 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       roster: opts.roster,
     });
     if (result.dispatch) {
-      // Fall back to the single member's reply when no synthesis ran (1-member step).
+      const d = result.dispatch;
+      const oks = d.perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0);
+      // Prefer the synthesis; when it is absent/failed, attribute EVERY member's reply
+      // rather than keeping only the first (a failed multi-member synthesis must not
+      // silently discard members #2..N).
       const synth =
-        result.dispatch.synthesis?.trim() ||
-        result.dispatch.perMember.find((r) => r.status === "ok")?.text?.trim() ||
+        d.synthesis?.trim() ||
+        (oks.length > 1
+          ? oks.map((r) => `[${r.name}] ${r.text.trim()}`).join("\n\n")
+          : oks[0]?.text.trim()) ||
         "(no synthesis)";
+      // Surface dispatch notes (cost-cap truncation, synthesis skip/failure) so they
+      // reach the next round's prompt instead of being silently dropped.
+      const noteSuffix = d.notes.length > 0 ? `\n(notes: ${d.notes.join("; ")})` : "";
       ledger = {
         ...ledger,
         facts: foldFacts(ledger.facts, [
@@ -489,7 +536,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           kind: "dispatch",
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
           instruction: decided.step.instruction,
-          text: synth,
+          text: synth + noteSuffix,
         }),
         updatedAt: now(),
       };

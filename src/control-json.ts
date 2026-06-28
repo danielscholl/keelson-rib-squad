@@ -6,18 +6,24 @@
 // missing / non-trailing JSON returns null so the caller falls back deterministically;
 // `head` is the visible prose with the directive removed.
 
+// A control directive is TRAILING by contract, so only the tail can hold it. Cap the
+// scanned window so a brace-heavy body (the balanced-brace search retries from each
+// unclosed `{`) can't drive the scan quadratic and block the event loop.
+const MAX_SCAN = 32 * 1024;
+
 export function extractTrailingJsonObject(text: string): string | null {
+  const scan = text.length > MAX_SCAN ? text.slice(text.length - MAX_SCAN) : text;
   let last: string | null = null;
   let i = 0;
-  while (i < text.length) {
-    const start = text.indexOf("{", i);
+  while (i < scan.length) {
+    const start = scan.indexOf("{", i);
     if (start === -1) break;
     let depth = 0;
     let inString = false;
     let escaped = false;
     let end = -1;
-    for (let j = start; j < text.length; j++) {
-      const ch = text[j];
+    for (let j = start; j < scan.length; j++) {
+      const ch = scan[j];
       if (escaped) {
         escaped = false;
         continue;
@@ -44,7 +50,7 @@ export function extractTrailingJsonObject(text: string): string | null {
       i = start + 1; // unbalanced candidate — retry from the next "{"
       continue;
     }
-    last = text.slice(start, end + 1);
+    last = scan.slice(start, end + 1);
     i = end + 1;
   }
   return last;

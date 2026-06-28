@@ -285,6 +285,10 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
         await refresh?.("squad-roster");
         emitResult(ctx, JSON.stringify({ ok: true, slug: parsed.data.slug }));
       } catch (e) {
+        // retireMember throws when the dir is already gone — but a registry entry can
+        // linger with no dir (a phantom reservation from a failed scaffold). Free it
+        // here too, or that character name is consumed forever.
+        await retireCastingName(squadDataHome(), parsed.data.slug);
         emitResult(ctx, `squad_retire_member failed: ${errText(e)}`, true);
       }
     },
@@ -372,6 +376,7 @@ function makeDispatchTool(turnSeam: RibContext["runAgentTurn"]): ToolDefinition 
           membersRoot: membersDir(),
           members,
           task,
+          abortSignal: ctx.abortSignal,
           ...(synthesize !== undefined ? { synthesize } : {}),
         });
         emitResult(ctx, summarizeDispatch(outcome));
@@ -420,7 +425,7 @@ function makeCodeTool(
   return {
     name: "squad_code",
     description:
-      "Dispatch a confined coding turn to a code-capable squad member: it edits the selected project's repository directly (Read/Glob/Grep/Edit/Write/Bash, confined to the project root) to implement `task`. `member` is the slug of a member carrying the \"code\" capability tag (see squad_list_members); `task` is what to implement; `project` (optional id or name) selects the repo, defaulting to the sole / `default` project. The turn may NOT open, merge, or push a pull request — the squad's RAI floor denies it. NOT for text-only reasoning (squad_dispatch) or 1:1 chat (enter a member).",
+      "Dispatch a confined coding turn to a code-capable squad member: it edits the selected project's repository directly (Read/Glob/Grep/Edit/Write/Bash, confined to the project root) to implement `task`. `member` is the slug of a member carrying the \"code\" capability tag (see squad_list_members); `task` is what to implement; `project` (optional id or name) selects the repo, defaulting to the sole / `default` project. The turn may NOT merge or force-push — the squad's RAI floor denies it; opening a draft PR and ordinary pushes are allowed (the human review gate owns the merge). NOT for text-only reasoning (squad_dispatch) or 1:1 chat (enter a member).",
     inputSchema: codeSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -467,6 +472,7 @@ function makeCodeTool(
           member,
           project: { name: resolved.project.name, rootPath: resolved.project.rootPath },
           task,
+          abortSignal: ctx.abortSignal,
         });
         if (!result.ok) {
           emitResult(ctx, `squad_code: ${result.error}`, true);
@@ -508,6 +514,7 @@ const coordinateSchema = z.object({
 function makeCoordinateTool(
   turnSeam: RibContext["runAgentTurn"],
   projectsSeam: RibContext["getProjects"],
+  runWorkflowSeam: RibContext["runWorkflow"],
 ): ToolDefinition {
   return {
     name: "squad_coordinate",
@@ -558,7 +565,9 @@ function makeCoordinateTool(
           dataHome: squadDataHome(),
           roster,
           task,
+          abortSignal: ctx.abortSignal,
           ...(project ? { project } : {}),
+          ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
           ...(maxRounds
             ? {
                 limits: {
@@ -826,7 +835,7 @@ const rib: Rib = {
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
-      makeCoordinateTool(ctx.runAgentTurn, ctx.getProjects),
+      makeCoordinateTool(ctx.runAgentTurn, ctx.getProjects, ctx.runWorkflow),
     ];
   },
 
