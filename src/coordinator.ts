@@ -335,6 +335,14 @@ function cap(text: string, n: number): string {
   return text.length > n ? `${text.slice(0, n)}…` : text;
 }
 
+// Prefix a dispatched member's instruction with the team's recalled memory so the agent
+// executing the step shares the team's prior knowledge — the manager has it in context,
+// but members can't see the manager's context, so it must ride the instruction.
+function withTeamMemory(instruction: string, recalled: readonly string[]): string {
+  if (recalled.length === 0) return instruction;
+  return `Team memory — decisions and lessons the squad recorded on earlier passes for this project (honor and build on them; don't re-derive or contradict them):\n${recalled.map((r) => `- ${r}`).join("\n")}\n\nYour task:\n${instruction}`;
+}
+
 function foldFacts(existing: readonly string[], added: readonly string[]): string[] {
   if (added.length === 0) return [...existing];
   return [...existing, ...added].slice(-MAX_FACTS);
@@ -350,8 +358,18 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   const now = opts.now ?? (() => new Date().toISOString());
   const limits = opts.limits ?? DEFAULT_LIMITS;
   const timeoutMs = opts.perTurnTimeoutMs ?? DEFAULT_COORDINATOR_TIMEOUT_MS;
-  // A single-member step needs no synthesis turn — fold that one reply directly (saves
-  // a paid turn and the "only one response came back" narration).
+  const project = opts.project;
+  // Recall the team's prior governed decisions/lessons ONCE (project-scoped; [] without a
+  // seam or project) so they ground BOTH the coordinator's planning AND each dispatched
+  // member's turn. The recalled knowledge has to reach the agent doing the work, not just
+  // the manager directing it — the manager delegates, and members can't see the manager's
+  // context, so without this the recall never influences the actual output.
+  const memory = opts.getMemory?.();
+  const recalled = await recallGrounding(memory, project?.id, opts.task);
+
+  // A single-member step needs no synthesis turn — fold that one reply directly (saves a
+  // paid turn and the "only one response came back" narration). Each member turn is
+  // prefixed with the team's recalled memory so execution benefits from it too.
   const dispatch =
     opts.dispatch ??
     ((members: Member[], instruction: string) =>
@@ -359,14 +377,13 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         runAgentTurn: opts.runAgentTurn,
         membersRoot: opts.membersRoot,
         members,
-        task: instruction,
+        task: withTeamMemory(instruction, recalled),
         synthesize: members.length > 1,
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       }));
 
   // The code arm: a confined coding turn for the speaker, bound only when a project is
   // present (it confines to project.rootPath). Absent → a code step falls to dispatch.
-  const project = opts.project;
   const code =
     opts.code ??
     (project
@@ -376,7 +393,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             membersRoot: opts.membersRoot,
             member,
             project: { name: project.name, rootPath: project.rootPath },
-            task: instruction,
+            task: withTeamMemory(instruction, recalled),
             ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
           });
           return r.ok
@@ -429,11 +446,6 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     });
 
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
-  // Recall prior governed decisions/lessons for this task ONCE at the start of the run
-  // (project-scoped; [] without a memory seam or project) and fold them into the
-  // coordinator's grounding every round — the "recall into the next pass" capstone arc.
-  const memory = opts.getMemory?.();
-  const recalled = await recallGrounding(memory, project?.id, opts.task);
   let replanRequested = false;
   let status: RunCoordinatorResult["status"] = "max-rounds";
 

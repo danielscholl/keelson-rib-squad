@@ -18,6 +18,12 @@ const RUNTIME = "rib:squad";
 const RECALL_MAX_ITEMS = 8;
 const SUMMARY_CAP = 200;
 const FACTS_IN_DECISION = 5;
+// Per-item grounding excerpt. The substance lives in `content` (the run's outcome +
+// facts), not the headline `summary` — surfacing the content is what makes a recalled
+// decision actually inform the next pass rather than just announce that one exists.
+// Generous because a run's key takeaway can sit past a paragraph of context; recall is
+// already capped at RECALL_MAX_ITEMS, so the grounding block stays bounded.
+const RECALL_EXCERPT = 1000;
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -44,7 +50,10 @@ export async function recallGrounding(
       query: task,
       limits: { maxItems: RECALL_MAX_ITEMS },
     });
-    return res.items.map((it) => `[recalled ${it.type}] ${it.summary}`);
+    return res.items.map((it) => {
+      const detail = it.content.trim().replace(/\s+/g, " ").slice(0, RECALL_EXCERPT);
+      return `[recalled ${it.type}] ${detail}`;
+    });
   } catch {
     return []; // fail-soft: a memory hiccup must not crash the run
   }
