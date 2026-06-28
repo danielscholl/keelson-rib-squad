@@ -587,9 +587,11 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
 
     if (decided.step.kind === "replan") {
       replanRequested = true;
-      // Sweep the steps attempted on the now-abandoned plan into a durable record BEFORE the
-      // rebuild, so the next prompt can name them ("do not resume these") and the abandonment
-      // is observable in the transcript — not just a prose hint the manager may ignore.
+      // On a re-plan, REBUILD the Task Ledger: sweep the abandoned plan's attempted steps
+      // into a durable "do not resume" record (observable in the transcript, not just a prose
+      // hint), then clear the stale plan below so the manager rebuilds from scratch instead of
+      // re-anchoring on the plan it was told to abandon. Verified facts survive the rebuild —
+      // only the plan is torn down (Magentic keeps confirmed findings across a re-plan).
       const swept = failStuckTasks(ledger.transcript);
       const failedSteps = swept.length
         ? mergeFailed(ledger.failedSteps ?? [], swept)
@@ -610,6 +612,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       ledger = {
         ...ledger,
         round: ledger.round + 1,
+        plan: [],
         ...(failedSteps?.length ? { failedSteps } : {}),
         transcript,
         updatedAt: now(),
