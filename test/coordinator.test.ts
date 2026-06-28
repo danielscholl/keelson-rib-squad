@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MessageChunk, RibContext } from "@keelson/shared";
+import type {
+  MemoryTools,
+  MessageChunk,
+  RecallResponse,
+  RibContext,
+  WritebackRequest,
+  WritebackResponse,
+} from "@keelson/shared";
+import { RECALL_RESPONSE_SCHEMA_VERSION, WRITEBACK_RESPONSE_SCHEMA_VERSION } from "@keelson/shared";
 import {
   type CoordinatorLedger,
   loadLedger,
@@ -261,6 +269,104 @@ describe("runCoordinator loop", () => {
     });
     expect(res.ledger.facts).not.toContain("stale fact from A");
     expect(res.summary).toBe("fresh");
+  });
+
+  test("recalls prior decisions into the prompt and reflects the outcome on done", async () => {
+    const prompts: string[] = [];
+    const writebacks: WritebackRequest[] = [];
+    const memory: MemoryTools = {
+      recall: async (): Promise<RecallResponse> => ({
+        schemaVersion: RECALL_RESPONSE_SCHEMA_VERSION,
+        requestId: "r",
+        items: [
+          {
+            memoryId: "m1",
+            type: "decision",
+            summary: "use bun for everything",
+            content: "c",
+            provenance: "generated",
+            usePolicy: {
+              canUseAsInstruction: false,
+              canUseAsEvidence: true,
+              requiresUserConfirmation: false,
+              doNotInjectAutomatically: false,
+            },
+            scope: { visibility: "project", projectId: "p1" },
+            sourceRefs: [],
+            artifacts: [],
+            createdAt: NOW,
+            rankingScore: 0.9,
+          },
+        ],
+        trace: { traceId: "t", returned: 1 },
+      }),
+      writeback: async (req): Promise<WritebackResponse> => {
+        writebacks.push(req);
+        return {
+          schemaVersion: WRITEBACK_RESPONSE_SCHEMA_VERSION,
+          written: [{ memoryId: "w1", idempotencyKey: req.idempotencyKey }],
+          blocked: [],
+          deduped: [],
+        };
+      },
+    };
+    const run: NonNullable<RibContext["runAgentTurn"]> = (req) => {
+      prompts.push(req.prompt ?? "");
+      return {
+        stream: oneShot(),
+        result: Promise.resolve({
+          status: "ok" as const,
+          text: 'done\n{"action":"done","summary":"shipped it"}',
+        }),
+      };
+    };
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: run,
+      dispatch: fakeDispatch().fn,
+      getMemory: () => memory,
+    });
+    expect(res.status).toBe("done");
+    // Recall folded the prior decision into the coordinator's grounding.
+    expect(prompts[0]).toContain("[recalled decision] use bun for everything");
+    // The completed outcome was written back as one governed decision row.
+    expect(writebacks).toHaveLength(1);
+    expect(writebacks[0]?.memories[0]?.type).toBe("decision");
+    expect(writebacks[0]?.scope?.projectId).toBe("p1");
+    expect(res.ledger.transcript.some((e) => e.text.includes("[memory] recorded"))).toBe(true);
+  });
+
+  test("skips the memory loop when no project is bound (memory is project-scoped)", async () => {
+    let calls = 0;
+    const memory: MemoryTools = {
+      recall: async (): Promise<RecallResponse> => {
+        calls++;
+        return {
+          schemaVersion: RECALL_RESPONSE_SCHEMA_VERSION,
+          requestId: "r",
+          items: [],
+          trace: { traceId: "t", returned: 0 },
+        };
+      },
+      writeback: async (req): Promise<WritebackResponse> => {
+        calls++;
+        return {
+          schemaVersion: WRITEBACK_RESPONSE_SCHEMA_VERSION,
+          written: [{ memoryId: "w1", idempotencyKey: req.idempotencyKey }],
+          blocked: [],
+          deduped: [],
+        };
+      },
+    };
+    const res = await runCoordinator({
+      ...base(), // no project
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"ok"}']),
+      dispatch: fakeDispatch().fn,
+      getMemory: () => memory,
+    });
+    expect(res.status).toBe("done");
+    expect(calls).toBe(0); // neither recall nor writeback fire without a project scope
   });
 
   test("an unparseable coordinator reply counts as a stall (fallback)", async () => {

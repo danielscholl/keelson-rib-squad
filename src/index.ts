@@ -515,6 +515,7 @@ function makeCoordinateTool(
   turnSeam: RibContext["runAgentTurn"],
   projectsSeam: RibContext["getProjects"],
   runWorkflowSeam: RibContext["runWorkflow"],
+  memorySeam: RibContext["getMemory"],
 ): ToolDefinition {
   return {
     name: "squad_coordinate",
@@ -568,6 +569,7 @@ function makeCoordinateTool(
           abortSignal: ctx.abortSignal,
           ...(project ? { project } : {}),
           ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
+          ...(memorySeam ? { getMemory: memorySeam } : {}),
           ...(maxRounds
             ? {
                 limits: {
@@ -835,7 +837,7 @@ const rib: Rib = {
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
-      makeCoordinateTool(ctx.runAgentTurn, ctx.getProjects, ctx.runWorkflow),
+      makeCoordinateTool(ctx.runAgentTurn, ctx.getProjects, ctx.runWorkflow, ctx.getMemory),
     ];
   },
 
