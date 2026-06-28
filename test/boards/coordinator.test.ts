@@ -58,6 +58,16 @@ describe("buildCoordinatorBoard with a ledger", () => {
     ).toBe(true);
   });
 
+  test("renders team-gap recommendations when the squad flags a missing specialist", () => {
+    const board = buildCoordinatorBoard(ledger({ teamGaps: ["a security reviewer"] }));
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(
+      rowsTitled(board, "Team gaps — consider casting").some((i) =>
+        i.text.includes("security reviewer"),
+      ),
+    ).toBe(true);
+  });
+
   test("a completed run shows the outcome and a done status", () => {
     const board = buildCoordinatorBoard(
       ledger({ status: "done", summary: "shipped it", round: 5 }),

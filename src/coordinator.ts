@@ -53,6 +53,9 @@ export interface CoordinatorLedger {
   // Steps attempted on a now-abandoned plan, swept on a re-plan so the rebuild is told not
   // to resume them; cleared once a non-stalled round shows the new plan is working again.
   failedSteps?: string[];
+  // Specialists the squad judged its roster lacks for this goal — a "cast this" recommendation
+  // surfaced to the operator, NOT acted on autonomously (roster mutation stays operator-gated).
+  teamGaps?: string[];
   summary?: string;
   createdAt: string;
   updatedAt: string;
@@ -76,12 +79,17 @@ const MAX_TRANSCRIPT = 40; // bounded so the prompt + file stay sane
 const ENTRY_CAP = 1500; // per-transcript-entry char cap
 const MAX_FAILED = 20; // bounded list of recently-abandoned steps surfaced on a re-plan
 const STEP_DESC_CAP = 200; // per-swept-step char cap so the re-plan prompt stays compact
+const MAX_GAPS = 6; // bounded list of "the roster lacks X" recommendations
+const GAP_CAP = 160; // per-gap char cap so a recommendation stays a short headline
 const LEDGER_FILE = "coordinator-ledger.json";
 
 interface ParsedDirective {
   progress: ProgressLedger;
   facts: string[];
   plan: string[];
+  // Specialists the manager judges the CURRENT roster lacks for this goal — surfaced as a
+  // "cast this" recommendation, not acted on autonomously (roster mutation stays operator-gated).
+  needs: string[];
   summary?: string;
   head: string;
 }
@@ -109,6 +117,7 @@ export function parseCoordinatorDirective(text: string): ParsedDirective | null 
   const p = match.parsed;
   const facts = asStrArray(p.facts).map((f) => f.slice(0, FACT_CAP));
   const plan = asStrArray(p.plan);
+  const needs = asStrArray(p.needs ?? p.missing).map((n) => n.slice(0, GAP_CAP));
   const summary = asStr(p.summary);
 
   if (p.action === "done") {
@@ -116,6 +125,7 @@ export function parseCoordinatorDirective(text: string): ParsedDirective | null 
       progress: { isRequestSatisfied: true, isInLoop: false, isProgressBeingMade: true },
       facts,
       plan,
+      needs,
       ...(summary ? { summary } : {}),
       head: match.head,
     };
@@ -133,7 +143,7 @@ export function parseCoordinatorDirective(text: string): ParsedDirective | null 
       : {}),
     ...(mode === "code" || mode === "dispatch" || mode === "workflow" ? { mode } : {}),
   };
-  return { progress, facts, plan, ...(summary ? { summary } : {}), head: match.head };
+  return { progress, facts, plan, needs, ...(summary ? { summary } : {}), head: match.head };
 }
 
 // When a coordinator turn returns no parseable directive, keep the loop honest rather
@@ -144,6 +154,7 @@ function fallbackDirective(): ParsedDirective {
     progress: { isRequestSatisfied: false, isInLoop: true, isProgressBeingMade: false },
     facts: [],
     plan: [],
+    needs: [],
     head: "",
   };
 }
@@ -285,6 +296,8 @@ function coordinatorPrompt(
     : "";
   const workflowNote =
     '\n- to author a REUSABLE workflow (a DAG) for recurring/deterministic sub-work, add "mode":"workflow" with an instruction describing what it should do.';
+  const needsNote =
+    '\n- if the members above lack a capability this goal needs, add "needs":["<the missing specialist, e.g. a security reviewer>"] so the operator can cast them. This is a non-blocking recommendation — keep going with the best available member; do NOT wait.';
   return `Goal:\n${ledger.task}
 ${replanNote}
 Members you may assign (use the slug as next_speaker):
@@ -301,7 +314,7 @@ ${renderTranscript(ledger.transcript)}
 
 Assess the state, then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to continue: {"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"<member slug>","instruction":"<the single next instruction for that member>","plan":["step","step"],"facts":["any new finding"]}
-- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}
+- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}${needsNote}
 Set "satisfied" true only when the goal is genuinely complete. Pick next_speaker from the members above. Keep the instruction to ONE concrete step.`;
 }
 
@@ -393,9 +406,9 @@ export function failStuckTasks(transcript: readonly CoordinatorEntry[]): string[
   return swept.reverse();
 }
 
-// Accumulate swept steps onto the prior record (deduped, capped) so a multi-re-plan stall
-// episode surfaces every abandoned step, not just the latest window's.
-function mergeFailed(prev: readonly string[], added: readonly string[]): string[] {
+// Accumulate new entries onto a prior record (deduped, capped, most-recent-kept) — the shape
+// both the re-plan's swept steps and the run's team-gap recommendations want.
+function dedupeCap(prev: readonly string[], added: readonly string[], max: number): string[] {
   const seen = new Set(prev);
   const merged = [...prev];
   for (const a of added) {
@@ -404,7 +417,7 @@ function mergeFailed(prev: readonly string[], added: readonly string[]): string[
       merged.push(a);
     }
   }
-  return merged.slice(-MAX_FAILED);
+  return merged.slice(-max);
 }
 
 // Pair each member with everything it DID across the run (its dispatch/code outputs), so the
@@ -573,6 +586,11 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       ...ledger,
       facts: foldFacts(ledger.facts, directive.facts),
       ...(directive.plan.length ? { plan: directive.plan } : {}),
+      // Accumulate the run's roster-gap recommendations (deduped, capped). The squad notices
+      // when it lacks a specialist and surfaces it; casting stays the operator's call.
+      ...(directive.needs.length
+        ? { teamGaps: dedupeCap(ledger.teamGaps ?? [], directive.needs, MAX_GAPS) }
+        : {}),
       ...(directive.summary ? { summary: directive.summary } : {}),
       transcript: appendEntry(ledger.transcript, {
         round: ledger.round,
@@ -657,7 +675,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       // only the plan is torn down (Magentic keeps confirmed findings across a re-plan).
       const swept = failStuckTasks(ledger.transcript);
       const failedSteps = swept.length
-        ? mergeFailed(ledger.failedSteps ?? [], swept)
+        ? dedupeCap(ledger.failedSteps ?? [], swept, MAX_FAILED)
         : ledger.failedSteps;
       let transcript = ledger.transcript;
       if (swept.length) {
