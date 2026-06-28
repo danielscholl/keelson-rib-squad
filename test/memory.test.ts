@@ -64,14 +64,16 @@ function fakeMemory(opts: FakeOpts = {}): MemoryTools {
 }
 
 describe("recallGrounding", () => {
-  test("maps recalled decisions/lessons to grounding lines", async () => {
+  test("maps recalled decisions/lessons to grounding lines (surfacing content, not the headline)", async () => {
+    // recallItem sets content = `content for ${summary}` — the substance, which is what
+    // grounding surfaces so the coordinator sees WHAT was learned, not just that a row exists.
     const memory = fakeMemory({
       items: [recallItem("decision", "use bun"), recallItem("lesson", "tests need the symlink")],
     });
     const lines = await recallGrounding(memory, "p1", "ship the feature");
     expect(lines).toEqual([
-      "[recalled decision] use bun",
-      "[recalled lesson] tests need the symlink",
+      "[recalled decision] content for use bun",
+      "[recalled lesson] content for tests need the symlink",
     ]);
   });
 

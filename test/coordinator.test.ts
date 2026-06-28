@@ -282,8 +282,8 @@ describe("runCoordinator loop", () => {
           {
             memoryId: "m1",
             type: "decision",
-            summary: "use bun for everything",
-            content: "c",
+            summary: "headline",
+            content: "always run bun test before opening a PR",
             provenance: "generated",
             usePolicy: {
               canUseAsInstruction: false,
@@ -328,13 +328,79 @@ describe("runCoordinator loop", () => {
       getMemory: () => memory,
     });
     expect(res.status).toBe("done");
-    // Recall folded the prior decision into the coordinator's grounding.
-    expect(prompts[0]).toContain("[recalled decision] use bun for everything");
+    // Recall folded the prior decision's CONTENT (the substance, not the headline) into
+    // the coordinator's grounding.
+    expect(prompts[0]).toContain("[recalled decision] always run bun test before opening a PR");
     // The completed outcome was written back as one governed decision row.
     expect(writebacks).toHaveLength(1);
     expect(writebacks[0]?.memories[0]?.type).toBe("decision");
     expect(writebacks[0]?.scope?.projectId).toBe("p1");
     expect(res.ledger.transcript.some((e) => e.text.includes("[memory] recorded"))).toBe(true);
+  });
+
+  test("threads recalled team memory into the DISPATCHED member's turn, not just the manager's", async () => {
+    // The manager delegates and members can't see the manager's context, so the recalled
+    // memory must ride the dispatch instruction or it never reaches the agent doing the work.
+    const prompts: string[] = [];
+    const memory: MemoryTools = {
+      recall: async (): Promise<RecallResponse> => ({
+        schemaVersion: RECALL_RESPONSE_SCHEMA_VERSION,
+        requestId: "r",
+        items: [
+          {
+            memoryId: "m1",
+            type: "decision",
+            summary: "headline",
+            content: "prefer the in-process fallback over a network call",
+            provenance: "generated",
+            usePolicy: {
+              canUseAsInstruction: false,
+              canUseAsEvidence: true,
+              requiresUserConfirmation: false,
+              doNotInjectAutomatically: false,
+            },
+            scope: { visibility: "project", projectId: "p1" },
+            sourceRefs: [],
+            artifacts: [],
+            createdAt: NOW,
+            rankingScore: 0.9,
+          },
+        ],
+        trace: { traceId: "t", returned: 1 },
+      }),
+      writeback: async (req): Promise<WritebackResponse> => ({
+        schemaVersion: WRITEBACK_RESPONSE_SCHEMA_VERSION,
+        written: [{ memoryId: "w1", idempotencyKey: req.idempotencyKey }],
+        blocked: [],
+        deduped: [],
+      }),
+    };
+    const coordinatorReplies = [
+      'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"do the step"}',
+      'done\n{"action":"done","summary":"shipped"}',
+    ];
+    const run: NonNullable<RibContext["runAgentTurn"]> = (req) => {
+      const p = req.prompt ?? "";
+      prompts.push(p);
+      // A coordinator turn carries the "Goal:" framing; anything else is a member turn.
+      const text = p.includes("Goal:")
+        ? (coordinatorReplies.shift() ?? 'done\n{"action":"done","summary":"ok"}')
+        : "member did the step";
+      return { stream: oneShot(), result: Promise.resolve({ status: "ok" as const, text }) };
+    };
+    const res = await runCoordinator({
+      ...base(), // uses the DEFAULT dispatch (so withTeamMemory runs) — no injected dispatch
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: run,
+      getMemory: () => memory,
+    });
+    expect(res.status).toBe("done");
+    // The member's turn (not a "Goal:" coordinator turn) carries the team-memory block.
+    const memberPrompt = prompts.find((p) => !p.includes("Goal:"));
+    expect(memberPrompt).toBeDefined();
+    expect(memberPrompt).toContain("Team memory —");
+    expect(memberPrompt).toContain("prefer the in-process fallback over a network call");
+    expect(memberPrompt).toContain("Your task:");
   });
 
   test("skips the memory loop when no project is bound (memory is project-scoped)", async () => {
