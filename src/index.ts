@@ -24,7 +24,7 @@ import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
 import { type RunCoordinatorResult, runCoordinator } from "./coordinator.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
-import { CAST_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
+import { CAST_KEY, COORDINATOR_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
 import {
   appendLog,
   type MemberRecord,
@@ -60,6 +60,12 @@ const ROSTER_COLLECTOR = fileURLToPath(new URL("../bin/collect-roster.ts", impor
 // board. Resolved at module load like ROSTER_COLLECTOR so the squad-cast bash node
 // runs the right file regardless of the run's cwd; shell-quoted where interpolated.
 const CAST_COLLECTOR = fileURLToPath(new URL("../bin/collect-cast.ts", import.meta.url));
+// The coordinator collector: renders the persisted coordinator-ledger.json as the Run-loop
+// board. Resolved at module load like the others so the squad-coordinator bash node runs the
+// right file regardless of the run's cwd; shell-quoted where interpolated.
+const COORDINATOR_COLLECTOR = fileURLToPath(
+  new URL("../bin/collect-coordinator.ts", import.meta.url),
+);
 
 // POSIX single-quote: wrap a value and escape any embedded quote so a path
 // (spaces, `$`, backticks, backslashes) reaches `bash -c` literally — never
@@ -580,6 +586,9 @@ function makeCoordinateTool(
               }
             : {}),
         });
+        // Push the Run-loop panel to the run's final state (the same publish path cast uses);
+        // best-effort, so a refresh failure never masks the run's own result.
+        await refreshWorkflow?.("squad-coordinator").catch(() => {});
         emitResult(ctx, summarizeCoordinator(result), result.status === "error");
       } catch (e) {
         emitResult(ctx, `squad_coordinate failed: ${errText(e)}`, true);
@@ -625,6 +634,7 @@ const rib: Rib = {
     { key: ROSTER_KEY, canvasKind: "view", title: "Roster" },
     { key: DECISIONS_KEY, canvasKind: "view", title: "Decisions" },
     { key: CAST_KEY, canvasKind: "view", title: "Proposed squad" },
+    { key: COORDINATOR_KEY, canvasKind: "view", title: "Run loop" },
   ],
 
   // The Squad nav tab. The roster sits in the header (the members you author); each
@@ -680,6 +690,21 @@ const rib: Rib = {
               },
             ],
           },
+          {
+            columns: [
+              {
+                key: COORDINATOR_KEY,
+                workflow: "squad-coordinator",
+                title: "Run loop",
+                // NO cadenceMs: the collector reads a static ledger file, so a heartbeat
+                // would re-render an unchanged board between runs. squad_coordinate refreshes
+                // it on completion via refreshWorkflow; collapsed by default until a run lands.
+                collapsible: true,
+                collapsed: true,
+                glyph: { char: "↻", tone: "info" },
+              },
+            ],
+          },
         ],
       },
     },
@@ -726,6 +751,25 @@ const rib: Rib = {
       },
       bindSnapshotKey: CAST_KEY,
       validate: expectView(CAST_KEY, "board"),
+    },
+    {
+      // The coordinator producer: a deterministic collector that renders the persisted
+      // coordinator-ledger.json as the Run-loop board. squad_coordinate writes the ledger each
+      // round and refreshes this on completion; a missing ledger renders the idle board.
+      definition: {
+        name: "squad-coordinator",
+        description:
+          'Use when: watch the squad\'s coordinator run loop. Triggers: opening the Run loop panel, after a squad_coordinate run. Does: reads the persisted coordinator ledger from the Squad data home and publishes a "Run loop" board (goal, plan, findings, abandoned steps, recent activity) to the Squad Run-loop canvas. NOT for: starting a run (that is the squad_coordinate tool).',
+        nodes: [
+          {
+            id: "collect",
+            bash: `bun ${shQuote(COORDINATOR_COLLECTOR)} ${shQuote(squadDataHome())}`,
+            output_schema: { type: "object", required: ["view", "sections"] },
+          },
+        ],
+      },
+      bindSnapshotKey: COORDINATOR_KEY,
+      validate: expectView(COORDINATOR_KEY, "board"),
     },
     {
       // Genesis as a workflow: one prompt turn authors the charter and calls

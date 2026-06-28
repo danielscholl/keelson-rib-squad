@@ -12,3 +12,7 @@ export const DECISIONS_KEY = "rib:squad:decisions";
 // produced by the cast-propose board action (a confined repo-scan turn) and consumed
 // by approve-cast (scaffold) / discard-cast (clear).
 export const CAST_KEY = "rib:squad:cast";
+// The coordinator run-loop panel. Bound to the squad-coordinator collector (it renders the
+// persisted coordinator-ledger.json) and rendered on the Squad surface; the ledger is produced
+// by the squad_coordinate tool's Magentic loop, refreshed when a run completes.
+export const COORDINATOR_KEY = "rib:squad:coordinator";
