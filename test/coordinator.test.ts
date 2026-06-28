@@ -12,7 +12,9 @@ import type {
 } from "@keelson/shared";
 import { RECALL_RESPONSE_SCHEMA_VERSION, WRITEBACK_RESPONSE_SCHEMA_VERSION } from "@keelson/shared";
 import {
+  type CoordinatorEntry,
   type CoordinatorLedger,
+  failStuckTasks,
   loadLedger,
   parseCoordinatorDirective,
   runCoordinator,
@@ -105,6 +107,26 @@ describe("parseCoordinatorDirective", () => {
     expect(parseCoordinatorDirective("just prose, no json")).toBeNull();
     expect(parseCoordinatorDirective('{"action":"progress"} then more text')).toBeNull();
     expect(parseCoordinatorDirective('{"action":"bogus"}')).toBeNull();
+  });
+});
+
+describe("failStuckTasks", () => {
+  test("collects execute steps since the last re-plan boundary, in order", () => {
+    const transcript: CoordinatorEntry[] = [
+      { round: 0, kind: "dispatch", speaker: "atlas", instruction: "old step", text: "before" },
+      { round: 1, kind: "replan", text: "stalled — rebuilding the plan" },
+      { round: 2, kind: "coordinator", text: "rethinking" },
+      { round: 2, kind: "code", speaker: "vera", instruction: "edit foo.ts", text: "edited" },
+      { round: 3, kind: "dispatch", speaker: "atlas", instruction: "probe bar", text: "probed" },
+    ];
+    // The pre-boundary "old step" is excluded; the two post-boundary execute steps return
+    // chronologically as "speaker: instruction".
+    expect(failStuckTasks(transcript)).toEqual(["vera: edit foo.ts", "atlas: probe bar"]);
+  });
+
+  test("returns [] when the window holds no execute steps", () => {
+    expect(failStuckTasks([{ round: 0, kind: "coordinator", text: "thinking" }])).toEqual([]);
+    expect(failStuckTasks([])).toEqual([]);
   });
 });
 
@@ -202,6 +224,29 @@ describe("runCoordinator loop", () => {
     expect(res.status).toBe("gave-up");
     expect(res.ledger.status).toBe("gave-up");
     expect(res.ledger.transcript.some((e) => e.kind === "replan")).toBe(true);
+  });
+
+  test("sweeps the abandoned plan's steps to failed before a re-plan", async () => {
+    const d = fakeDispatch();
+    const res = await runCoordinator({
+      ...base(),
+      // Every round stalls but still names a step to run, so round 0 executes a dispatch
+      // and round 1 crosses maxStall and re-plans — leaving an attempted step to sweep.
+      runAgentTurn: queuedRun([
+        'stuck\n{"action":"progress","satisfied":false,"in_loop":true,"progress":false,"next_speaker":"atlas","instruction":"do X"}',
+      ]),
+      dispatch: d.fn,
+      limits: { maxRounds: 10, maxStall: 2, maxResets: 1 },
+    });
+    expect(res.status).toBe("gave-up");
+    // The round-0 dispatch was recorded as a failed-and-abandoned step, attributed to its member.
+    expect(res.ledger.failedSteps).toContain("atlas: do X");
+    // The sweep is observable in the transcript, and it precedes the re-plan it guards.
+    const failedIdx = res.ledger.transcript.findIndex((e) => e.kind === "failed");
+    const replanIdx = res.ledger.transcript.findIndex((e) => e.kind === "replan");
+    expect(failedIdx).toBeGreaterThanOrEqual(0);
+    expect(replanIdx).toBeGreaterThanOrEqual(0);
+    expect(failedIdx).toBeLessThan(replanIdx);
   });
 
   test("the hard round ceiling stops a never-satisfied loop", async () => {
