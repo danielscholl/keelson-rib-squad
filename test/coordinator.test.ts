@@ -59,10 +59,12 @@ function fakeDispatch(synthesis = "did the work") {
 }
 
 // A memory seam that captures every writeback (so a test can assert what the loop recorded)
-// and returns the given recall items (none by default).
+// and returns the given recall items (none by default). `written: false` models a store that
+// accepted the request but persisted no row (deduped/blocked).
 function capturingMemory(
   writebacks: WritebackRequest[],
   items: RecallResponse["items"] = [],
+  written = true,
 ): MemoryTools {
   return {
     recall: async (): Promise<RecallResponse> => ({
@@ -75,7 +77,7 @@ function capturingMemory(
       writebacks.push(req);
       return {
         schemaVersion: WRITEBACK_RESPONSE_SCHEMA_VERSION,
-        written: [{ memoryId: "w1", idempotencyKey: req.idempotencyKey }],
+        written: written ? [{ memoryId: "w1", idempotencyKey: req.idempotencyKey }] : [],
         blocked: [],
         deduped: [],
       };
@@ -474,6 +476,44 @@ describe("runCoordinator loop", () => {
     expect(res.status).toBe("done");
     expect(writebacks).toHaveLength(0); // a confused run does not pollute the ledger
     expect(res.ledger.transcript.some((e) => e.text.includes("no durable decision"))).toBe(true);
+  });
+
+  test("a distilled lesson the store rejects (deduped/blocked) is noted, not silently dropped", async () => {
+    const writebacks: WritebackRequest[] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"shipped it"}']),
+      dispatch: fakeDispatch().fn,
+      getMemory: () => capturingMemory(writebacks, [], false), // writeback persists nothing
+      distill: async () => ({ kind: "lesson", headline: "H", content: "L is durable" }),
+    });
+    expect(res.status).toBe("done");
+    expect(writebacks).toHaveLength(1); // it attempted the write
+    expect(
+      res.ledger.transcript.some((e) => e.text.includes("not recorded (deduped or blocked)")),
+    ).toBe(true);
+  });
+
+  test("an abort landing during the distill turn suppresses the writeback (no mutation after abort)", async () => {
+    const writebacks: WritebackRequest[] = [];
+    const ac = new AbortController();
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"shipped it"}']),
+      dispatch: fakeDispatch().fn,
+      abortSignal: ac.signal,
+      getMemory: () => capturingMemory(writebacks),
+      // Model the operator aborting mid-distill: the turn resolves unavailable, but the loop
+      // must re-check abort before the raw fallback rather than write memory during teardown.
+      distill: async () => {
+        ac.abort();
+        return { kind: "unavailable" };
+      },
+    });
+    expect(res.status).toBe("done");
+    expect(writebacks).toHaveLength(0);
   });
 
   test("falls back to the raw outcome when distillation is unavailable (no regression)", async () => {

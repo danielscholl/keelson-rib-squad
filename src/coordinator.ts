@@ -644,60 +644,66 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(ledger.summary ? {} : { summary: directive.summary ?? decided.step.reason }),
         updatedAt: now(),
       };
-      // Reflect a COMPLETED run's outcome into the governed ledger so the next pass on
-      // this project recalls it (the "grow memory" capstone arc). Only on a genuine
-      // completion, not give-up; fail-soft (a write failure leaves the run succeeded).
+      // Grow memory at loop close, on a genuine completion only (not give-up). The two halves
+      // are independent — they write different targets (the shared governed ledger vs each
+      // member's private memory.md) and neither reads the other — so they run concurrently.
+      // Both fail-soft, both skipped on abort.
       if (status === "done") {
-        // Distill the run into a durable decision before writing it back — a reflection turn
-        // condenses summary + facts into a decontextualized lesson, and abstains when the run
-        // produced nothing generalizable (so a confused run can't pollute the ledger). Gated on
-        // a memory seam + project (the writeback target) and skipped on abort — no paid turn with
-        // nowhere to write. An UNAVAILABLE verdict (turn failed/unparseable) falls back to the raw
-        // writeback so a completed run still compounds memory, the validated pre-distillation behavior.
-        let memoryNote: string | undefined;
-        if (memory && project?.id && !opts.abortSignal?.aborted) {
-          const distilled = await distill({ summary: ledger.summary ?? "", facts: ledger.facts });
-          if (distilled.kind === "lesson") {
-            if (await reflectDistilled(memory, project.id, distilled)) {
-              memoryNote = "[memory] recorded a distilled decision";
+        const summary = ledger.summary ?? "";
+        const contributions = collectContributions(ledger.transcript, opts.roster);
+
+        // Distill the run into ONE durable governed decision, or abstain (a confused run must not
+        // pollute the ledger it grounds the next pass on). Re-check abort after the paid turn, and
+        // try/catch so a throwing injected distill seam can't crash loop close.
+        const distillNote = async (): Promise<string | undefined> => {
+          if (!memory || !project?.id || opts.abortSignal?.aborted) return undefined;
+          try {
+            const distilled = await distill({ summary, facts: ledger.facts });
+            if (opts.abortSignal?.aborted) return undefined;
+            if (distilled.kind === "lesson") {
+              return (await reflectDistilled(memory, project.id, distilled))
+                ? "[memory] recorded a distilled decision"
+                : "[memory] distilled decision not recorded (deduped or blocked)";
             }
-          } else if (distilled.kind === "abstain") {
-            memoryNote = "[memory] run yielded no durable decision (memory unchanged)";
-          } else if (
-            await reflectOutcome(memory, project.id, opts.task, ledger.summary ?? "", ledger.facts)
-          ) {
-            memoryNote = "[memory] recorded the outcome as a governed decision";
+            if (distilled.kind === "abstain") {
+              return "[memory] run yielded no durable decision (memory unchanged)";
+            }
+            // unavailable (turn failed/unparseable): fall back to the raw outcome so a completed
+            // run still records something.
+            return (await reflectOutcome(memory, project.id, opts.task, summary, ledger.facts))
+              ? "[memory] recorded the outcome as a governed decision"
+              : undefined;
+          } catch {
+            return undefined; // fail-soft
           }
-        }
-        if (memoryNote) {
+        };
+
+        // Each member that did substantive work grows its OWN memory.md once over its whole
+        // contribution — the per-agent half of the grow-memory arc.
+        const memberNote = async (): Promise<string | undefined> => {
+          if (contributions.length === 0 || opts.abortSignal?.aborted) return undefined;
+          try {
+            const reflected = await reflectAtClose(contributions);
+            return reflected.length > 0
+              ? `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`
+              : undefined;
+          } catch {
+            return undefined; // fail-soft
+          }
+        };
+
+        const notes = await Promise.all([distillNote(), memberNote()]);
+        for (const text of notes) {
+          if (!text) continue;
           ledger = {
             ...ledger,
             transcript: appendEntry(ledger.transcript, {
               round: ledger.round,
               kind: "coordinator",
-              text: memoryNote,
+              text,
             }),
             updatedAt: now(),
           };
-        }
-        // Per-member reflection at the loop-close boundary: each member that did substantive
-        // work grows its OWN memory.md once over its whole contribution — the per-agent half of
-        // the capstone's "grow memory" arc (the shared half is the distillation above). Bounded
-        // to one paid turn per participant per run; skipped on abort; fail-soft.
-        const contributions = collectContributions(ledger.transcript, opts.roster);
-        if (contributions.length > 0 && !opts.abortSignal?.aborted) {
-          const reflected = await reflectAtClose(contributions);
-          if (reflected.length > 0) {
-            ledger = {
-              ...ledger,
-              transcript: appendEntry(ledger.transcript, {
-                round: ledger.round,
-                kind: "coordinator",
-                text: `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`,
-              }),
-              updatedAt: now(),
-            };
-          }
         }
       }
       await saveLedger(opts.dataHome, ledger);

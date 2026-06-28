@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  asNonEmptyString,
   MEMORY_TEXT_LIMIT,
   type MemoryTools,
   RECALL_REQUEST_SCHEMA_VERSION,
@@ -98,9 +99,9 @@ async function writeDecisionRow(
   }
 }
 
-// Write the run's RAW outcome back as one governed `decision` row — the pre-distillation
-// shape, kept as the fail-soft fallback when distillation is unavailable so a completed run
-// still compounds memory. No-ops without a seam, a project, or a summary.
+// Write the run's RAW outcome back as one governed `decision` row — the fail-soft fallback
+// used when distillation is unavailable, so a completed run still records something. No-ops
+// without a seam, a project, or a summary.
 export async function reflectOutcome(
   memory: MemoryTools | undefined,
   projectId: string | undefined,
@@ -132,13 +133,16 @@ export async function reflectDistilled(
 // What a distillation turn decided about a completed run: a durable lesson worth recording,
 // an explicit abstain (the run produced nothing generalizable — the pollution gate), or
 // unavailable (the turn failed/timed-out or returned no parseable verdict — the caller falls
-// back to the raw writeback so the validated "a done run compounds memory" guarantee holds).
+// back to the raw writeback so a completed run still records something).
 export type DistillResult =
   | { kind: "lesson"; headline: string; content: string }
   | { kind: "abstain" }
   | { kind: "unavailable" };
 
 const DISTILL_TIMEOUT_MS = 120_000;
+// Bound the prompt: the distill turn needs the run's RECENT findings, not the full ledger
+// (capped at MAX_FACTS=60). Larger than reflectOutcome's 5 — distillation reasons over more.
+const DISTILL_MAX_FACTS = 20;
 const DISTILL_ACTIONS: ReadonlySet<string> = new Set(["record", "skip"]);
 
 const DISTILL_SYSTEM =
@@ -150,8 +154,9 @@ function distillPrompt(input: {
   facts: readonly string[];
   recalled: readonly string[];
 }): string {
-  const factsBlock = input.facts.length
-    ? input.facts.map((f) => `- ${f}`).join("\n")
+  const recentFacts = input.facts.slice(-DISTILL_MAX_FACTS);
+  const factsBlock = recentFacts.length
+    ? recentFacts.map((f) => `- ${f}`).join("\n")
     : "(none recorded)";
   // Show what the team already knows so the turn records a delta, not a restatement — the
   // same "don't re-derive what's in memory" discipline the per-member reflection follows.
@@ -203,11 +208,11 @@ export async function distillOutcome(
   const directive = parseTrailingDirective(turn.text, DISTILL_ACTIONS);
   if (!directive) return { kind: "unavailable" };
   if (directive.parsed.action === "skip") return { kind: "abstain" };
-  const headline =
-    typeof directive.parsed.headline === "string" ? directive.parsed.headline.trim() : "";
-  const lesson = typeof directive.parsed.lesson === "string" ? directive.parsed.lesson.trim() : "";
+  const headline = asNonEmptyString(directive.parsed.headline);
+  const lesson = asNonEmptyString(directive.parsed.lesson);
   // A malformed `record` (missing/empty fields) is treated as unavailable, not abstain — only
   // an explicit `skip` suppresses the writeback; uncertainty preserves the raw fallback.
   if (!headline || !lesson) return { kind: "unavailable" };
-  return { kind: "lesson", headline: clamp(headline, SUMMARY_CAP), content: clamp(lesson) };
+  // writeDecisionRow owns truncation (clamps both fields at the write boundary).
+  return { kind: "lesson", headline, content: lesson };
 }
