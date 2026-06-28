@@ -58,6 +58,31 @@ function fakeDispatch(synthesis = "did the work") {
   return { fn, calls };
 }
 
+// A memory seam that captures every writeback (so a test can assert what the loop recorded)
+// and returns the given recall items (none by default).
+function capturingMemory(
+  writebacks: WritebackRequest[],
+  items: RecallResponse["items"] = [],
+): MemoryTools {
+  return {
+    recall: async (): Promise<RecallResponse> => ({
+      schemaVersion: RECALL_RESPONSE_SCHEMA_VERSION,
+      requestId: "r",
+      items,
+      trace: { traceId: "t", returned: items.length },
+    }),
+    writeback: async (req): Promise<WritebackResponse> => {
+      writebacks.push(req);
+      return {
+        schemaVersion: WRITEBACK_RESPONSE_SCHEMA_VERSION,
+        written: [{ memoryId: "w1", idempotencyKey: req.idempotencyKey }],
+        blocked: [],
+        deduped: [],
+      };
+    },
+  };
+}
+
 describe("parseCoordinatorDirective", () => {
   test("parses a progress directive with the five questions + facts + plan", () => {
     const d = parseCoordinatorDirective(
@@ -410,6 +435,90 @@ describe("runCoordinator loop", () => {
     expect(writebacks[0]?.memories[0]?.type).toBe("decision");
     expect(writebacks[0]?.scope?.projectId).toBe("p1");
     expect(res.ledger.transcript.some((e) => e.text.includes("[memory] recorded"))).toBe(true);
+  });
+
+  test("distills the completed run into the governed decision (lesson content, not the raw summary)", async () => {
+    const writebacks: WritebackRequest[] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"shipped it"}']),
+      dispatch: fakeDispatch().fn,
+      getMemory: () => capturingMemory(writebacks),
+      distill: async () => ({
+        kind: "lesson",
+        headline: "Bun is the runtime",
+        content: "This repo builds with bun; run bun test before a PR.",
+      }),
+    });
+    expect(res.status).toBe("done");
+    expect(writebacks).toHaveLength(1);
+    const draft = writebacks[0]?.memories[0];
+    expect(draft?.summary).toBe("Bun is the runtime");
+    expect(draft?.content).toBe("This repo builds with bun; run bun test before a PR.");
+    expect(
+      res.ledger.transcript.some((e) => e.text.includes("recorded a distilled decision")),
+    ).toBe(true);
+  });
+
+  test("abstains on a run with no durable lesson — nothing is written (the pollution gate)", async () => {
+    const writebacks: WritebackRequest[] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"meh"}']),
+      dispatch: fakeDispatch().fn,
+      getMemory: () => capturingMemory(writebacks),
+      distill: async () => ({ kind: "abstain" }),
+    });
+    expect(res.status).toBe("done");
+    expect(writebacks).toHaveLength(0); // a confused run does not pollute the ledger
+    expect(res.ledger.transcript.some((e) => e.text.includes("no durable decision"))).toBe(true);
+  });
+
+  test("falls back to the raw outcome when distillation is unavailable (no regression)", async () => {
+    const writebacks: WritebackRequest[] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"shipped it"}']),
+      dispatch: fakeDispatch().fn,
+      getMemory: () => capturingMemory(writebacks),
+      distill: async () => ({ kind: "unavailable" }),
+    });
+    expect(res.status).toBe("done");
+    // The validated pre-distillation behavior still holds: a completed run records SOMETHING.
+    expect(writebacks).toHaveLength(1);
+    expect(writebacks[0]?.memories[0]?.content).toContain("shipped it");
+    expect(
+      res.ledger.transcript.some((e) =>
+        e.text.includes("recorded the outcome as a governed decision"),
+      ),
+    ).toBe(true);
+  });
+
+  test("the live distillation seam runs its own turn and records the distilled decision", async () => {
+    // No injected `distill` — exercise the default seam end-to-end. The scribe turn (not a
+    // "Goal:" coordinator turn) returns the record directive that becomes the governed row.
+    const writebacks: WritebackRequest[] = [];
+    const run: NonNullable<RibContext["runAgentTurn"]> = (req) => {
+      const p = req.prompt ?? "";
+      const text = p.includes("Goal:")
+        ? 'done\n{"action":"done","summary":"shipped it"}'
+        : 'distilling\n{"action":"record","headline":"Bun runtime","lesson":"This repo builds with bun."}';
+      return { stream: oneShot(), result: Promise.resolve({ status: "ok" as const, text }) };
+    };
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: run,
+      dispatch: fakeDispatch().fn,
+      getMemory: () => capturingMemory(writebacks),
+    });
+    expect(res.status).toBe("done");
+    expect(writebacks).toHaveLength(1);
+    expect(writebacks[0]?.memories[0]?.summary).toBe("Bun runtime");
+    expect(writebacks[0]?.memories[0]?.content).toBe("This repo builds with bun.");
   });
 
   test("threads recalled team memory into the DISPATCHED member's turn, not just the manager's", async () => {
