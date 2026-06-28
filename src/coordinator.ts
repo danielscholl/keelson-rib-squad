@@ -452,6 +452,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         members,
         task: withTeamMemory(instruction, recalled),
         synthesize: members.length > 1,
+        // Pass the project so a dispatched member can READ the repo to ground its answer (a
+        // reviewer that can't open the diff is the live gap this closes); absent → text-only.
+        ...(project ? { project: { name: project.name, rootPath: project.rootPath } } : {}),
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       }));
 

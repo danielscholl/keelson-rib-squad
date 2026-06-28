@@ -12,11 +12,18 @@ import type { Member } from "./types.ts";
 // The fan-out coordinator: one turn per member in parallel, then one synthesis
 // turn over their replies. Built on an INJECTED runAgentTurn (the host seam), not
 // an imported host, so the mechanism is unit-testable against a fake. Turns are
-// text-only (no tools, no cwd) — the spike proves the shape, not unconfined work.
+// text-only by default; a project-bound wave grants each member READ_TOOLS confined
+// to the repo root so a reviewer can actually inspect what it is asked to judge.
 
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_PER_TURN_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_MEMBERS = 6;
+
+// The read rail for a project-bound dispatch: enough to inspect the repo (the read subset
+// of code.ts's CODE_TOOLS), and nothing that mutates it. allowedTools present means "these
+// and no others" at the host, so a dispatched member can ground its answer in real files but
+// cannot edit, run commands, or push — those stay the code arm's job, behind the RAI floor.
+export const READ_TOOLS = ["Read", "Glob", "Grep"] as const;
 
 export type DispatchStatus = "ok" | "error" | "timeout" | "aborted";
 
@@ -42,6 +49,10 @@ export interface DispatchFanoutOptions {
   membersRoot: string;
   members: Member[];
   task: string;
+  // When set, each member's turn gets READ_TOOLS confined to the project root (cwd +
+  // allowedDirectories) so it can inspect the repo to answer — a reviewer that can't read
+  // the diff is useless. Absent keeps the turn text-only (pure reasoning, no filesystem).
+  project?: { name: string; rootPath: string };
   concurrency?: number;
   perTurnTimeoutMs?: number;
   maxMembers?: number;
@@ -77,6 +88,7 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
   // skips it too.
   const wantSynthesis = opts.synthesize ?? members.length > 1;
 
+  const root = opts.project?.rootPath.trim();
   const perMember = await runPool(members, concurrency, async (member): Promise<DispatchResult> => {
     if (opts.abortSignal?.aborted) {
       return { slug: member.slug, name: member.name, status: "aborted", text: "" };
@@ -86,7 +98,8 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
       opts.runAgentTurn,
       {
         system,
-        prompt: opts.task,
+        prompt: buildDispatchPrompt(opts.task, opts.project),
+        ...(root ? { cwd: root, allowedDirectories: [root], allowedTools: [...READ_TOOLS] } : {}),
         ...(member.model ? { model: member.model } : {}),
         ...(member.model && member.provider ? { provider: member.provider } : {}),
       },
@@ -310,6 +323,16 @@ ${priorMemory.trim() || "(empty)"}
 Return the COMPLETE updated memory document (Markdown), not an addition. For each existing item: keep it, sharpen it, fold this task's learning into it, or DELETE it if it is now wrong or stale. Then add only genuinely new durable facts. Merge near-duplicates. Keep the whole document under ${MEMORY_DOC_CAP} characters. Write every item so a future you with no memory of this task understands it alone (name who/what/when with absolute dates).
 
 Reply with ONLY the memory document text and nothing else. To change nothing, return your current memory verbatim. Writing nothing new is the common, correct outcome.`;
+}
+
+// Frame a project-bound member turn so it knows it can (and should) read the repo to ground
+// its answer rather than guess at file contents — the read tools are useless if the member
+// doesn't reach for them. Text-only turns pass the task through unchanged.
+function buildDispatchPrompt(task: string, project?: { name: string; rootPath: string }): string {
+  if (!project?.rootPath.trim()) return task;
+  return `You are working in the project "${project.name}", at its repository root. You have Read, Glob, and Grep to inspect the repo — open the files you need to ground your answer instead of guessing at their contents. This is a read-only analysis/review turn: you cannot edit, run commands, or push.
+
+${task}`;
 }
 
 const GENERIC_SYNTH_SYSTEM =

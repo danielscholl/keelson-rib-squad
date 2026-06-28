@@ -351,4 +351,46 @@ describe("dispatchFanout", () => {
     });
     expect(outcome.perMember[0]?.status).toBe("timeout");
   });
+
+  test("a project-bound dispatch grants the member READ tools confined to the repo root", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("read the repo and reviewed it")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review the change",
+      synthesize: false,
+      project: { name: "demo", rootPath: "/repo/demo" },
+    });
+    const memberReq = reqs[0];
+    expect(memberReq?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    expect(memberReq?.cwd).toBe("/repo/demo");
+    expect(memberReq?.allowedDirectories).toEqual(["/repo/demo"]);
+    // The framing tells the member it can read — the tools are useless if it doesn't reach for them.
+    expect(memberReq?.prompt).toContain("Read, Glob, and Grep");
+  });
+
+  test("a dispatch without a project stays text-only (no tools, no cwd)", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reasoned")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "think about the design",
+      synthesize: false,
+    });
+    expect(reqs[0]?.allowedTools).toBeUndefined();
+    expect(reqs[0]?.cwd).toBeUndefined();
+    expect(reqs[0]?.prompt).toBe("think about the design");
+  });
 });
