@@ -92,6 +92,23 @@ export async function saveRegistry(dataHome: string, reg: CastingRegistry): Prom
   await rename(tmp, target);
 }
 
+// Serialize the registry's read-modify-write spans per data home. saveRegistry's
+// temp+rename is atomic for a single write, but a cast does load→reserve→save, and two
+// overlapping casts (an approve-cast over a genesis, or parallel genesis) can each
+// reserve the same free character before either saves — the later save then clobbers
+// the earlier reservation, breaking the uniqueness the registry exists to guarantee.
+const registryLocks = new Map<string, Promise<unknown>>();
+
+function withRegistryLock<T>(dataHome: string, fn: () => Promise<T>): Promise<T> {
+  const prev = registryLocks.get(dataHome) ?? Promise.resolve();
+  const run = prev.then(fn, fn); // run fn after the prior holder settles, either way
+  registryLocks.set(
+    dataHome,
+    run.catch(() => {}), // the next waiter chains on completion, never on rejection
+  );
+  return run;
+}
+
 function usageOf(reg: CastingRegistry): ThemeUsage {
   const activeCountByTheme: Record<string, number> = {};
   for (const e of Object.values(reg.members)) {
@@ -132,14 +149,18 @@ function findActiveByOriginal(
   return undefined;
 }
 
+// The MOST-recently-retired entry for a character — archive keys are appended in
+// retire order, so the last match is the freshest. Returning the first (oldest) would
+// link a reuse's lineage to a stale ancestor and overwrite the recent retired entry.
 function findRetiredByName(
   reg: CastingRegistry,
   themedName: string,
 ): { slug: string; entry: CastingEntry } | undefined {
+  let found: { slug: string; entry: CastingEntry } | undefined;
   for (const [slug, entry] of Object.entries(reg.members)) {
-    if (entry.status === "retired" && entry.themedName === themedName) return { slug, entry };
+    if (entry.status === "retired" && entry.themedName === themedName) found = { slug, entry };
   }
-  return undefined;
+  return found;
 }
 
 function characterIn(themeId: string, name: string): ThemeCharacter | undefined {
@@ -207,16 +228,30 @@ export interface ThemedIdentity {
 // character, reserves it (uniqueness + lineage), and persists. Slug-collision-safe
 // against member dirs already on disk. Theming off / fully exhausted falls back to
 // the proposed name.
-export async function assignThemedIdentity(
+export function assignThemedIdentity(
   dataHome: string,
   input: { proposedName: string; role: string },
   config: ThemingConfig = resolveThemingConfig(),
 ): Promise<ThemedIdentity> {
-  const proposedName = input.proposedName.trim() || "member";
-
+  // `off` touches no registry, so it needs no lock; everything else does a
+  // load→reserve→save that must be serialized per data home (see withRegistryLock).
   if (config.mode === "off") {
-    return { name: proposedName, slug: slugify(proposedName), originalName: proposedName };
+    const proposedName = input.proposedName.trim() || "member";
+    return Promise.resolve({
+      name: proposedName,
+      slug: slugify(proposedName),
+      originalName: proposedName,
+    });
   }
+  return withRegistryLock(dataHome, () => assignThemedIdentityLocked(dataHome, input, config));
+}
+
+async function assignThemedIdentityLocked(
+  dataHome: string,
+  input: { proposedName: string; role: string },
+  config: ThemingConfig,
+): Promise<ThemedIdentity> {
+  const proposedName = input.proposedName.trim() || "member";
 
   const reg = await loadRegistry(dataHome);
 
@@ -317,15 +352,17 @@ function archiveKey(reg: CastingRegistry, slug: string): string {
 // corrupt registry just yields nothing to free. Never throws (it is wired in after
 // the member is already removed; a registry hiccup must not fail the retire).
 export async function retireCastingName(dataHome: string, slug: string): Promise<void> {
-  try {
-    const reg = await loadRegistry(dataHome);
-    const entry = reg.members[slug];
-    if (!entry || entry.status === "retired") return;
-    entry.status = "retired";
-    await saveRegistry(dataHome, reg);
-  } catch {
-    // best-effort: the member dir is already gone; the freed name just won't reflect
-  }
+  await withRegistryLock(dataHome, async () => {
+    try {
+      const reg = await loadRegistry(dataHome);
+      const entry = reg.members[slug];
+      if (!entry || entry.status === "retired") return;
+      entry.status = "retired";
+      await saveRegistry(dataHome, reg);
+    } catch {
+      // best-effort: the member dir is already gone; the freed name just won't reflect
+    }
+  });
 }
 
 // --- charter folding ------------------------------------------------------------

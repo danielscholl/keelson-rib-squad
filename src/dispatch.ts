@@ -64,13 +64,18 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
   const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY);
   const perTurnTimeoutMs = opts.perTurnTimeoutMs ?? DEFAULT_PER_TURN_TIMEOUT_MS;
   const maxMembers = Math.max(1, opts.maxMembers ?? DEFAULT_MAX_MEMBERS);
-  const wantSynthesis = opts.synthesize ?? true;
 
   let members = opts.members;
   if (members.length > maxMembers) {
     notes.push(`truncated to ${maxMembers} of ${members.length} members (cost cap)`);
     members = members.slice(0, maxMembers);
   }
+
+  // Default synthesis on for a multi-member wave, off for a single member (its one
+  // reply IS the answer — a synthesis turn there is a redundant paid call). An explicit
+  // `synthesize` still wins. Computed AFTER truncation so a cost-capped 1-member wave
+  // skips it too.
+  const wantSynthesis = opts.synthesize ?? members.length > 1;
 
   const perMember = await runPool(members, concurrency, async (member): Promise<DispatchResult> => {
     if (opts.abortSignal?.aborted) {

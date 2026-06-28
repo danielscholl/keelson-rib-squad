@@ -58,7 +58,7 @@ function cardFor(member: CastProposalRecord["members"][number]) {
     fields: { label: string; value: string }[];
     reason?: { label: string; text: string };
   } = {
-    title: member.name,
+    title: member.name.trim() || "(unnamed)",
     pill: { label: member.role.trim() || "Member" },
     fields,
   };

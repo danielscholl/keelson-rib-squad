@@ -1,4 +1,5 @@
 import type { Policy, PolicyContext, PolicyDecision, PolicyEvent } from "@keelson/shared";
+import { isForbiddenGitCommand, isMergeToolName } from "./forbidden.ts";
 
 // Squad's governance floor — the contributePolicies hook chamber skips. Squad agents
 // act on real repositories, so the rib contributes a NON-OVERRIDABLE policy the
@@ -12,19 +13,12 @@ import type { Policy, PolicyContext, PolicyDecision, PolicyEvent } from "@keelso
 // per the design: governing the operator's direct session would be overreach.
 const GOVERNED_SURFACES = new Set<PolicyContext["surface"]>(["workflow", "rib"]);
 
-// Named merge tools, if a provider exposes git/gh as first-class tools. Matched on the
-// tool name, so denied at both projection (dropped from the toolset) and per-call.
-// PR *creation* and ordinary pushes are deliberately NOT here — the dev loop ends in a
-// draft PR; only the human review gate merges. Force-push is caught below via the shell.
-const MERGE_TOOLS = new Set(["merge_pr", "gh_pr_merge", "gh_merge", "merge_pull_request"]);
-
-// Shell tools whose command string we inspect for irreversible git operations.
+// Shell tools whose command string we inspect for irreversible git operations. The
+// detection itself (force-push variants, +refspec, branch deletion, `gh pr merge`,
+// `gh api … /merge`) lives in forbidden.ts so the screen and this floor share one
+// tokenizing matcher. PR *creation* and ordinary pushes are deliberately allowed — the
+// dev loop ends in a draft PR; only the human review gate merges.
 const SHELL_TOOLS = new Set(["Bash", "bash", "shell", "run_command", "execute_command"]);
-
-// The integration-affecting, irreversible git operations the floor forbids from any
-// squad agent turn: merging a PR and force-pushing (history rewrite). Branch creation,
-// ordinary commits, and ordinary pushes are untouched — only what the human gate owns.
-const FORBIDDEN_GIT = /\bgh\s+pr\s+merge\b|\bgit\s+push\b[^\n]*(?:--force|\s-f\b)/i;
 
 // Pull a shell command out of a tool_call's args, whatever the provider names the
 // field. Returns "" when nothing string-like is present (e.g. projection time, where
@@ -53,7 +47,7 @@ const raiFloor: Policy = {
     if (!GOVERNED_SURFACES.has(ctx.surface)) return { outcome: "allow" };
 
     if (event.phase === "tool_call") {
-      if (MERGE_TOOLS.has(event.tool)) {
+      if (isMergeToolName(event.tool)) {
         return {
           outcome: "deny",
           reason: `squad RAI floor: '${event.tool}' (merge/PR-write) is reserved for the human review gate`,
@@ -61,7 +55,7 @@ const raiFloor: Policy = {
       }
       if (SHELL_TOOLS.has(event.tool)) {
         const cmd = shellCommand(event.args);
-        if (cmd && FORBIDDEN_GIT.test(cmd)) {
+        if (cmd && isForbiddenGitCommand(cmd)) {
           return {
             outcome: "deny",
             reason:

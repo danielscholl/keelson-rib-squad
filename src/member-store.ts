@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { assertSafeSlug } from "./genesis.ts";
 import type { Member, MemberStatus } from "./types.ts";
@@ -42,12 +42,12 @@ export async function scaffoldMember(membersRoot: string, record: MemberRecord):
   if (await exists(dir)) throw new Error(`member '${record.slug}' already exists`);
 
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "member.json"), `${JSON.stringify(record, null, 2)}\n`);
-  await writeFile(join(dir, "charter.md"), ensureTrailingNewline(record.charter));
+  await atomicWrite(join(dir, "member.json"), `${JSON.stringify(record, null, 2)}\n`);
+  await atomicWrite(join(dir, "charter.md"), ensureTrailingNewline(record.charter));
   for (const [file, seed] of Object.entries(SEED_DOCS)) {
-    await writeFile(join(dir, file), seed());
+    await atomicWrite(join(dir, file), seed());
   }
-  await writeFile(
+  await atomicWrite(
     join(dir, "log.md"),
     `# Log\n\n- ${record.createdAt} — genesis: authored from brief (role: ${record.role}).\n`,
   );
@@ -212,7 +212,7 @@ export async function writeMemory(membersRoot: string, slug: string, text: strin
   if (body.length > MEMORY_DOC_CAP) {
     throw new Error(`memory exceeds ${MEMORY_DOC_CAP} chars (got ${body.length})`);
   }
-  await writeFile(join(dir, "memory.md"), ensureTrailingNewline(body));
+  await atomicWrite(join(dir, "memory.md"), ensureTrailingNewline(body));
 }
 
 export async function retireMember(membersRoot: string, slug: string): Promise<void> {
@@ -245,7 +245,7 @@ export async function setMemberModel(
     delete rec.provider;
   }
 
-  await writeFile(join(dir, "member.json"), `${JSON.stringify(rec, null, 2)}\n`);
+  await atomicWrite(join(dir, "member.json"), `${JSON.stringify(rec, null, 2)}\n`);
 }
 
 // Keep only the most recent entries so a member's journal can't grow without
@@ -284,7 +284,7 @@ export async function appendLog(
   const header = lines[0]?.startsWith("#") ? lines[0] : "# Log";
   const bullets = lines.filter((l) => l.trimStart().startsWith("- "));
   const kept = [...bullets, entry].slice(-LOG_MAX_ENTRIES);
-  await writeFile(join(dir, "log.md"), `${header}\n\n${kept.join("\n")}\n`);
+  await atomicWrite(join(dir, "log.md"), `${header}\n\n${kept.join("\n")}\n`);
 }
 
 // A Node fs error carrying an errno `code`, so a not-found read can be told apart
@@ -307,4 +307,13 @@ async function exists(path: string): Promise<boolean> {
 
 function ensureTrailingNewline(text: string): string {
   return text.endsWith("\n") ? text : `${text}\n`;
+}
+
+// Write a member file atomically (temp + rename, like the casting registry). A crash
+// mid-write would otherwise leave a torn member.json that listMemberRecords skips —
+// making the member vanish from the roster while its dir still blocks re-creation.
+async function atomicWrite(path: string, content: string): Promise<void> {
+  const tmp = `${path}.${process.pid}.tmp`;
+  await writeFile(tmp, content);
+  await rename(tmp, path);
 }

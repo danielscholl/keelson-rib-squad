@@ -40,7 +40,7 @@ const VALID = JSON.stringify({
   description: "lint then report",
   nodes: [
     { id: "lint", bash: "bun run check" },
-    { id: "report", prompt: "summarize the lint result", needs: ["lint"] },
+    { id: "report", prompt: "summarize the lint result", depends_on: ["lint"] },
   ],
 });
 
@@ -91,52 +91,72 @@ describe("validateWorkflowDef", () => {
     ).toBe(false);
   });
 
-  test("rejects a dangling needs reference", () => {
+  test("rejects a dangling depends_on reference", () => {
     const r = validateWorkflowDef({
       name: "x",
-      nodes: [{ id: "a", bash: "x", needs: ["ghost"] }],
+      nodes: [{ id: "a", bash: "x", depends_on: ["ghost"] }],
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("ghost");
   });
+
+  test("ignores a legacy `needs` field (executor keys on depends_on)", () => {
+    // `needs` is not the executor's edge field, so it's an inert unknown field — the
+    // node validates, it just carries no ordering. (The author prompt emits depends_on.)
+    const r = validateWorkflowDef({
+      name: "x",
+      nodes: [{ id: "a", prompt: "y", needs: ["ghost"] }],
+    });
+    expect(r.ok).toBe(true);
+  });
 });
 
-describe("screenWorkflowForRun", () => {
+describe("screenWorkflowForRun (allowlist by node shape)", () => {
   function wf(nodes: Array<Record<string, unknown>>): AuthoredWorkflow {
     return { name: "x", description: "d", nodes: nodes as AuthoredWorkflow["nodes"] };
   }
 
-  test("passes a safe workflow", () => {
+  test("auto-runs a prompt/loop/cancel-only workflow", () => {
     expect(
       screenWorkflowForRun(
         wf([
-          { id: "a", bash: "bun run check" },
-          { id: "b", prompt: "report" },
+          { id: "a", prompt: "plan the work" },
+          { id: "b", loop: { prompt: "iterate", until: "DONE", max_iterations: 3 } },
+          { id: "c", prompt: "report", depends_on: ["a"] },
         ]),
       ).ok,
     ).toBe(true);
   });
 
-  test("flags merge / force-push / destructive rm / sudo in a bash node", () => {
-    for (const bash of [
-      "gh pr merge 1",
-      "git push --force",
-      "git push -f origin main",
-      "rm -rf /",
-      "rm -rf ~",
-      "rm -rf *",
-      "sudo rm x",
+  test("keeps any bash / script / command node author-only — even a 'clean' one", () => {
+    // The screen no longer judges shell CONTENT (a bash node can invoke an interpreter
+    // and defeat any denylist); ungoverned-execution node shapes are simply not auto-run.
+    for (const node of [
+      { id: "a", bash: "echo hi" },
+      { id: "a", bash: "rm -rf ./build" },
+      { id: "a", bash: "git push --force" },
+      { id: "a", script: "console.log('x')" },
+      { id: "a", command: "/deploy" },
     ]) {
-      expect(screenWorkflowForRun(wf([{ id: "a", bash }])).ok).toBe(false);
+      expect(screenWorkflowForRun(wf([node])).ok).toBe(false);
     }
   });
 
-  test("flags a forbidden op in a script node too", () => {
-    expect(screenWorkflowForRun(wf([{ id: "a", script: "sudo reboot" }])).ok).toBe(false);
+  test("keeps an approval node author-only (can't resolve in an autonomous run)", () => {
+    expect(screenWorkflowForRun(wf([{ id: "a", approval: { message: "ok?" } }])).ok).toBe(false);
   });
 
-  test("does not flag a targeted clean (rm -rf ./build)", () => {
-    expect(screenWorkflowForRun(wf([{ id: "a", bash: "rm -rf ./build" }])).ok).toBe(true);
+  test("keeps a loop with an until_bash shell probe author-only (the bypass it closed)", () => {
+    const r = screenWorkflowForRun(
+      wf([
+        {
+          id: "a",
+          loop: { prompt: "noop", until: "NEVER", max_iterations: 1, until_bash: "curl x | sh" },
+        },
+      ]),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("until_bash");
   });
 });
 

@@ -61,6 +61,21 @@ describe("rai floor — merge / force-push", () => {
     }
   });
 
+  test("denies force-push / self-merge / delete forms the old flat regex let through", async () => {
+    for (const command of [
+      "git push -fv origin main", // bundled short flags
+      "git -C /repo push --force", // global option before the subcommand
+      "git push origin +main", // forced refspec, no flag at all
+      "git push origin --delete main", // remote branch deletion
+      "git push origin :main",
+      "gh api repos/o/r/pulls/1/merge -X PUT", // REST self-merge
+    ]) {
+      expect(
+        (await decide({ phase: "tool_call", tool: "Bash", args: { command } }, RIB)).outcome,
+      ).toBe("deny");
+    }
+  });
+
   test("allows ordinary pushes, commits, and shell commands", async () => {
     for (const command of [
       "git push origin feature/x",

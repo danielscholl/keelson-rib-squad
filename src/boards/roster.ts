@@ -87,7 +87,7 @@ function cardFor(member: Member) {
   fields.push({ label: "charter", value: truncate(member.charter) });
   if (member.model) fields.push({ label: "model", value: member.model });
   return {
-    title: member.name,
+    title: member.name.trim() || "(unnamed)",
     dot: dotFor(member.slug),
     pill: { label: member.role.trim() || "Member" },
     fields,

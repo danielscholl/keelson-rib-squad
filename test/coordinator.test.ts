@@ -210,6 +210,59 @@ describe("runCoordinator loop", () => {
     expect(d.calls).toHaveLength(3);
   });
 
+  test("max-rounds persists a TERMINAL ledger so a same-task re-run starts fresh", async () => {
+    const progress =
+      'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}';
+    const limits = { maxRounds: 2, maxStall: 99, maxResets: 99 };
+    const first = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([progress]),
+      dispatch: fakeDispatch().fn,
+      limits,
+    });
+    expect(first.status).toBe("max-rounds");
+    // The ledger is persisted terminal, not left "active" at the ceiling.
+    expect((await loadLedger(home))?.status).toBe("max-rounds");
+    // A same-task re-run does NOT resume the ceiling-hit ledger — it runs turns again
+    // rather than instantly short-circuiting to a stale max-rounds with zero turns.
+    const d2 = fakeDispatch();
+    const second = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([progress]),
+      dispatch: d2.fn,
+      limits,
+    });
+    expect(second.status).toBe("max-rounds");
+    expect(d2.calls.length).toBeGreaterThan(0);
+  });
+
+  test("does not resume a same-named task bound to a different project", async () => {
+    // An active ledger for this task under project A.
+    await saveLedger(home, {
+      task: "ship the feature",
+      projectId: "proj-A",
+      facts: ["stale fact from A"],
+      plan: ["A plan"],
+      round: 1,
+      stallCount: 0,
+      resetCount: 0,
+      status: "active",
+      transcript: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    // Re-running the same task bound to project B must start fresh, not inherit A's
+    // facts/plan while the code arm would confine edits to B.
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "proj-B", name: "repoB", rootPath: "/repoB" },
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"fresh"}']),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.ledger.facts).not.toContain("stale fact from A");
+    expect(res.summary).toBe("fresh");
+  });
+
   test("an unparseable coordinator reply counts as a stall (fallback)", async () => {
     const d = fakeDispatch();
     const res = await runCoordinator({
@@ -313,10 +366,12 @@ describe("runCoordinator loop", () => {
 
   test("the workflow arm authors AND runs when a project + run seam are present", async () => {
     const ran: unknown[] = [];
+    // A prompt-only DAG is auto-run-safe (every node is a policy-gated agent turn);
+    // bash/script/command/loop-until_bash workflows stay author-only (see the screen).
     const validWf = JSON.stringify({
       name: "verify",
       description: "d",
-      nodes: [{ id: "a", bash: "echo hi" }],
+      nodes: [{ id: "a", prompt: "verify the build and report" }],
     });
     const res = await runCoordinator({
       ...base(),
@@ -365,7 +420,7 @@ describe("runCoordinator loop", () => {
     ).toBe(true);
   });
 
-  test("the workflow arm authors but refuses to run a forbidden-op workflow", async () => {
+  test("the workflow arm authors but refuses to auto-run a bash workflow (author-only)", async () => {
     let ranCalled = false;
     const dangerWf = JSON.stringify({
       name: "danger",

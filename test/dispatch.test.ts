@@ -169,7 +169,15 @@ describe("dispatchFanout", () => {
       return fakeTurn(Promise.resolve({ status: "error", text: "", error: "synth blew up" }));
     };
 
-    const outcome = await dispatchFanout({ runAgentTurn, membersRoot: root, members, task });
+    // Force synthesis on a single-member wave (it now defaults off for one member) so
+    // the errored-synthesis fail-soft path is exercised.
+    const outcome = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task,
+      synthesize: true,
+    });
     expect(outcome.synthesis).toBeUndefined();
     expect(outcome.perMember[0]?.status).toBe("ok");
     expect(outcome.notes.some((n) => n.includes("synthesis turn error"))).toBe(true);

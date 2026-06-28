@@ -39,7 +39,10 @@ export interface CoordinatorLedger {
   round: number;
   stallCount: number;
   resetCount: number;
-  status: "active" | "done" | "gave-up";
+  // "active" resumes on a same-task re-run; the terminal states (done / gave-up /
+  // max-rounds) do not, so a finished task starts fresh rather than re-tripping its
+  // own ceiling and returning a stale summary having run zero turns.
+  status: "active" | "done" | "gave-up" | "max-rounds";
   transcript: CoordinatorEntry[];
   summary?: string;
   createdAt: string;
@@ -142,7 +145,9 @@ function ledgerPath(dataHome: string): string {
 
 export async function saveLedger(dataHome: string, ledger: CoordinatorLedger): Promise<void> {
   await mkdir(dataHome, { recursive: true });
-  const tmp = `${ledgerPath(dataHome)}.tmp`;
+  // A pid-unique temp keeps two writers (e.g. overlapping coordinate calls) from
+  // interleaving into one `.tmp` and renaming a torn file into place.
+  const tmp = `${ledgerPath(dataHome)}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(ledger, null, 2)}\n`);
   await rename(tmp, ledgerPath(dataHome));
 }
@@ -194,7 +199,17 @@ async function loadOrInit(
   at: string,
 ): Promise<CoordinatorLedger> {
   const existing = await loadLedger(dataHome);
-  if (existing && existing.task === task && existing.status === "active") return existing;
+  if (
+    existing &&
+    existing.task === task &&
+    existing.status === "active" &&
+    // Resume only within the SAME project — a generic task ("fix the failing tests")
+    // run against repo A then repo B must not resume A's facts/plan while the code arm
+    // confines edits to B.
+    (existing.projectId ?? undefined) === (projectId ?? undefined)
+  ) {
+    return existing;
+  }
   return freshLedger(task, projectId, at);
 }
 
@@ -412,6 +427,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     }
     if (ledger.round >= limits.maxRounds) {
       status = "max-rounds";
+      // Persist a TERMINAL status so a same-task re-run starts fresh instead of
+      // resuming this ceiling-hit ledger and short-circuiting straight back here.
+      ledger = { ...ledger, status: "max-rounds", updatedAt: now() };
+      await saveLedger(opts.dataHome, ledger);
       break;
     }
 
@@ -493,11 +512,20 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       roster: opts.roster,
     });
     if (result.dispatch) {
-      // Fall back to the single member's reply when no synthesis ran (1-member step).
+      const d = result.dispatch;
+      const oks = d.perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0);
+      // Prefer the synthesis; when it is absent/failed, attribute EVERY member's reply
+      // rather than keeping only the first (a failed multi-member synthesis must not
+      // silently discard members #2..N).
       const synth =
-        result.dispatch.synthesis?.trim() ||
-        result.dispatch.perMember.find((r) => r.status === "ok")?.text?.trim() ||
+        d.synthesis?.trim() ||
+        (oks.length > 1
+          ? oks.map((r) => `[${r.name}] ${r.text.trim()}`).join("\n\n")
+          : oks[0]?.text.trim()) ||
         "(no synthesis)";
+      // Surface dispatch notes (cost-cap truncation, synthesis skip/failure) so they
+      // reach the next round's prompt instead of being silently dropped.
+      const noteSuffix = d.notes.length > 0 ? `\n(notes: ${d.notes.join("; ")})` : "";
       ledger = {
         ...ledger,
         facts: foldFacts(ledger.facts, [
@@ -508,7 +536,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           kind: "dispatch",
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
           instruction: decided.step.instruction,
-          text: synth,
+          text: synth + noteSuffix,
         }),
         updatedAt: now(),
       };
