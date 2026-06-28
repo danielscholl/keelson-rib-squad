@@ -1,9 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { RibContext } from "@keelson/shared";
+import type { MemoryTools, RibContext } from "@keelson/shared";
 import { runCodeTurn } from "./code.ts";
 import { parseTrailingDirective } from "./control-json.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
+import { recallGrounding, reflectOutcome } from "./memory.ts";
 import {
   type CodeStepOutcome,
   DEFAULT_LIMITS,
@@ -245,10 +246,16 @@ function coordinatorPrompt(
   roster: readonly Member[],
   replan: boolean,
   canCode: boolean,
+  recalled: readonly string[],
 ): string {
   const planBlock = ledger.plan.length
     ? ledger.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
     : "(no plan yet)";
+  // Prior governed decisions/lessons recalled for this task — shown so the manager
+  // grounds the plan in what the team already learned. Omitted entirely when none.
+  const recalledNote = recalled.length
+    ? `\nPrior decisions & lessons (recalled from the team's memory — honor them):\n${recalled.map((r) => `- ${r}`).join("\n")}\n`
+    : "";
   const factsBlock = ledger.facts.length
     ? ledger.facts.map((f) => `- ${f}`).join("\n")
     : "(none yet)";
@@ -269,7 +276,7 @@ ${renderRoster(roster)}
 
 Current plan:
 ${planBlock}
-
+${recalledNote}
 Findings so far:
 ${factsBlock}
 
@@ -306,6 +313,11 @@ export interface RunCoordinatorOptions {
   // bound + the safety screen passes), the workflow arm author-AND-runs; absent leaves
   // it author-only. Optional so an older harness / a test rig degrades cleanly.
   runWorkflow?: RibContext["runWorkflow"];
+  // The governed-memory seam (RibContext.getMemory). When present AND a project is bound,
+  // the coordinator recalls prior decisions/lessons INTO the run's grounding and writes
+  // the outcome BACK as a governed decision on completion (#15 capstone). Optional and
+  // fail-soft — absent (or no project) degrades to no memory, the pre-capstone behavior.
+  getMemory?: () => MemoryTools;
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
 }
@@ -417,6 +429,11 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     });
 
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
+  // Recall prior governed decisions/lessons for this task ONCE at the start of the run
+  // (project-scoped; [] without a memory seam or project) and fold them into the
+  // coordinator's grounding every round — the "recall into the next pass" capstone arc.
+  const memory = opts.getMemory?.();
+  const recalled = await recallGrounding(memory, project?.id, opts.task);
   let replanRequested = false;
   let status: RunCoordinatorResult["status"] = "max-rounds";
 
@@ -438,7 +455,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       opts.runAgentTurn,
       {
         system: COORDINATOR_SYSTEM,
-        prompt: coordinatorPrompt(ledger, opts.roster, replanRequested, Boolean(code)),
+        prompt: coordinatorPrompt(ledger, opts.roster, replanRequested, Boolean(code), recalled),
       },
       timeoutMs,
       opts.abortSignal,
@@ -484,6 +501,29 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(ledger.summary ? {} : { summary: directive.summary ?? decided.step.reason }),
         updatedAt: now(),
       };
+      // Reflect a COMPLETED run's outcome into the governed ledger so the next pass on
+      // this project recalls it (the "grow memory" capstone arc). Only on a genuine
+      // completion, not give-up; fail-soft (a write failure leaves the run succeeded).
+      if (status === "done") {
+        const wrote = await reflectOutcome(
+          memory,
+          project?.id,
+          opts.task,
+          ledger.summary ?? "",
+          ledger.facts,
+        );
+        if (wrote) {
+          ledger = {
+            ...ledger,
+            transcript: appendEntry(ledger.transcript, {
+              round: ledger.round,
+              kind: "coordinator",
+              text: "[memory] recorded the outcome as a governed decision",
+            }),
+            updatedAt: now(),
+          };
+        }
+      }
       await saveLedger(opts.dataHome, ledger);
       break;
     }
