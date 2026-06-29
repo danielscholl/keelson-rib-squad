@@ -696,17 +696,21 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         // contribution — the per-agent half of the grow-memory arc; fail-soft, skipped on abort.
         const contributions = collectContributions(ledger.transcript, opts.roster);
         if (contributions.length > 0 && !opts.abortSignal?.aborted) {
-          const reflected = await reflectAtClose(contributions);
-          if (reflected.length > 0) {
-            ledger = {
-              ...ledger,
-              transcript: appendEntry(ledger.transcript, {
-                round: ledger.round,
-                kind: "coordinator",
-                text: `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`,
-              }),
-              updatedAt: now(),
-            };
+          try {
+            const reflected = await reflectAtClose(contributions);
+            if (reflected.length > 0) {
+              ledger = {
+                ...ledger,
+                transcript: appendEntry(ledger.transcript, {
+                  round: ledger.round,
+                  kind: "coordinator",
+                  text: `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`,
+                }),
+                updatedAt: now(),
+              };
+            }
+          } catch {
+            // fail-soft: a rejecting reflection seam must not crash a completed run
           }
         }
       }

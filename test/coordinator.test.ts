@@ -737,6 +737,22 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.transcript.some((e) => e.text.includes("reflected on the run"))).toBe(true);
   });
 
+  test("a throwing reflectAtClose seam does not crash the completed run (fail-soft)", async () => {
+    const d = fakeDispatch("did the work");
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: d.fn,
+      reflectAtClose: async () => {
+        throw new Error("reflect boom");
+      },
+    });
+    expect(res.status).toBe("done"); // the run still completes despite the reflection seam throwing
+  });
+
   test("surfaces the team gaps the manager flags, accumulated across rounds, without mutating the roster", async () => {
     const d = fakeDispatch();
     const res = await runCoordinator({
