@@ -2,7 +2,7 @@
   Keelson blueprint theme for Starlight.
   Maps the keelson palette onto Starlight's CSS custom properties: a brass accent
   against navy structure, Inter + monospace type, and a faint blueprint grid.
-  Keep this the single source of docs color; mirror docs/public/assets/keelson.css.
+  The single source of docs color for the Starlight tier.
 */
 
 :root {
