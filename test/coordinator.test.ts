@@ -842,6 +842,22 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.summary ?? "").not.toMatch(/passes on its own/i);
   });
 
+  test("#57: identical repeated outcomes give up instead of burning to max-rounds", async () => {
+    // The manager always claims progress (never in_loop, never satisfied) and keeps dispatching
+    // the same step; the member returns the SAME text every round. Without the deterministic
+    // repeat backstop this runs to max-rounds — with it, the run recognizes the loop and gives up.
+    const progressDirective =
+      'go\n{"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"atlas","instruction":"do the doomed thing"}';
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun(Array(20).fill(progressDirective)),
+      dispatch: fakeDispatch("identical failing output").fn,
+      limits: { maxRounds: 20, maxStall: 2, maxResets: 1 },
+    });
+    expect(res.status).toBe("gave-up");
+    expect(res.rounds).toBeLessThan(20);
+  });
+
   test("review gate: no new code after a clean review does not re-run review", async () => {
     const d = fakeDispatch("RAI VERDICT: PASS\nno blocking defect found");
     let verifyCalls = 0;

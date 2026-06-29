@@ -137,6 +137,24 @@ describe("decideOrchestratorStep", () => {
     expect(out.state.stallCount).toBe(1);
   });
 
+  test("#57: repeatedOutcome counts as a stall even when the manager reports progress", () => {
+    const out = decide({
+      progress: ledger({ isInLoop: false, isProgressBeingMade: true }),
+      state: state({ stallCount: 0 }),
+      repeatedOutcome: true,
+    });
+    expect(out.state.stallCount).toBe(1);
+  });
+
+  test("#57: repeatedOutcome at the stall threshold forces a re-plan despite a progress claim", () => {
+    const out = decide({
+      progress: ledger({ isInLoop: false, isProgressBeingMade: true }),
+      state: state({ stallCount: 2, resetCount: 0 }),
+      repeatedOutcome: true,
+    });
+    expect(out.step.kind).toBe("replan");
+  });
+
   test("crossing maxStall triggers a re-plan and spends a reset", () => {
     const out = decide({
       progress: ledger({ isProgressBeingMade: false }),

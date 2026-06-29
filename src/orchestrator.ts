@@ -75,6 +75,11 @@ export interface DecideInput {
   roster: readonly Pick<Member, "slug" | "tools">[];
   // Accepts a full override or a partial overlay (unspecified fields fall back to DEFAULT_LIMITS).
   limits?: Partial<OrchestratorLimits>;
+  // Deterministic stall backstop: the driver sets this when the same member produced the same
+  // outcome on consecutive rounds. The in_loop/progress signals are the manager's own claims, so
+  // a manager that keeps re-dispatching a doomed step while reporting progress would otherwise
+  // never trip the stall cap; an identical repeated outcome is a loop regardless of the claim.
+  repeatedOutcome?: boolean;
 }
 
 export interface DecideOutput {
@@ -117,7 +122,8 @@ export function decideOrchestratorStep(input: DecideInput): DecideOutput {
     };
   }
 
-  const stalled = progress.isInLoop || !progress.isProgressBeingMade;
+  const stalled =
+    progress.isInLoop || !progress.isProgressBeingMade || (input.repeatedOutcome ?? false);
   if (stalled) {
     stallCount += 1;
     if (stallCount >= limits.maxStall) {

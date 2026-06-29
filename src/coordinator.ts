@@ -64,6 +64,10 @@ export interface CoordinatorLedger {
   round: number;
   stallCount: number;
   resetCount: number;
+  // Deterministic repeated-outcome tracker: the fingerprint of the last execute outcome
+  // (speaker + normalized text) and how many consecutive rounds produced it. Feeds the
+  // orchestrator's stall backstop so a doomed step repeated under a "progress" claim is caught.
+  outcomeRepeat?: { fingerprint: string; count: number };
   // "active" resumes on a same-task re-run; the terminal states (done / gave-up /
   // max-rounds) do not, so a finished task starts fresh rather than re-tripping its
   // own ceiling and returning a stale summary having run zero turns.
@@ -147,6 +151,23 @@ const STEP_DESC_CAP = 200; // per-swept-step char cap so the re-plan prompt stay
 const MAX_GAPS = 6; // bounded list of "the roster lacks X" recommendations
 const GAP_CAP = 160; // per-gap char cap so a recommendation stays a short headline
 export const MAX_VERIFY_FAILURES = 3; // consecutive done-gate failures before terminating
+// The same execute outcome (member + normalized text) this many rounds running is treated as a
+// deterministic stall, independent of the manager's self-reported progress (issue #57).
+export const REPEAT_STALL_AT = 2;
+
+// Stable fingerprint of an execute outcome for repeat detection: speaker + a normalized,
+// length-capped signature of the outcome text. Only execute outcomes (dispatch/code/workflow)
+// count — coordinator/replan/failed/verify entries aren't repeatable work. Returns undefined for
+// a non-outcome entry so the driver leaves the repeat counter untouched.
+function outcomeFingerprint(entry: CoordinatorEntry | undefined): string | undefined {
+  if (!entry) return undefined;
+  if (entry.kind !== "dispatch" && entry.kind !== "code" && entry.kind !== "workflow") {
+    return undefined;
+  }
+  const speaker = entry.speaker ?? "team";
+  const signature = (entry.text ?? "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 240);
+  return `${speaker}:${signature}`;
+}
 export const MAX_CHANGE_QUALITY_FAILURES = 3; // consecutive done-gate quality failures before terminating
 const VERIFY_TIMEOUT_MS = 300_000; // per verify command — test suites can be slow
 const VERIFY_SUMMARY_CAP = 800; // capped tail of a failing command's output folded as a fact
@@ -367,6 +388,12 @@ function coordinatorPrompt(
   const replanNote = replan
     ? `\nPROGRESS HAS STALLED. Rebuild the plan from scratch — a different approach, or a different member. Do not repeat the step that stalled.${failedBlock}\n`
     : "";
+  // Deterministic repeat warning (#57): the same step produced the same outcome N rounds running.
+  // Re-dispatching it is futile — tell the manager to change approach before the stall cap forces it.
+  const repeatNote =
+    ledger.outcomeRepeat && ledger.outcomeRepeat.count >= REPEAT_STALL_AT
+      ? `\n⚠ The last step produced an IDENTICAL outcome ${ledger.outcomeRepeat.count} rounds running. Re-dispatching it will not help — change approach: a different member, a different step, or investigate the blocker. Do NOT repeat the same instruction to the same member.\n`
+      : "";
   // The code arm is only offered when a project is bound (the turn is confined to it);
   // a code-tagged member then EDITS the repo instead of just reasoning.
   const codeNote = canCode
@@ -377,7 +404,7 @@ function coordinatorPrompt(
   const needsNote =
     '\n- if the members above lack a capability this goal needs, add "needs":["<the missing specialist, e.g. a security reviewer>"] so the operator can cast them. This is a non-blocking recommendation — keep going with the best available member; do NOT wait.';
   return `Goal:\n${ledger.task}
-${replanNote}
+${replanNote}${repeatNote}
 Members you may assign (use the slug as next_speaker):
 ${renderRoster(roster)}
 
@@ -1044,6 +1071,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       state: { round: ledger.round, stallCount: ledger.stallCount, resetCount: ledger.resetCount },
       roster: opts.roster,
       limits,
+      repeatedOutcome: (ledger.outcomeRepeat?.count ?? 0) >= REPEAT_STALL_AT,
     });
     ledger = {
       ...ledger,
@@ -1464,6 +1492,14 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     // later, unrelated stall surfaces a stale "do not resume" list.
     if (decided.state.stallCount === 0 && ledger.failedSteps?.length) {
       ledger = { ...ledger, failedSteps: [] };
+    }
+    // #57: fingerprint this execute outcome so the next decide() reads a run of identical
+    // outcomes as a deterministic stall even when the manager keeps self-reporting progress.
+    // A different outcome resets the counter automatically (no explicit clear on replan).
+    const fp = outcomeFingerprint(ledger.transcript[ledger.transcript.length - 1]);
+    if (fp) {
+      const count = fp === ledger.outcomeRepeat?.fingerprint ? ledger.outcomeRepeat.count + 1 : 1;
+      ledger = { ...ledger, outcomeRepeat: { fingerprint: fp, count } };
     }
     ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
     await saveLedger(opts.dataHome, ledger);
