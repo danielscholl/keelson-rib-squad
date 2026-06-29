@@ -84,6 +84,30 @@ describe("proposeCast", () => {
     expect(req?.prompt).toContain("OVERPOWERED");
   });
 
+  test("excludes internal non-chat providers (workflow, stub) from the offered catalog", async () => {
+    let req: RibAgentTurnRequest | undefined;
+    const runAgentTurn = (r: RibAgentTurnRequest): RibAgentTurn => {
+      req = r;
+      return fakeTurn(
+        Promise.resolve(
+          okResult(rosterReply([{ name: "Atlas", role: "Engineer", charter: "# Atlas" }])),
+        ),
+      );
+    };
+    await proposeCast({
+      runAgentTurn,
+      project: PROJECT,
+      providers: [
+        { id: "copilot", displayName: "GitHub Copilot" },
+        { id: "workflow", displayName: "Workflow" },
+        { id: "stub", displayName: "Stub" },
+      ],
+    });
+    expect(req?.prompt).toContain('"copilot"');
+    expect(req?.prompt).not.toContain('"workflow"');
+    expect(req?.prompt).not.toContain('"stub"');
+  });
+
   test("carries the scan's per-member provider/model assignment through", async () => {
     const runAgentTurn = (): RibAgentTurn =>
       fakeTurn(

@@ -86,6 +86,13 @@ export interface ProposeCastOptions {
 const SCAN_SYSTEM =
   "You are a staffing architect for a Keelson Squad — a small team of persistent AI agents an operator talks to directly. You inspect a real software project and propose the team best suited to the work in it. You read the repository to staff it well; you never modify it.";
 
+// Registered providers a member must never be assigned to: "workflow" is the always-on
+// provider backing workflow-linked conversations (echo-only for chat), and "stub" is the
+// test echo provider. getProviders() lists every registration, so the cast filters these
+// out before offering the catalog to the scan — mirroring the host's own non-stub /
+// non-workflow default selection.
+const NON_ASSIGNABLE_PROVIDER_IDS = new Set(["workflow", "stub"]);
+
 function scanPrompt(
   projectName: string,
   mission: string | undefined,
@@ -134,12 +141,15 @@ export async function proposeCast(opts: ProposeCastOptions): Promise<ProposeCast
   }
   const maxMembers = Math.max(1, opts.maxMembers ?? MAX_CAST_MEMBERS);
   const mission = opts.mission?.trim() || undefined;
+  const assignableProviders = (opts.providers ?? []).filter(
+    (p) => !NON_ASSIGNABLE_PROVIDER_IDS.has(p.id),
+  );
 
   const outcome = await runScanTurn(
     opts.runAgentTurn,
     {
       system: SCAN_SYSTEM,
-      prompt: scanPrompt(opts.project.name, mission, maxMembers, opts.providers ?? []),
+      prompt: scanPrompt(opts.project.name, mission, maxMembers, assignableProviders),
       cwd: root,
       allowedDirectories: [root],
       allowedTools: [...SCAN_TOOLS],
