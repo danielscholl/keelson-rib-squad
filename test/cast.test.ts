@@ -83,7 +83,7 @@ describe("proposeCast", () => {
     expect(result.proposal.projectName).toBe("keelson");
   });
 
-  test("dedupes/trims capability tags and drops a provider with no model", async () => {
+  test("dedupes/trims capability tags and keeps a provider with no model (vendor pin)", async () => {
     const runAgentTurn = (): RibAgentTurn =>
       fakeTurn(
         Promise.resolve(
@@ -104,8 +104,9 @@ describe("proposeCast", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.proposal.members[0]?.tools).toEqual(["code", "read"]);
-    // provider only rides alongside a model.
-    expect(result.proposal.members[0]?.provider).toBeUndefined();
+    // A provider may stand alone — pin the vendor, default model.
+    expect(result.proposal.members[0]?.provider).toBe("anthropic");
+    expect(result.proposal.members[0]?.model).toBeUndefined();
   });
 
   test("extracts the JSON object from a fenced / prose-wrapped reply", async () => {

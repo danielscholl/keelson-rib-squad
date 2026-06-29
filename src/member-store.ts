@@ -126,8 +126,17 @@ export async function listMemberRecords(
         charter: rec.charter,
         status: rec.status === "inactive" ? "inactive" : "active",
         createdAt: typeof rec.createdAt === "string" ? rec.createdAt : "",
-        ...(typeof rec.model === "string" && rec.model ? { model: rec.model } : {}),
+        // Provider-primary coherence at the read boundary: a model is surfaced only
+        // with its provider, so a legacy model-only record (written before the rule)
+        // reads as unpinned rather than reaching a turn as a stray model on the default
+        // provider. Consumers (dispatch, code, seed) therefore never see model-only.
         ...(typeof rec.provider === "string" && rec.provider ? { provider: rec.provider } : {}),
+        ...(typeof rec.provider === "string" &&
+        rec.provider &&
+        typeof rec.model === "string" &&
+        rec.model
+          ? { model: rec.model }
+          : {}),
         ...(Array.isArray(rec.tools) && rec.tools.length > 0
           ? { tools: rec.tools.filter((t): t is string => typeof t === "string") }
           : {}),
@@ -234,12 +243,17 @@ export async function setMemberModel(
   const rec = JSON.parse(await readFile(join(dir, "member.json"), "utf8")) as MemberRecord;
   const model = pin.model?.trim();
   const provider = pin.provider?.trim();
-  if (provider && !model) throw new Error("provider requires a model");
+  // A model is vendor-specific, so a pinned model needs its provider; a provider may
+  // stand alone (pin the vendor, let it pick the model) — the mixed-provider team case
+  // (e.g. a copilot triager with no model pin).
+  if (model && !provider) {
+    throw new Error("a pinned model needs its provider — set provider alongside model");
+  }
 
-  if (model) {
-    rec.model = model;
-    if (provider) rec.provider = provider;
-    else delete rec.provider;
+  if (provider) {
+    rec.provider = provider;
+    if (model) rec.model = model;
+    else delete rec.model;
   } else {
     delete rec.model;
     delete rec.provider;

@@ -190,8 +190,8 @@ async function themedRecord(base: {
     ...(id.personality ? { personality: id.personality } : {}),
     ...(id.backstory ? { backstory: id.backstory } : {}),
     ...(id.originalName !== id.name ? { originalName: id.originalName } : {}),
-    ...(base.model ? { model: base.model } : {}),
-    ...(base.model && base.provider ? { provider: base.provider } : {}),
+    ...(base.provider ? { provider: base.provider } : {}),
+    ...(base.provider && base.model ? { model: base.model } : {}),
     ...(base.tools && base.tools.length > 0 ? { tools: [...base.tools] } : {}),
   };
 }
@@ -235,8 +235,8 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
           role,
           charter,
           createdAt: new Date().toISOString(),
-          ...(model ? { model } : {}),
-          ...(model && provider ? { provider } : {}),
+          ...(provider ? { provider } : {}),
+          ...(provider && model ? { model } : {}),
           ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
         });
         await scaffoldMember(membersDir(), record);
@@ -1087,8 +1087,8 @@ async function approveCastAction(): Promise<RibActionResult> {
           role: m.role,
           charter: m.charter,
           createdAt: at,
-          ...(m.model ? { model: m.model } : {}),
-          ...(m.model && m.provider ? { provider: m.provider } : {}),
+          ...(m.provider ? { provider: m.provider } : {}),
+          ...(m.provider && m.model ? { model: m.model } : {}),
           ...(m.tools && m.tools.length > 0 ? { tools: m.tools } : {}),
         }),
       );
