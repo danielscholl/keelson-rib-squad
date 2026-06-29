@@ -969,9 +969,35 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     }
     if (ledger.round >= limits.maxRounds) {
       status = RUN_STATUS_MAX_ROUNDS;
+      // A ceiling hit with code edited but never cleanly reviewed is the dangerous
+      // false-negative: the loop may be hiding mergeable work behind an unsubstantiated
+      // review BLOCK. Consult the deterministic floor once and name the state, so a
+      // max-rounds terminal distinguishes "blocked by an unverified review" (green floor)
+      // from "genuinely unfinished" (red floor) rather than failing silently.
+      const ceilCodeRound = effectiveLastCodeRound(ledger);
+      const unresolvedReview =
+        ceilCodeRound !== undefined && ceilCodeRound > (ledger.lastCleanReviewRound ?? -1);
+      let ceilingSummary: string | undefined;
+      if (
+        unresolvedReview &&
+        project &&
+        opts.getExec &&
+        verify.length > 0 &&
+        !opts.abortSignal?.aborted
+      ) {
+        const v = await runVerification(opts.getExec, verify, project.rootPath, ledger.round);
+        ceilingSummary = v.passed
+          ? `Round ceiling reached with an unresolved review BLOCK, but the deterministic floor is GREEN (${v.command}) — the artifact passes on its own; the blocker is an unsubstantiated or unverified review, not a broken build. Human review recommended.`
+          : `Round ceiling reached with an unresolved review BLOCK and a RED deterministic check (${v.command}, exit ${v.exitCode}) — the artifact does not pass on its own.`;
+      }
       // Persist a TERMINAL status so a same-task re-run starts fresh instead of
       // resuming this ceiling-hit ledger and short-circuiting straight back here.
-      ledger = { ...ledger, status: RUN_STATUS_MAX_ROUNDS, updatedAt: now() };
+      ledger = {
+        ...ledger,
+        status: RUN_STATUS_MAX_ROUNDS,
+        ...(ceilingSummary ? { summary: ceilingSummary } : {}),
+        updatedAt: now(),
+      };
       await saveLedger(opts.dataHome, ledger);
       break;
     }
@@ -1062,7 +1088,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         }
         const review = await dispatch(
           reviewers,
-          "Adversarial review the current project diff and try to refute it. Cite exact file:line evidence. If you find a real blocking defect, include the exact sentinel: RAI VERDICT: BLOCK. If no blocker remains, clearly say RAI VERDICT: PASS.",
+          "Adversarial review the current project diff and try to refute it. Cite exact file:line evidence. Only emit the sentinel RAI VERDICT: BLOCK when you can name a SPECIFIC, reproducible defect — a concrete failing input or a wrong line and why it is wrong — not a hunch and not an inability to verify. If your refutation attempts all pass and you cannot identify or substantiate a concrete blocking defect, emit RAI VERDICT: PASS and record any residual concerns as caveats rather than blocking. If no blocker remains, clearly say RAI VERDICT: PASS.",
         );
         const reviewProvider = distinctProviders(
           review.perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0),
