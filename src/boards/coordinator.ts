@@ -1,5 +1,5 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
-import type { CoordinatorEntry, CoordinatorLedger } from "../coordinator.ts";
+import { type CoordinatorEntry, type CoordinatorLedger, provenanceLines } from "../coordinator.ts";
 
 // Pure: a coordinator run ledger -> a canvas `board` (the Run-loop panel). No ledger — no run
 // yet, or a torn/unreadable file — renders a calm idle board. Validated against canvasViewSchema
@@ -78,6 +78,8 @@ export function buildCoordinatorBoard(ledger: CoordinatorLedger | undefined): Ca
       })),
     });
   }
+  const provenance = provenanceSection(ledger.transcript);
+  if (provenance) sections.push(provenance);
   const activity = activitySection(ledger.transcript);
   if (activity) sections.push(activity);
 
@@ -115,6 +117,21 @@ function statusPill(status: CoordinatorLedger["status"]): { label: string; tone:
     case "max-rounds":
       return { label: "max rounds", tone: "caution" };
   }
+}
+
+// "Worked by": served-provider provenance — which vendor produced each member's work unit.
+// Makes a mixed-provider run legible at a glance (the squad's flagship over Copilot-locked squad).
+function provenanceSection(transcript: readonly CoordinatorEntry[]): Section | undefined {
+  const lines = provenanceLines(transcript);
+  if (lines.length === 0) return undefined;
+  return {
+    kind: "rows",
+    title: "Worked by",
+    items: lines.map((l) => ({
+      glyph: "brand" as CanvasTone,
+      text: truncate(`${l.who} (${l.provider}) ${l.verb}`, STEP_CAP),
+    })),
+  };
 }
 
 function activitySection(transcript: readonly CoordinatorEntry[]): Section | undefined {
