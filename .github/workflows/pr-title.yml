@@ -1,0 +1,45 @@
+name: PR Title
+
+# Squash-merge uses the PR title as the commit subject, and release-please
+# parses those subjects off main to build the CHANGELOG + version bump. The
+# title is therefore the real enforcement point for conventional commits —
+# validate it here rather than trusting individual branch commits.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  conventional-title:
+    name: Conventional commit title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate PR title
+        env:
+          # Read through the environment, never interpolated into the script,
+          # so a crafted title can't inject shell.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Types mirror release-please-config.json's changelog-sections (plus
+          # revert). Keep the two in sync when adding a type.
+          types='feat|fix|perf|refactor|docs|chore|style|test|build|ci|revert'
+          if ! printf '%s' "$PR_TITLE" | grep -qE "^(${types})(\([^)]+\))?!?: .+"; then
+            echo "::error::PR title is not a conventional commit: \"${PR_TITLE}\""
+            {
+              echo "The PR title becomes the squash commit release-please reads."
+              echo ""
+              echo "Expected:  <type>[(scope)][!]: <subject>"
+              echo "Types:     ${types//|/ }"
+              echo "Examples:  fix(coordinator): clear the abandoned plan on re-plan"
+              echo "           feat(dispatch): pin a member's provider per turn"
+            } >&2
+            exit 1
+          fi
+          echo "PR title OK: ${PR_TITLE}"
