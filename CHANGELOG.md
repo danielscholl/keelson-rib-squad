@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.3.0...v0.4.0) (2026-06-29)
+
+
+### Added
+
+* **coordinator:** support optional manager provider/model pins ([#61](https://github.com/danielscholl/keelson-rib-squad/issues/61)) ([e4d2114](https://github.com/danielscholl/keelson-rib-squad/commit/e4d21144db33980e5f69de3c8eb1a354cf979cc5))
+* expose maxStall and maxResets caps on squad_coordinate ([#47](https://github.com/danielscholl/keelson-rib-squad/issues/47)) ([88fbbe0](https://github.com/danielscholl/keelson-rib-squad/commit/88fbbe0b1cd1222a058c033914e5ded397d3f66f))
+* gate 'done' on a deterministic verification check ([#48](https://github.com/danielscholl/keelson-rib-squad/issues/48)) ([#54](https://github.com/danielscholl/keelson-rib-squad/issues/54)) ([7cbd1a3](https://github.com/danielscholl/keelson-rib-squad/commit/7cbd1a30b73d4b6dc7e462856daeecae10149601))
+* **review:** add project-bound adversarial review gating ([#60](https://github.com/danielscholl/keelson-rib-squad/issues/60)) ([2d4ec45](https://github.com/danielscholl/keelson-rib-squad/commit/2d4ec45e3c356125f3bc612a3a2f2f8dc889194c))
+
+
+### Fixed
+
+* **policies:** restrict BLOCK verdict denial to workflow surface ([#58](https://github.com/danielscholl/keelson-rib-squad/issues/58)) ([30d2021](https://github.com/danielscholl/keelson-rib-squad/commit/30d2021cc7a2a095e3d9e6cf1b5e879dedec03e9))
+
 ## [0.3.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.2.0...v0.3.0) (2026-06-29)
 
 
