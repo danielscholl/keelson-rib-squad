@@ -40,6 +40,10 @@ function shellCommand(args: unknown): string {
 // fails the verdict node, making a BLOCK unappealable by re-prompting the agent.
 const BLOCK_VERDICT = /"verdict"\s*:\s*"block"|RAI[-_ ]?VERDICT\s*:\s*BLOCK/i;
 
+export function hasBlockVerdict(text: string): boolean {
+  return BLOCK_VERDICT.test(text);
+}
+
 const raiFloor: Policy = {
   id: "rai-floor",
   on: [{ phase: "tool_call" }, { phase: "response" }],
@@ -71,11 +75,7 @@ const raiFloor: Policy = {
     // verdict from an engineer writing the sentinel into source, so gating every rib response
     // self-blocks any turn that touches the review machinery; verdict enforcement for rib
     // turns belongs to the coordinator, not this floor.
-    if (
-      event.phase === "response" &&
-      ctx.surface === "workflow" &&
-      BLOCK_VERDICT.test(event.text)
-    ) {
+    if (event.phase === "response" && ctx.surface === "workflow" && hasBlockVerdict(event.text)) {
       return {
         outcome: "deny",
         reason: "squad RAI floor: review returned a BLOCK verdict — integration is blocked",

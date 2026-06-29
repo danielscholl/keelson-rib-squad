@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type {
   MessageChunk,
   RibAgentTurn,
@@ -23,6 +25,7 @@ import type { Member } from "../src/types.ts";
 // has real charters to read.
 
 let root: string;
+const execFileAsync = promisify(execFile);
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "squad-dispatch-"));
@@ -63,6 +66,20 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+async function seedProjectRepoWithDiff(dirName: string): Promise<string> {
+  const repo = join(root, dirName);
+  await mkdir(repo, { recursive: true });
+  const file = join(repo, "limits.ts");
+  await writeFile(file, "export const DEFAULT_LIMIT = 10;\n");
+  await execFileAsync("git", ["init"], { cwd: repo });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: repo });
+  await execFileAsync("git", ["config", "user.name", "Dispatch Test"], { cwd: repo });
+  await execFileAsync("git", ["add", "limits.ts"], { cwd: repo });
+  await execFileAsync("git", ["commit", "-m", "init"], { cwd: repo });
+  await writeFile(file, "export const DEFAULT_LIMIT = 11;\n");
+  return repo;
 }
 
 describe("dispatchFanout", () => {
@@ -440,5 +457,29 @@ describe("dispatchFanout", () => {
     expect(reqs[0]?.allowedTools).toBeUndefined();
     expect(reqs[0]?.cwd).toBeUndefined();
     expect(reqs[0]?.prompt).toBe("think about the design");
+  });
+
+  test("a project-bound review injects CODE DIFF UNDER REVIEW plus adversarial framing", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedProjectRepoWithDiff("project-review");
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change and find defects",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+    });
+    const prompt = reqs[0]?.prompt ?? "";
+    expect(prompt).toContain("## CODE DIFF UNDER REVIEW");
+    expect(prompt).toContain("diff --git");
+    expect(prompt).toContain("## ADVERSARIAL REVIEW MODE (REFUTE BY DEFAULT)");
+    expect(prompt).toContain("RAI VERDICT: BLOCK");
+    expect(prompt).toContain("shared mutable object");
   });
 });
