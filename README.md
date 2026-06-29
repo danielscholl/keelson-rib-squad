@@ -85,10 +85,12 @@ Then open `http://127.0.0.1:5173` → the **Squad** tab (or **Ribs**).
 
 ## Acknowledgments
 
-The rib's structure — a canvas-board surface, genesis-as-a-workflow, and the
-fail-closed snapshot binding — follows the
-[@keelson/rib-chamber](https://github.com/danielscholl/keelson-rib-chamber) rib's
-patterns, re-typed for the squad domain.
+This rib is a clean-room port of [Squad](https://github.com/bradygaster/squad)
+(MIT, by Brady Gaster and contributors), the originating human-led multi-agent
+runtime for repo development. It imports no upstream code; Squad's model — a
+roster of named team members you author and direct against a repository — is
+re-typed here and driven by the `Rib` contract. Full attribution lives in
+[NOTICE](NOTICE).
 
 ## License
 
