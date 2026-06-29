@@ -772,10 +772,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       workflow,
       roster: opts.roster,
     });
-    // An abort during the execute arm returns aborted member results that would
-    // otherwise fold a junk "(no synthesis)" fact and advance the round; break without
-    // mutating or persisting (the manager-turn abort discipline) so abort+resume can't
-    // erode the round budget.
+    // An abort during the execute arm returns aborted member results that would otherwise
+    // fold a junk "(no synthesis)" fact and advance the round. Break before that fold/advance
+    // and without persisting — like the manager-turn abort above, which likewise only bumps
+    // updatedAt in memory (no saveLedger) — so abort+resume can't erode the round budget.
     if (opts.abortSignal?.aborted) {
       status = "aborted";
       ledger = { ...ledger, updatedAt: now() };
