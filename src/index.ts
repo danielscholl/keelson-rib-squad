@@ -1051,6 +1051,13 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   const resolved = resolveProject(getProjects(), asNonEmptyString(payload.project));
   if (!resolved.ok) return resolved;
   const missionRaw = asNonEmptyString(payload.mission);
+  // A provider-listing hiccup must not block casting — degrade to unpinned members.
+  let providers: ReturnType<NonNullable<RibContext["getProviders"]>> = [];
+  try {
+    providers = getProviders?.() ?? [];
+  } catch {
+    providers = [];
+  }
   try {
     const result = await proposeCast({
       runAgentTurn,
@@ -1062,7 +1069,7 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
       ...(missionRaw ? { mission: missionRaw.slice(0, MAX_MISSION_CHARS) } : {}),
       // Available-provider catalog so the scan can auto-assign each member's engine by
       // role (leaning overpowered). Absent seam / no providers → unpinned members.
-      providers: getProviders?.() ?? [],
+      providers,
     });
     if (!result.ok) return { ok: false, error: result.error };
     await writeProposal(squadDataHome(), result.proposal);

@@ -106,7 +106,7 @@ function scanPrompt(
   // registered set; otherwise members come back unpinned and run on the default.
   const assignBlock =
     providers.length > 0
-      ? `\n- provider (and optionally model): the engine this member runs on. The providers AVAILABLE on this harness are: ${providers.map((p) => `"${p.id}"`).join(", ")}. Use ONLY these provider ids. Match the engine to the role, and when unsure lean OVERPOWERED (a stronger model), never underpowered:
+      ? `\n- provider (and optionally model): the engine this member runs on. The providers AVAILABLE on this harness are: ${providers.map((p) => JSON.stringify(p.id)).join(", ")}. Use ONLY these provider ids. Match the engine to the role, and when unsure lean OVERPOWERED (a stronger model), never underpowered:
   · planning / coordination / lead / architect roles → prefer "claude" with an Opus-class model (e.g. "claude-opus-4-8") for planning + coordination strength
   · coding / implementation / review / QA roles → prefer "copilot" with a GPT-5.5-class model (e.g. "gpt-5.5") for coding + reviewing strength
   · generic / triage / support roles → "copilot" on its default model (omit "model")
