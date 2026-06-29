@@ -226,6 +226,30 @@ describe("dispatchFanout", () => {
     }
   });
 
+  test("#63: a project-bound synthesis turn gets the read rail to verify a cited defect", async () => {
+    const repo = await seedProjectRepoWithDiff("synth-rail");
+    const members = await Promise.all([seed("a", "Alpha"), seed("b", "Beta")]);
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("ok")));
+    };
+    const outcome = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "Adversarial review the diff",
+      project: { name: "repo", rootPath: repo },
+    });
+    expect(outcome.synthesis).toBe("ok");
+    // The synthesis turn runs after the member pool, so it is the last request — it must
+    // carry the same project-bound read rail the members got, not run blind (#63).
+    const synth = reqs[reqs.length - 1];
+    expect(synth?.cwd).toBe(repo);
+    expect(synth?.allowedDirectories).toEqual([repo]);
+    expect((synth?.allowedTools ?? []).length).toBeGreaterThan(0);
+  });
+
   test("synthesis is fail-soft — an errored synthesis turn yields no synthesis + a note", async () => {
     const members = await Promise.all([seed("a", "Alpha")]);
     const task = "T";

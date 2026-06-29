@@ -132,6 +132,10 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
       {
         system: synthSystem,
         prompt: buildSynthesisPrompt(opts.task, oks),
+        // Grant the synthesizer the same project-bound read rail the members got, so a review
+        // synthesis can independently confirm a cited defect (read the file:line) before
+        // upholding a BLOCK instead of synthesizing blind from the members' claims (#63).
+        ...(root ? { cwd: root, allowedDirectories: [root], allowedTools: [...READ_TOOLS] } : {}),
         ...(opts.synthesizer?.provider ? { provider: opts.synthesizer.provider } : {}),
         ...(opts.synthesizer?.provider && opts.synthesizer.model
           ? { model: opts.synthesizer.model }
