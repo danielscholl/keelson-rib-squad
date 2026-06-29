@@ -5,6 +5,7 @@ import { runCodeTurn } from "./code.ts";
 import { parseTrailingDirective } from "./control-json.ts";
 import {
   type DispatchOutcome,
+  type DispatchResult,
   dispatchFanout,
   type MemberContribution,
   reflectMembersAtClose,
@@ -73,6 +74,9 @@ export interface CoordinatorEntry {
   speaker?: string;
   instruction?: string;
   text: string;
+  // The provider id that produced this step's work (code / dispatch arms) — the served-provider
+  // provenance the standup and Run-loop board surface for a mixed-provider team.
+  provider?: string;
 }
 
 // The directive a coordinator turn must end with: `progress` carries the five Progress
@@ -369,12 +373,59 @@ export interface RunCoordinatorResult {
   rounds: number;
   status: "done" | "gave-up" | "max-rounds" | "error" | "aborted";
   summary: string;
+  // Served-provider provenance compiled from the run's code/dispatch steps, e.g.
+  // "atlas (claude) coded · vera (copilot) contributed". Absent when no step resolved a provider.
+  provenance?: string;
 }
 
 const DEFAULT_COORDINATOR_TIMEOUT_MS = 180_000;
 
 function cap(text: string, n: number): string {
   return text.length > n ? `${text.slice(0, n)}…` : text;
+}
+
+// The distinct provider ids among a wave's successful members, joined for one entry's
+// provenance ("copilot" or "claude, copilot"); undefined when none resolved a provider.
+function distinctProviders(oks: readonly DispatchResult[]): string | undefined {
+  const ids = [...new Set(oks.map((r) => r.providerId).filter((p): p is string => Boolean(p)))];
+  return ids.length ? ids.join(", ") : undefined;
+}
+
+// The executing arms that attribute a unit of work to a provider, and the verb the standup
+// uses. Coordinator/replan/failed turns aren't work units, so they carry no provenance.
+const PROVENANCE_VERB: Partial<Record<CoordinatorEntry["kind"], string>> = {
+  code: "coded",
+  dispatch: "contributed",
+};
+
+export interface ProvenanceLine {
+  who: string;
+  provider: string;
+  verb: string;
+}
+
+// Walk the transcript's execute entries into deduped (member, provider, verb) attributions —
+// the served-provider provenance the standup and Run-loop board surface for a mixed team.
+export function provenanceLines(transcript: readonly CoordinatorEntry[]): ProvenanceLine[] {
+  const seen = new Set<string>();
+  const out: ProvenanceLine[] = [];
+  for (const e of transcript) {
+    const verb = PROVENANCE_VERB[e.kind];
+    if (!verb || !e.provider) continue;
+    const who = e.speaker ?? "team";
+    const key = `${who}|${e.provider}|${verb}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ who, provider: e.provider, verb });
+  }
+  return out;
+}
+
+function summarizeProvenance(transcript: readonly CoordinatorEntry[]): string | undefined {
+  const lines = provenanceLines(transcript);
+  return lines.length
+    ? lines.map((l) => `${l.who} (${l.provider}) ${l.verb}`).join(" · ")
+    : undefined;
 }
 
 // Prefix a dispatched member's instruction with the team's recalled memory so the agent
@@ -500,6 +551,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
                 status: r.outcome.status,
                 text: r.outcome.text,
                 ...(r.outcome.error ? { error: r.outcome.error } : {}),
+                ...(r.outcome.providerId ? { providerId: r.outcome.providerId } : {}),
               }
             : { status: "error", text: "", error: r.error };
         }
@@ -796,6 +848,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       // Surface dispatch notes (cost-cap truncation, synthesis skip/failure) so they
       // reach the next round's prompt instead of being silently dropped.
       const noteSuffix = d.notes.length > 0 ? `\n(notes: ${d.notes.join("; ")})` : "";
+      const provider = distinctProviders(oks);
       ledger = {
         ...ledger,
         facts: foldFacts(ledger.facts, [
@@ -807,6 +860,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
           instruction: decided.step.instruction,
           text: synth + noteSuffix,
+          ...(provider ? { provider } : {}),
         }),
         updatedAt: now(),
       };
@@ -826,6 +880,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
           instruction: decided.step.instruction,
           text,
+          ...(result.code.providerId ? { provider: result.code.providerId } : {}),
         }),
         updatedAt: now(),
       };
@@ -856,10 +911,12 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     await saveLedger(opts.dataHome, ledger);
   }
 
+  const provenance = summarizeProvenance(ledger.transcript);
   return {
     ledger,
     rounds: ledger.round,
     status,
     summary: ledger.summary ?? `coordinator ended: ${status}`,
+    ...(provenance ? { provenance } : {}),
   };
 }

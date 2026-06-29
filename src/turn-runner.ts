@@ -11,6 +11,9 @@ export interface TurnOutcome {
   status: "ok" | "error" | "timeout" | "aborted";
   text: string;
   error?: string;
+  // The provider id the host resolved the turn to (RibAgentTurnResult.providerId) — carried
+  // so the caller can attribute work to the vendor that produced it (the mixed-provider story).
+  providerId?: string;
 }
 
 type RunAgentTurn = NonNullable<RibContext["runAgentTurn"]>;
@@ -56,7 +59,13 @@ export async function runConfinedTurn(
     if (controller.signal.aborted || result.status === "aborted") {
       return { status: "aborted", text: result.text ?? "" };
     }
-    if (result.status === "ok") return { status: "ok", text: result.text };
+    if (result.status === "ok") {
+      return {
+        status: "ok",
+        text: result.text,
+        ...(result.providerId ? { providerId: result.providerId } : {}),
+      };
+    }
     return {
       status: result.status,
       text: "",
