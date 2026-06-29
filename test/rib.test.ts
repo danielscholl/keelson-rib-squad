@@ -128,6 +128,19 @@ describe("rib-squad", () => {
     expect(schema?.safeParse({ task: "do" }).success).toBe(true);
   });
 
+  it("squad_coordinate schema accepts optional manager provider/model pins", () => {
+    const coord = (rib.registerTools?.(bareCtx) ?? []).find((t) => t.name === "squad_coordinate");
+    const schema = (coord as { inputSchema?: { safeParse: (v: unknown) => { success: boolean } } })
+      ?.inputSchema;
+    expect(
+      schema?.safeParse({
+        task: "do",
+        managerProvider: "copilot",
+        managerModel: "gpt-5.5",
+      }).success,
+    ).toBe(true);
+  });
+
   it("squad_coordinate schema rejects out-of-range maxStall and maxResets", () => {
     const coord = (rib.registerTools?.(bareCtx) ?? []).find((t) => t.name === "squad_coordinate");
     const schema = (coord as { inputSchema?: { safeParse: (v: unknown) => { success: boolean } } })
