@@ -20,6 +20,7 @@ const ACTIVITY_TONE: Record<CoordinatorEntry["kind"], CanvasTone> = {
   workflow: "accent",
   replan: "caution",
   failed: "warn",
+  verify: "info",
 };
 
 export function buildCoordinatorBoard(ledger: CoordinatorLedger | undefined): CanvasBoardView {
@@ -36,6 +37,24 @@ export function buildCoordinatorBoard(ledger: CoordinatorLedger | undefined): Ca
       kind: "rows",
       title: "Outcome",
       items: [{ glyph: "ok" as CanvasTone, text: truncate(ledger.summary, GOAL_CAP) }],
+    });
+  }
+  if (ledger.verification) {
+    const v = ledger.verification;
+    sections.push({
+      kind: "rows",
+      title: "Verification",
+      items: [
+        {
+          glyph: (v.passed ? "ok" : "warn") as CanvasTone,
+          text: truncate(
+            v.passed
+              ? `passed — ${v.command}`
+              : `FAILED — ${v.command} (exit ${v.exitCode}): ${v.summary}`,
+            STEP_CAP,
+          ),
+        },
+      ],
     });
   }
   if (ledger.plan.length > 0) {
@@ -116,6 +135,8 @@ function statusPill(status: CoordinatorLedger["status"]): { label: string; tone:
       return { label: "gave up", tone: "warn" };
     case "max-rounds":
       return { label: "max rounds", tone: "caution" };
+    case "verification-failed":
+      return { label: "verification failed", tone: "warn" };
   }
 }
 

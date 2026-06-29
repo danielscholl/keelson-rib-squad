@@ -92,6 +92,38 @@ describe("buildCoordinatorBoard with a ledger", () => {
     expect(worked.some((i) => i.text.includes("vera (copilot) contributed"))).toBe(true);
   });
 
+  test("renders a Verification section reflecting the gate result", () => {
+    const passed = buildCoordinatorBoard(
+      ledger({
+        verification: {
+          command: "2 checks",
+          exitCode: 0,
+          passed: true,
+          summary: "2 checks passed",
+          atRound: 1,
+        },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(passed).success).toBe(true);
+    expect(rowsTitled(passed, "Verification").some((i) => i.text.includes("passed"))).toBe(true);
+
+    const failed = buildCoordinatorBoard(
+      ledger({
+        status: "verification-failed",
+        verification: {
+          command: "bun run test",
+          exitCode: 1,
+          passed: false,
+          summary: "1 fail",
+          atRound: 2,
+        },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(failed).success).toBe(true);
+    expect(rowsTitled(failed, "Verification").some((i) => i.text.includes("FAILED"))).toBe(true);
+    expect(failed.header?.status?.label).toBe("verification failed");
+  });
+
   test("recent activity surfaces the transcript entries", () => {
     const board = buildCoordinatorBoard(
       ledger({

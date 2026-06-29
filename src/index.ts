@@ -1,3 +1,5 @@
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   Project,
@@ -520,6 +522,9 @@ const coordinateSchema = z.object({
   maxRounds: z.number().int().min(1).max(100).optional(),
   maxStall: z.number().int().min(1).max(20).optional(),
   maxResets: z.number().int().min(1).max(20).optional(),
+  // Operator-supplied verification commands run at the done-gate (each via `bash -c` in the
+  // project root); a red exit vetoes `done`. Omit to auto-detect package.json check/typecheck/test.
+  verify: z.array(z.string().min(1).max(300)).max(8).optional(),
 });
 
 function makeCoordinateTool(
@@ -527,6 +532,7 @@ function makeCoordinateTool(
   projectsSeam: RibContext["getProjects"],
   runWorkflowSeam: RibContext["runWorkflow"],
   memorySeam: RibContext["getMemory"],
+  execSeam: RibContext["getExec"],
 ): ToolDefinition {
   return {
     name: "squad_coordinate",
@@ -544,7 +550,14 @@ function makeCoordinateTool(
         emitResult(ctx, "squad_coordinate: agent-turn seam unavailable on this harness", true);
         return;
       }
-      const { task, members: requested, maxRounds, maxStall, maxResets } = parsed.data;
+      const {
+        task,
+        members: requested,
+        maxRounds,
+        maxStall,
+        maxResets,
+        verify: verifyInput,
+      } = parsed.data;
       try {
         let project: { id: string; name: string; rootPath: string } | undefined;
         const selector = asNonEmptyString(parsed.data.project);
@@ -571,6 +584,14 @@ function makeCoordinateTool(
           emitResult(ctx, "squad_coordinate: no matching active members to coordinate", true);
           return;
         }
+        // Resolve the done-gate verify commands: the operator's explicit list wins; otherwise
+        // auto-detect package.json check/typecheck/test in the bound project (fail open if none).
+        const verify =
+          verifyInput && verifyInput.length > 0
+            ? verifyInput
+            : project
+              ? await autoDetectVerify(project.rootPath)
+              : [];
         const result = await runCoordinator({
           runAgentTurn: turnSeam,
           membersRoot: membersDir(),
@@ -581,6 +602,8 @@ function makeCoordinateTool(
           ...(project ? { project } : {}),
           ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
           ...(memorySeam ? { getMemory: memorySeam } : {}),
+          ...(execSeam ? { getExec: execSeam() } : {}),
+          ...(verify.length > 0 ? { verify } : {}),
           limits: {
             ...DEFAULT_LIMITS,
             ...(maxRounds !== undefined ? { maxRounds } : {}),
@@ -599,6 +622,37 @@ function makeCoordinateTool(
   };
 }
 
+// Auto-detect verify commands from a project's package.json when the operator didn't supply any:
+// run whichever of check/typecheck/test scripts exist, via the project's runner (bun if a bun
+// lockfile is present, else npm). Returns [] for a non-node project or on any read error — the
+// gate then fails OPEN (today's behavior), keeping the rib project-agnostic.
+async function autoDetectVerify(rootPath: string): Promise<string[]> {
+  try {
+    const pkg = JSON.parse(await readFile(join(rootPath, "package.json"), "utf-8")) as {
+      scripts?: Record<string, unknown>;
+    };
+    const scripts = pkg.scripts ?? {};
+    const hasBunLock =
+      (await pathExists(join(rootPath, "bun.lock"))) ||
+      (await pathExists(join(rootPath, "bun.lockb")));
+    const runner = hasBunLock ? "bun" : "npm";
+    return ["check", "typecheck", "test"]
+      .filter((s) => typeof scripts[s] === "string")
+      .map((s) => `${runner} run ${s}`);
+  } catch {
+    return [];
+  }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const COORD_STEP_EXCERPT = 400;
 
 function summarizeCoordinator(result: RunCoordinatorResult): string {
@@ -610,6 +664,13 @@ function summarizeCoordinator(result: RunCoordinatorResult): string {
   ];
   if (result.provenance) {
     lines.push("", `Worked by: ${result.provenance}`);
+  }
+  if (result.ledger.verification) {
+    const v = result.ledger.verification;
+    lines.push(
+      "",
+      `Verification: ${v.passed ? "passed" : "FAILED"} — ${v.command}${v.passed ? "" : ` (exit ${v.exitCode})`}`,
+    );
   }
   if (result.ledger.plan.length > 0) {
     lines.push("", "Plan:", ...result.ledger.plan.map((s, i) => `${i + 1}. ${s}`));
@@ -894,7 +955,13 @@ const rib: Rib = {
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
-      makeCoordinateTool(ctx.runAgentTurn, ctx.getProjects, ctx.runWorkflow, ctx.getMemory),
+      makeCoordinateTool(
+        ctx.runAgentTurn,
+        ctx.getProjects,
+        ctx.runWorkflow,
+        ctx.getMemory,
+        ctx.getExec,
+      ),
     ];
   },
 

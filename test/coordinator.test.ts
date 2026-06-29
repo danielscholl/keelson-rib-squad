@@ -7,6 +7,7 @@ import type {
   MessageChunk,
   RecallResponse,
   RibContext,
+  RibExec,
   WritebackRequest,
   WritebackResponse,
 } from "@keelson/shared";
@@ -650,6 +651,100 @@ describe("runCoordinator loop", () => {
     expect(res.provenance).toContain("vera (copilot) contributed");
     expect(res.ledger.transcript.find((e) => e.kind === "code")?.provider).toBe("claude");
     expect(res.ledger.transcript.find((e) => e.kind === "dispatch")?.provider).toBe("copilot");
+  });
+
+  const coder = (): Member[] => [
+    {
+      slug: "atlas",
+      name: "atlas",
+      role: "Engineer",
+      charter: "x",
+      status: "active",
+      tools: ["code", "read"],
+    },
+  ];
+  const fakeExec = (exitCode: number, out = ""): RibExec => ({
+    runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+    runText: async () => ({ ok: true as const, data: out, exitCode }),
+  });
+  const codeThenDone = () =>
+    queuedRun([
+      'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
+      'done\n{"action":"done","summary":"shipped"}',
+    ]);
+
+  test("verification gate: a configured check must pass before done (green → done)", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      getExec: fakeExec(0, "all good"),
+      verify: ["bun run test"],
+    });
+    expect(res.status).toBe("done");
+    expect(res.ledger.verification?.passed).toBe(true);
+    expect(res.ledger.transcript.some((e) => e.kind === "verify")).toBe(true);
+  });
+
+  test("verification gate: a red check vetoes done and terminates verification-failed", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      // The manager keeps trying to finish; every done attempt re-runs the (still red) check.
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      getExec: fakeExec(1, "1 fail\nexpect mismatch"),
+      verify: ["bun run test"],
+      limits: { maxRounds: 20 },
+    });
+    expect(res.status).toBe("verification-failed");
+    expect(res.ledger.verification?.passed).toBe(false);
+    expect(res.ledger.facts.some((f) => f.includes("verification FAILED"))).toBe(true);
+  });
+
+  test("verification gate: no verify commands → done as before (fail open)", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      getExec: {
+        runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+        runText: async () => {
+          throw new Error("verify must not run when no commands are configured");
+        },
+      },
+    });
+    expect(res.status).toBe("done");
+    expect(res.ledger.verification).toBeUndefined();
+  });
+
+  test("verification gate: skipped when no code was edited this run (no false gate)", async () => {
+    let ran = false;
+    const res = await runCoordinator({
+      ...base(), // roster atlas/vera are read-only (no code) → a dispatch-only run
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"look"}',
+        'done\n{"action":"done","summary":"answered"}',
+      ]),
+      dispatch: fakeDispatch().fn,
+      getExec: {
+        runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+        runText: async () => {
+          ran = true;
+          return { ok: true as const, data: "", exitCode: 0 };
+        },
+      },
+      verify: ["bun run test"],
+    });
+    expect(res.status).toBe("done");
+    expect(ran).toBe(false); // no code entry → the gate never ran
+    expect(res.ledger.verification).toBeUndefined();
   });
 
   test("the live distillation seam runs its own turn and records the distilled decision", async () => {
