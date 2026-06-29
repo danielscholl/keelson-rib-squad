@@ -97,7 +97,7 @@ describe("rai floor — merge / force-push", () => {
 });
 
 describe("rai floor — block verdict", () => {
-  test("denies a response carrying a BLOCK verdict on governed surfaces", async () => {
+  test("denies a response carrying a BLOCK verdict on the workflow surface", async () => {
     for (const text of [
       '{"verdict":"block","reason":"unsafe"}',
       "RAI-VERDICT: BLOCK",
@@ -114,6 +114,12 @@ describe("rai floor — block verdict", () => {
       "I would block this if it shipped, but as written it passes.",
     ]) {
       expect((await decide({ phase: "response", text }, WF)).outcome).toBe("allow");
+    }
+  });
+
+  test("allows a BLOCK sentinel on the rib surface — the floor must not self-block an engineer writing the sentinel (the coordinator owns rib-turn verdicts)", async () => {
+    for (const text of ['{"verdict":"block","reason":"unsafe"}', "RAI-VERDICT: BLOCK"]) {
+      expect((await decide({ phase: "response", text }, RIB)).outcome).toBe("allow");
     }
   });
 });
