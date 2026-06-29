@@ -61,11 +61,20 @@ export interface OrchestratorLimits {
 
 export const DEFAULT_LIMITS: OrchestratorLimits = { maxRounds: 24, maxStall: 3, maxResets: 2 };
 
+// Merge a partial limits override with DEFAULT_LIMITS so callers may specify only the
+// fields they care about (e.g. tightening maxStall for a test) without having to
+// repeat the others. Always returns a FRESH object (never the shared DEFAULT_LIMITS by
+// reference) so a caller can't mutate the module-level default.
+export function overlayLimits(over?: Partial<OrchestratorLimits>): OrchestratorLimits {
+  return { ...DEFAULT_LIMITS, ...over };
+}
+
 export interface DecideInput {
   progress: ProgressLedger;
   state: OrchestratorState;
   roster: readonly Pick<Member, "slug" | "tools">[];
-  limits?: OrchestratorLimits;
+  // Accepts a full override or a partial overlay (unspecified fields fall back to DEFAULT_LIMITS).
+  limits?: Partial<OrchestratorLimits>;
 }
 
 export interface DecideOutput {
@@ -89,7 +98,7 @@ function resolveSpeaker(
 // hard round ceiling, then stall accounting (which may re-plan or give up), then the
 // ordinary "execute the next instruction" path. Progress resets the stall counter.
 export function decideOrchestratorStep(input: DecideInput): DecideOutput {
-  const limits = input.limits ?? DEFAULT_LIMITS;
+  const limits = overlayLimits(input.limits);
   const { progress, roster } = input;
   const { round } = input.state;
   let { stallCount, resetCount } = input.state;

@@ -19,10 +19,10 @@ import {
 } from "./memory.ts";
 import {
   type CodeStepOutcome,
-  DEFAULT_LIMITS,
   decideOrchestratorStep,
   executeStep,
   type OrchestratorLimits,
+  overlayLimits,
   type ProgressLedger,
   type WorkflowStepOutcome,
 } from "./orchestrator.ts";
@@ -339,7 +339,7 @@ export interface RunCoordinatorOptions {
   // The project the run targets. Required for the code arm (it confines the coding
   // turn to project.rootPath); absent means dispatch-only.
   project?: { id: string; name: string; rootPath: string };
-  limits?: OrchestratorLimits;
+  limits?: Partial<OrchestratorLimits>;
   perTurnTimeoutMs?: number;
   abortSignal?: AbortSignal;
   // Injected for testability; default binds dispatchFanout to the live seams.
@@ -503,7 +503,7 @@ function collectContributions(
 
 export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCoordinatorResult> {
   const now = opts.now ?? (() => new Date().toISOString());
-  const limits = opts.limits ?? DEFAULT_LIMITS;
+  const limits = overlayLimits(opts.limits);
   const timeoutMs = opts.perTurnTimeoutMs ?? DEFAULT_COORDINATOR_TIMEOUT_MS;
   const project = opts.project;
   // Recall the team's prior governed decisions/lessons ONCE (project-scoped; [] without a
