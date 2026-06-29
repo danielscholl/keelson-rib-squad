@@ -362,6 +362,10 @@ export interface RunCoordinatorOptions {
   dataHome: string;
   roster: Member[];
   task: string;
+  // Optional manager pin for the coordinator/planner turn. Mirrors member pin semantics:
+  // provider may stand alone; model is sent only when provider is also set.
+  managerModel?: string;
+  managerProvider?: string;
   // The project the run targets. Required for the code arm (it confines the coding
   // turn to project.rootPath); absent means dispatch-only.
   project?: { id: string; name: string; rootPath: string };
@@ -602,6 +606,12 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   const timeoutMs = opts.perTurnTimeoutMs ?? DEFAULT_COORDINATOR_TIMEOUT_MS;
   const project = opts.project;
   const verify = opts.verify ?? [];
+  const managerProvider = opts.managerProvider?.trim();
+  const managerModel = opts.managerModel?.trim();
+  const normalizedManagerProvider =
+    managerProvider && managerProvider.length > 0 ? managerProvider : undefined;
+  const normalizedManagerModel =
+    normalizedManagerProvider && managerModel && managerModel.length > 0 ? managerModel : undefined;
   // Recall the team's prior governed decisions/lessons ONCE (project-scoped; [] without a
   // seam or project) so they ground BOTH the coordinator's planning AND each dispatched
   // member's turn. The recalled knowledge has to reach the agent doing the work, not just
@@ -742,6 +752,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       {
         system: COORDINATOR_SYSTEM,
         prompt: coordinatorPrompt(ledger, opts.roster, replanRequested, Boolean(code), recalled),
+        ...(normalizedManagerProvider ? { provider: normalizedManagerProvider } : {}),
+        ...(normalizedManagerModel ? { model: normalizedManagerModel } : {}),
       },
       timeoutMs,
       opts.abortSignal,

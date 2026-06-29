@@ -40,6 +40,18 @@ function queuedRun(replies: string[]): NonNullable<RibContext["runAgentTurn"]> {
     return { stream: oneShot(), result: Promise.resolve({ status: "ok" as const, text }) };
   };
 }
+function capturingQueuedRun(
+  replies: string[],
+  seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][],
+): NonNullable<RibContext["runAgentTurn"]> {
+  let i = 0;
+  return (req) => {
+    seen.push(req);
+    const text = replies[Math.min(i, replies.length - 1)] ?? "";
+    i += 1;
+    return { stream: oneShot(), result: Promise.resolve({ status: "ok" as const, text }) };
+  };
+}
 function roster(...slugs: string[]): Member[] {
   return slugs.map((slug) => ({
     slug,
@@ -229,6 +241,59 @@ describe("runCoordinator loop", () => {
     expect(res.summary).toBe("finished it");
     expect(d.calls).toHaveLength(0);
     expect(res.ledger.transcript.filter((e) => e.kind === "dispatch")).toHaveLength(0);
+  });
+
+  test("pins manager provider/model on the coordinator turn when both are set", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+      managerProvider: "copilot",
+      managerModel: "gpt-5.5",
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.provider).toBe("copilot");
+    expect(seen[0]?.model).toBe("gpt-5.5");
+  });
+
+  test("treats whitespace-only manager provider as unset (no manager pin)", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+      managerProvider: "   ",
+      managerModel: "gpt-5.5",
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.provider).toBeUndefined();
+    expect(seen[0]?.model).toBeUndefined();
+  });
+
+  test("does not pin a manager model without a manager provider", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+      managerModel: "gpt-5.5",
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.provider).toBeUndefined();
+    expect(seen[0]?.model).toBeUndefined();
+  });
+
+  test("leaves manager turn on harness defaults when manager pin is unset", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.provider).toBeUndefined();
+    expect(seen[0]?.model).toBeUndefined();
   });
 
   test("dispatches the next step then ends, folding the synthesis into facts", async () => {

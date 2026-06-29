@@ -517,6 +517,8 @@ const coordinateSchema = z.object({
   task: z.string().min(1),
   project: z.string().optional(),
   members: z.array(z.string()).optional(),
+  managerModel: z.string().optional(),
+  managerProvider: z.string().optional(),
   // maxRounds bounds above DEFAULT_LIMITS.maxRounds (24) so the default is a valid explicit
   // value; maxStall/maxResets (defaults 3/2) stay tight — they exist to cut a run SHORT.
   maxRounds: z.number().int().min(1).max(100).optional(),
@@ -553,6 +555,8 @@ function makeCoordinateTool(
       const {
         task,
         members: requested,
+        managerModel,
+        managerProvider,
         maxRounds,
         maxStall,
         maxResets,
@@ -592,12 +596,17 @@ function makeCoordinateTool(
             : project
               ? await autoDetectVerify(project.rootPath)
               : [];
+        const normalizedManagerProvider = asNonEmptyString(managerProvider);
+        const normalizedManagerModel = asNonEmptyString(managerModel);
+        const coherentManagerModel = normalizedManagerProvider ? normalizedManagerModel : undefined;
         const result = await runCoordinator({
           runAgentTurn: turnSeam,
           membersRoot: membersDir(),
           dataHome: squadDataHome(),
           roster,
           task,
+          ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
+          ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
           abortSignal: ctx.abortSignal,
           ...(project ? { project } : {}),
           ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
