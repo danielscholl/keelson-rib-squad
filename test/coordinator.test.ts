@@ -688,6 +688,66 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.transcript.some((e) => e.kind === "verify")).toBe(true);
   });
 
+  test("review gate: code changes require a fresh clean project-bound review before done", async () => {
+    const d = fakeDispatch("RAI VERDICT: PASS\nno blocking defect found");
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+    });
+    expect(res.status).toBe("done");
+    expect(d.calls).toHaveLength(1);
+    expect(d.calls[0]?.instruction).toContain("Adversarial review");
+    expect(res.ledger.lastCleanReviewRound).toBe(1);
+  });
+
+  test("review gate: a BLOCK verdict vetoes done", async () => {
+    const d = fakeDispatch("RAI VERDICT: BLOCK\nsrc/x.ts:12 unsafe default");
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+      limits: { maxRounds: 4 },
+    });
+    expect(res.status).toBe("max-rounds");
+    expect(res.ledger.transcript.some((e) => e.kind === "verify" && e.text.includes("BLOCK"))).toBe(
+      true,
+    );
+  });
+
+  test("review gate: no new code after a clean review does not re-run review", async () => {
+    const d = fakeDispatch("RAI VERDICT: PASS\nno blocking defect found");
+    let verifyCalls = 0;
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+      getExec: {
+        runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+        runText: async () => {
+          verifyCalls += 1;
+          return verifyCalls === 1
+            ? { ok: true as const, data: "failing check", exitCode: 1 }
+            : { ok: true as const, data: "green now", exitCode: 0 };
+        },
+      },
+      verify: ["bun run test"],
+      limits: { maxRounds: 8 },
+    });
+    expect(res.status).toBe("done");
+    expect(verifyCalls).toBe(2);
+    expect(d.calls).toHaveLength(1);
+  });
+
   test("verification gate: a red check vetoes done and terminates verification-failed", async () => {
     const res = await runCoordinator({
       ...base(),

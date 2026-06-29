@@ -26,6 +26,7 @@ import {
   type ProgressLedger,
   type WorkflowStepOutcome,
 } from "./orchestrator.ts";
+import { hasBlockVerdict } from "./policies.ts";
 import { runConfinedTurn } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
 import { authorWorkflow, screenWorkflowForRun } from "./workflow-authoring.ts";
@@ -70,6 +71,10 @@ export interface CoordinatorLedger {
   // Consecutive done-gate verify failures; bounds the fix-and-recheck loop so a run that can't
   // go green terminates `verification-failed` rather than burning the whole round budget.
   verifyFailures?: number;
+  // The latest round that executed a code step (our concrete "code changed/ran" marker).
+  lastCodeRound?: number;
+  // The latest round where the project-bound adversarial review was clean (no BLOCK verdict).
+  lastCleanReviewRound?: number;
   summary?: string;
   createdAt: string;
   updatedAt: string;
@@ -451,6 +456,29 @@ async function runVerification(
   return { command: label, exitCode: 0, passed: true, summary: `${label} passed`, atRound };
 }
 
+function effectiveLastCodeRound(ledger: CoordinatorLedger): number | undefined {
+  if (typeof ledger.lastCodeRound === "number") return ledger.lastCodeRound;
+  const rounds = ledger.transcript.filter((e) => e.kind === "code").map((e) => e.round);
+  return rounds.length > 0 ? Math.max(...rounds) : undefined;
+}
+
+function reviewMembers(roster: readonly Member[]): Member[] {
+  const preferred = roster.filter((m) => (m.tools ?? []).includes("read"));
+  return preferred.length > 0 ? preferred : [...roster];
+}
+
+function summarizeReview(outcome: DispatchOutcome): { summary: string; hadUsableOutput: boolean } {
+  const synthesis = outcome.synthesis?.trim();
+  if (synthesis) return { summary: synthesis, hadUsableOutput: true };
+  const oks = outcome.perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0);
+  if (oks.length === 0) return { summary: "(no review output)", hadUsableOutput: false };
+  const summary =
+    oks.length === 1
+      ? (oks[0]?.text.trim() ?? "(no review output)")
+      : oks.map((r) => `[${r.name}] ${r.text.trim()}`).join("\n\n");
+  return { summary, hadUsableOutput: true };
+}
+
 // The distinct provider ids among a wave's successful members, joined for one entry's
 // provenance ("copilot" or "claude, copilot"); undefined when none resolved a provider.
 function distinctProviders(oks: readonly DispatchResult[]): string | undefined {
@@ -765,10 +793,68 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       // run verification-failed) so squad never narrates a broken build as finished.
       if (
         !givingUp &&
+        project &&
+        !opts.abortSignal?.aborted &&
+        (() => {
+          const codeRound = effectiveLastCodeRound(ledger);
+          if (codeRound === undefined) return false;
+          return codeRound > (ledger.lastCleanReviewRound ?? -1);
+        })()
+      ) {
+        const reviewers = reviewMembers(opts.roster);
+        if (reviewers.length === 0) {
+          const text =
+            "RAI VERDICT: BLOCK — no member is available to run a project-bound adversarial diff review";
+          ledger = {
+            ...ledger,
+            facts: foldFacts(ledger.facts, [cap(text, FACT_CAP)]),
+            transcript: appendEntry(ledger.transcript, {
+              round: ledger.round,
+              kind: "verify",
+              text,
+            }),
+            round: ledger.round + 1,
+            updatedAt: now(),
+          };
+          await saveLedger(opts.dataHome, ledger);
+          continue;
+        }
+        const review = await dispatch(
+          reviewers,
+          "Adversarial review the current project diff and try to refute it. Cite exact file:line evidence. If you find a real blocking defect, include the exact sentinel: RAI VERDICT: BLOCK. If no blocker remains, clearly say RAI VERDICT: PASS.",
+        );
+        const reviewProvider = distinctProviders(
+          review.perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0),
+        );
+        const { summary, hadUsableOutput } = summarizeReview(review);
+        const blocked = hasBlockVerdict(summary);
+        ledger = {
+          ...ledger,
+          transcript: appendEntry(ledger.transcript, {
+            round: ledger.round,
+            kind: "verify",
+            text: blocked
+              ? `RAI VERDICT: BLOCK\n${summary}`
+              : `review passed (no BLOCK verdict)\n${summary}`,
+            ...(reviewProvider ? { provider: reviewProvider } : {}),
+          }),
+          ...(blocked || !hadUsableOutput
+            ? { facts: foldFacts(ledger.facts, [cap(`RAI VERDICT: BLOCK\n${summary}`, FACT_CAP)]) }
+            : { lastCleanReviewRound: ledger.round }),
+          updatedAt: now(),
+        };
+        if (blocked || !hadUsableOutput) {
+          ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
+          await saveLedger(opts.dataHome, ledger);
+          continue;
+        }
+      }
+      if (
+        !givingUp &&
         opts.getExec &&
         verify.length > 0 &&
         project &&
-        ledger.transcript.some((e) => e.kind === "code") &&
+        effectiveLastCodeRound(ledger) !== undefined &&
         !opts.abortSignal?.aborted
       ) {
         const v = await runVerification(opts.getExec, verify, project.rootPath, ledger.round);
@@ -1028,6 +1114,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           text,
           ...(result.code.providerId ? { provider: result.code.providerId } : {}),
         }),
+        lastCodeRound: ledger.round,
         updatedAt: now(),
       };
     } else if (result.workflow) {

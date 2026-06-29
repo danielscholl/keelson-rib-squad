@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type {
   RibAgentTurn,
   RibAgentTurnRequest,
@@ -18,6 +20,7 @@ import type { Member } from "./types.ts";
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_PER_TURN_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_MEMBERS = 6;
+const execFileAsync = promisify(execFile);
 
 // The read rail for a project-bound dispatch: enough to inspect the repo (the read subset
 // of code.ts's CODE_TOOLS), and nothing that mutates it. allowedTools present means "these
@@ -91,6 +94,7 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
   const wantSynthesis = opts.synthesize ?? members.length > 1;
 
   const root = opts.project?.rootPath.trim();
+  const reviewDiffUnderReview = await captureDiffUnderReview(opts.task, opts.project);
   const perMember = await runPool(members, concurrency, async (member): Promise<DispatchResult> => {
     if (opts.abortSignal?.aborted) {
       return { slug: member.slug, name: member.name, status: "aborted", text: "" };
@@ -100,7 +104,7 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
       opts.runAgentTurn,
       {
         system,
-        prompt: buildDispatchPrompt(opts.task, opts.project),
+        prompt: buildDispatchPrompt(opts.task, opts.project, reviewDiffUnderReview),
         ...(root ? { cwd: root, allowedDirectories: [root], allowedTools: [...READ_TOOLS] } : {}),
         ...(member.provider ? { provider: member.provider } : {}),
         ...(member.provider && member.model ? { model: member.model } : {}),
@@ -330,11 +334,68 @@ Reply with ONLY the memory document text and nothing else. To change nothing, re
 // Frame a project-bound member turn so it knows it can (and should) read the repo to ground
 // its answer rather than guess at file contents — the read tools are useless if the member
 // doesn't reach for them. Text-only turns pass the task through unchanged.
-function buildDispatchPrompt(task: string, project?: { name: string; rootPath: string }): string {
+function buildDispatchPrompt(
+  task: string,
+  project?: { name: string; rootPath: string },
+  reviewDiffUnderReview?: string,
+): string {
   if (!project?.rootPath.trim()) return task;
+  const reviewContext = reviewDiffUnderReview
+    ? `\n\n## CODE DIFF UNDER REVIEW\n${reviewDiffUnderReview}\n\n## ADVERSARIAL REVIEW MODE (REFUTE BY DEFAULT)\nTreat this as an adversarial code review. Assume the change is incorrect until proven otherwise.\n\nBefore concluding, explicitly try to refute the change by checking:\n1. Every new or changed constant, bound, or enum value against existing defaults in the same module; flag mismatched defaults, incompatible bounds, and off-by-one ranges.\n2. Any function that returns a shared mutable object (array/object/map/set) by reference instead of returning an immutable/defensive copy.\n\nIf you find a real defect, cite exact file:line evidence and signal it with the existing BLOCK sentinel: RAI VERDICT: BLOCK.`
+    : "";
   return `You are working in the project "${project.name}", at its repository root. You have Read, Glob, and Grep to inspect the repo — open the files you need to ground your answer instead of guessing at their contents. This is a read-only analysis/review turn: you cannot edit, run commands, or push.
 
+${reviewContext}
+
 ${task}`;
+}
+
+function isProjectReviewTask(task: string): boolean {
+  const t = task.toLowerCase();
+  return /\breview\b|\badversarial\b|\baudit\b|\binspect\b/.test(t);
+}
+
+async function captureDiffUnderReview(
+  task: string,
+  project?: { name: string; rootPath: string },
+): Promise<string | undefined> {
+  const root = project?.rootPath.trim();
+  if (!root || !isProjectReviewTask(task)) return undefined;
+  return await collectGitDiff(root);
+}
+
+async function collectGitDiff(rootPath: string): Promise<string> {
+  const [unstaged, staged] = await Promise.all([
+    readGitDiff(rootPath, []),
+    readGitDiff(rootPath, ["--staged"]),
+  ]);
+  const parts: string[] = [];
+  if (unstaged.kind === "ok" && unstaged.output.trim().length > 0) {
+    parts.push(`### Working tree\n\`\`\`diff\n${unstaged.output.trimEnd()}\n\`\`\``);
+  }
+  if (staged.kind === "ok" && staged.output.trim().length > 0) {
+    parts.push(`### Staged\n\`\`\`diff\n${staged.output.trimEnd()}\n\`\`\``);
+  }
+  if (parts.length > 0) return parts.join("\n\n");
+  if (unstaged.kind === "error") return `_Diff capture unavailable: ${unstaged.error}_`;
+  if (staged.kind === "error") return `_Diff capture unavailable: ${staged.error}_`;
+  return "_No staged or unstaged diff detected in the project working tree._";
+}
+
+async function readGitDiff(
+  rootPath: string,
+  args: readonly string[],
+): Promise<{ kind: "ok"; output: string } | { kind: "error"; error: string }> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", rootPath, "--no-pager", "diff", "--no-color", ...args],
+      { maxBuffer: 10 * 1024 * 1024 },
+    );
+    return { kind: "ok", output: stdout };
+  } catch (e) {
+    return { kind: "error", error: errText(e) };
+  }
 }
 
 const GENERIC_SYNTH_SYSTEM =
