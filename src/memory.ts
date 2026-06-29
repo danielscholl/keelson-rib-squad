@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import {
+  asNonEmptyString,
   MEMORY_TEXT_LIMIT,
   type MemoryTools,
   RECALL_REQUEST_SCHEMA_VERSION,
+  type RibContext,
   WRITEBACK_REQUEST_SCHEMA_VERSION,
 } from "@keelson/shared";
+import { parseTrailingDirective } from "./control-json.ts";
+import { runConfinedTurn } from "./turn-runner.ts";
 
 // The coordinator's governed-memory loop (#15 capstone) over the RibContext.getMemory
 // seam: recall prior decisions/lessons INTO a run so the team is grounded in what it
@@ -59,19 +63,16 @@ export async function recallGrounding(
   }
 }
 
-// Write the run's outcome back to the governed ledger as one `decision` row
-// (evidence-default; the server forces review_status pending). No-ops without a seam,
-// a project, or a summary; fail-soft. Returns whether a row was submitted, so the
-// coordinator can note it in the transcript.
-export async function reflectOutcome(
-  memory: MemoryTools | undefined,
-  projectId: string | undefined,
-  task: string,
-  summary: string,
-  facts: readonly string[],
+// Write one `decision` row to the governed ledger (evidence-default; the server forces
+// review_status pending). Shared by the raw and distilled writeback paths so both derive
+// the dedupe key the same way. Fail-soft; returns whether a row was submitted.
+async function writeDecisionRow(
+  memory: MemoryTools,
+  projectId: string,
+  headline: string,
+  body: string,
 ): Promise<boolean> {
-  if (!memory || !projectId || !summary.trim()) return false;
-  const content = clamp([summary.trim(), ...facts.slice(-FACTS_IN_DECISION)].join("\n"));
+  const content = clamp(body);
   const contentHash = sha256(content);
   try {
     const res = await memory.writeback({
@@ -83,7 +84,7 @@ export async function reflectOutcome(
       memories: [
         {
           type: "decision",
-          summary: clamp(`Squad outcome — ${task.trim()}`, SUMMARY_CAP),
+          summary: clamp(headline, SUMMARY_CAP),
           content,
           contentHash,
           provenance: "generated",
@@ -96,4 +97,122 @@ export async function reflectOutcome(
   } catch {
     return false; // fail-soft
   }
+}
+
+// Write the run's RAW outcome back as one governed `decision` row — the fail-soft fallback
+// used when distillation is unavailable, so a completed run still records something. No-ops
+// without a seam, a project, or a summary.
+export async function reflectOutcome(
+  memory: MemoryTools | undefined,
+  projectId: string | undefined,
+  task: string,
+  summary: string,
+  facts: readonly string[],
+): Promise<boolean> {
+  if (!memory || !projectId || !summary.trim()) return false;
+  const content = [summary.trim(), ...facts.slice(-FACTS_IN_DECISION)].join("\n");
+  return writeDecisionRow(memory, projectId, `Squad outcome — ${task.trim()}`, content);
+}
+
+// Write a DISTILLED lesson back as one governed `decision` row — the preferred shape: a
+// concise, decontextualized takeaway in place of the raw summary + facts dump, so the next
+// run recalls substance, not narration. No-ops without a seam, a project, or content.
+export async function reflectDistilled(
+  memory: MemoryTools | undefined,
+  projectId: string | undefined,
+  distilled: { headline: string; content: string },
+): Promise<boolean> {
+  if (!memory || !projectId || !distilled.headline.trim() || !distilled.content.trim()) {
+    return false;
+  }
+  return writeDecisionRow(memory, projectId, distilled.headline, distilled.content);
+}
+
+// --- distillation turn ---------------------------------------------------------
+
+// What a distillation turn decided about a completed run: a durable lesson worth recording,
+// an explicit abstain (the run produced nothing generalizable — the pollution gate), or
+// unavailable (the turn failed/timed-out or returned no parseable verdict — the caller falls
+// back to the raw writeback so a completed run still records something).
+export type DistillResult =
+  | { kind: "lesson"; headline: string; content: string }
+  | { kind: "abstain" }
+  | { kind: "unavailable" };
+
+const DISTILL_TIMEOUT_MS = 120_000;
+// Bound the prompt: the distill turn needs the run's RECENT findings, not the full ledger
+// (capped at MAX_FACTS=60). Larger than reflectOutcome's 5 — distillation reasons over more.
+const DISTILL_MAX_FACTS = 20;
+const DISTILL_ACTIONS: ReadonlySet<string> = new Set(["record", "skip"]);
+
+const DISTILL_SYSTEM =
+  "You are the keelson squad's scribe. A multi-agent run just finished. Your one job is to distill the SINGLE most useful durable decision or lesson the team should carry into future work on this project — or to judge that this run produced nothing worth recording. You curate shared team memory; you do not summarize the run.";
+
+function distillPrompt(input: {
+  task: string;
+  summary: string;
+  facts: readonly string[];
+  recalled: readonly string[];
+}): string {
+  const recentFacts = input.facts.slice(-DISTILL_MAX_FACTS);
+  const factsBlock = recentFacts.length
+    ? recentFacts.map((f) => `- ${f}`).join("\n")
+    : "(none recorded)";
+  // Show what the team already knows so the turn records a delta, not a restatement — the
+  // same "don't re-derive what's in memory" discipline the per-member reflection follows.
+  const recalledBlock = input.recalled.length
+    ? `\nAlready in the team's memory (do NOT restate these — record only something new or a genuine refinement):\n${input.recalled.map((r) => `- ${r}`).join("\n")}\n`
+    : "";
+  return `The squad just completed this task:
+---
+${input.task}
+---
+
+Final outcome:
+---
+${input.summary.trim() || "(no summary)"}
+---
+
+Findings gathered during the run:
+${factsBlock}
+${recalledBlock}
+Decide what — if anything — a future run on THIS project should know. Record at most ONE durable item: a decision the team made (and why), or a lesson about the project, the domain, or how the work goes. It must be decontextualized — written so a future run with no memory of THIS run understands it alone, naming concrete files/people/choices and absolute dates. Do NOT record run-specific narration, the restated task, or anything already in memory above. If the run thrashed, stayed shallow, or produced nothing generalizable, record nothing — that is the common, correct outcome.
+
+End your reply with EXACTLY ONE JSON object on its own line and nothing after it:
+- to record one durable item: {"action":"record","headline":"<short title>","lesson":"<the decontextualized decision or lesson>"}
+- to record nothing: {"action":"skip"}`;
+}
+
+// Run ONE confined turn to distill a completed run into a durable lesson (or an abstain).
+// Text-only (no tools); fail-soft — any turn failure or unparseable reply resolves to
+// `unavailable` rather than throwing, so the caller can fall back to the raw writeback.
+export async function distillOutcome(
+  runAgentTurn: NonNullable<RibContext["runAgentTurn"]>,
+  input: {
+    task: string;
+    summary: string;
+    facts: readonly string[];
+    recalled: readonly string[];
+    abortSignal?: AbortSignal;
+    timeoutMs?: number;
+  },
+): Promise<DistillResult> {
+  if (input.abortSignal?.aborted) return { kind: "unavailable" };
+  const turn = await runConfinedTurn(
+    runAgentTurn,
+    { system: DISTILL_SYSTEM, prompt: distillPrompt(input), allowedTools: [] },
+    input.timeoutMs ?? DISTILL_TIMEOUT_MS,
+    input.abortSignal,
+  );
+  if (turn.status !== "ok") return { kind: "unavailable" };
+  const directive = parseTrailingDirective(turn.text, DISTILL_ACTIONS);
+  if (!directive) return { kind: "unavailable" };
+  if (directive.parsed.action === "skip") return { kind: "abstain" };
+  const headline = asNonEmptyString(directive.parsed.headline);
+  const lesson = asNonEmptyString(directive.parsed.lesson);
+  // A malformed `record` (missing/empty fields) is treated as unavailable, not abstain — only
+  // an explicit `skip` suppresses the writeback; uncertainty preserves the raw fallback.
+  if (!headline || !lesson) return { kind: "unavailable" };
+  // writeDecisionRow owns truncation (clamps both fields at the write boundary).
+  return { kind: "lesson", headline, content: lesson };
 }

@@ -1,13 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import type {
   MemoryTools,
+  MessageChunk,
   RecallItem,
   RecallResponse,
+  RibContext,
   WritebackRequest,
   WritebackResponse,
 } from "@keelson/shared";
 import { RECALL_RESPONSE_SCHEMA_VERSION, WRITEBACK_RESPONSE_SCHEMA_VERSION } from "@keelson/shared";
-import { recallGrounding, reflectOutcome } from "../src/memory.ts";
+import {
+  distillOutcome,
+  recallGrounding,
+  reflectDistilled,
+  reflectOutcome,
+} from "../src/memory.ts";
 
 function recallItem(type: RecallItem["type"], summary: string): RecallItem {
   return {
@@ -125,5 +132,133 @@ describe("reflectOutcome", () => {
     expect(await reflectOutcome(fakeMemory({ throwOn: "writeback" }), "p1", "t", "s", [])).toBe(
       false,
     );
+  });
+});
+
+describe("reflectDistilled", () => {
+  test("writes one governed decision row from the distilled headline + lesson", async () => {
+    let captured: WritebackRequest | undefined;
+    const memory = fakeMemory({ onWriteback: (req) => (captured = req) });
+    const wrote = await reflectDistilled(memory, "p1", {
+      headline: "Bun is the runtime",
+      content: "This repo builds with bun; run bun test before opening a PR.",
+    });
+    expect(wrote).toBe(true);
+    const draft = captured?.memories[0];
+    expect(draft?.type).toBe("decision");
+    expect(draft?.provenance).toBe("generated");
+    // The distilled lesson IS the row — no "Squad outcome —" prefix, no raw facts dump.
+    expect(draft?.summary).toBe("Bun is the runtime");
+    expect(draft?.content).toBe("This repo builds with bun; run bun test before opening a PR.");
+    expect(draft?.contentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(captured?.idempotencyKey).toBe(`squad-coord:p1:${draft?.contentHash}`);
+  });
+
+  test("no-ops (false) without a seam, a project, empty content, or empty headline", async () => {
+    const ok = { headline: "h", content: "c" };
+    expect(await reflectDistilled(undefined, "p1", ok)).toBe(false);
+    expect(await reflectDistilled(fakeMemory(), undefined, ok)).toBe(false);
+    expect(await reflectDistilled(fakeMemory(), "p1", { headline: "h", content: "   " })).toBe(
+      false,
+    );
+    expect(await reflectDistilled(fakeMemory(), "p1", { headline: "  ", content: "c" })).toBe(
+      false,
+    );
+  });
+
+  test("fail-soft: a writeback error yields false (never throws)", async () => {
+    expect(
+      await reflectDistilled(fakeMemory({ throwOn: "writeback" }), "p1", {
+        headline: "h",
+        content: "c",
+      }),
+    ).toBe(false);
+  });
+});
+
+async function* doneStream(): AsyncGenerator<MessageChunk> {
+  yield { type: "done" };
+}
+
+// A one-shot turn seam that returns canned text (and captures the prompt it was given), so a
+// distillation turn can be driven without a provider. `status` defaults to ok.
+function fakeTurn(
+  text: string,
+  opts: { status?: "ok" | "error"; onPrompt?: (prompt: string) => void } = {},
+): NonNullable<RibContext["runAgentTurn"]> {
+  return (req) => {
+    opts.onPrompt?.(req.prompt ?? "");
+    return {
+      stream: doneStream(),
+      result: Promise.resolve({ status: opts.status ?? "ok", text }),
+    };
+  };
+}
+
+describe("distillOutcome", () => {
+  const input = {
+    task: "ship the feature",
+    summary: "shipped it",
+    facts: ["uses bun", "added a test"],
+    recalled: ["[recalled decision] prefer the in-process fallback"],
+  };
+
+  test("a 'record' directive yields a distilled lesson (headline + content)", async () => {
+    const res = await distillOutcome(
+      fakeTurn(
+        'reasoning\n{"action":"record","headline":"Bun runtime","lesson":"This repo builds with bun; run bun test before a PR."}',
+      ),
+      input,
+    );
+    expect(res).toEqual({
+      kind: "lesson",
+      headline: "Bun runtime",
+      content: "This repo builds with bun; run bun test before a PR.",
+    });
+  });
+
+  test("the prompt grounds the turn in the task, facts, and prior memory (delta discipline)", async () => {
+    let prompt = "";
+    await distillOutcome(fakeTurn('{"action":"skip"}', { onPrompt: (p) => (prompt = p) }), input);
+    expect(prompt).toContain("ship the feature");
+    expect(prompt).toContain("uses bun");
+    // The recalled memory is shown so the turn records a delta, not a restatement.
+    expect(prompt).toContain("Already in the team's memory");
+    expect(prompt).toContain("prefer the in-process fallback");
+  });
+
+  test("a 'skip' directive abstains (the pollution gate)", async () => {
+    const res = await distillOutcome(fakeTurn('nothing durable\n{"action":"skip"}'), input);
+    expect(res).toEqual({ kind: "abstain" });
+  });
+
+  test("an unparseable reply is unavailable (caller falls back to raw), not abstain", async () => {
+    const res = await distillOutcome(fakeTurn("just prose, no directive"), input);
+    expect(res).toEqual({ kind: "unavailable" });
+  });
+
+  test("a malformed 'record' (empty lesson) is unavailable, not a silent empty row", async () => {
+    const res = await distillOutcome(
+      fakeTurn('{"action":"record","headline":"x","lesson":"   "}'),
+      input,
+    );
+    expect(res).toEqual({ kind: "unavailable" });
+  });
+
+  test("a failed turn is unavailable (fail-soft)", async () => {
+    const res = await distillOutcome(fakeTurn("", { status: "error" }), input);
+    expect(res).toEqual({ kind: "unavailable" });
+  });
+
+  test("an already-aborted run is unavailable without spending a turn", async () => {
+    let ran = false;
+    const turn = fakeTurn('{"action":"record","headline":"h","lesson":"l"}', {
+      onPrompt: () => (ran = true),
+    });
+    const ac = new AbortController();
+    ac.abort();
+    const res = await distillOutcome(turn, { ...input, abortSignal: ac.signal });
+    expect(res).toEqual({ kind: "unavailable" });
+    expect(ran).toBe(false);
   });
 });

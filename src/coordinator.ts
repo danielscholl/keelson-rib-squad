@@ -9,7 +9,13 @@ import {
   type MemberContribution,
   reflectMembersAtClose,
 } from "./dispatch.ts";
-import { recallGrounding, reflectOutcome } from "./memory.ts";
+import {
+  type DistillResult,
+  distillOutcome,
+  recallGrounding,
+  reflectDistilled,
+  reflectOutcome,
+} from "./memory.ts";
 import {
   type CodeStepOutcome,
   DEFAULT_LIMITS,
@@ -347,6 +353,10 @@ export interface RunCoordinatorOptions {
   // the outcome BACK as a governed decision on completion (#15 capstone). Optional and
   // fail-soft — absent (or no project) degrades to no memory, the pre-capstone behavior.
   getMemory?: () => MemoryTools;
+  // Injected for testability; default binds distillOutcome to runAgentTurn (closing over the
+  // run's task + recalled memory). One reflection turn at loop-close distills the run into a
+  // durable governed decision, or abstains when nothing generalizable came of it.
+  distill?: (input: { summary: string; facts: readonly string[] }) => Promise<DistillResult>;
   // Injected for testability; default binds reflectMembersAtClose to the live seams. Each
   // member that did substantive work in a completed run curates its own memory.md ONCE.
   reflectAtClose?: (contributions: readonly MemberContribution[]) => Promise<readonly string[]>;
@@ -534,6 +544,20 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       };
     });
 
+  // Loop-close distillation: one reflection turn condenses the completed run into a durable
+  // governed decision (or abstains). Default binds the live turn, closing over the run's task
+  // and the memory recalled this pass so the distillation records a delta, not a restatement.
+  const distill =
+    opts.distill ??
+    ((input: { summary: string; facts: readonly string[] }) =>
+      distillOutcome(opts.runAgentTurn, {
+        task: opts.task,
+        summary: input.summary,
+        facts: input.facts,
+        recalled,
+        ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+      }));
+
   // Loop-close per-member reflection: each participant curates its own memory once when the
   // run completes (issue #2's boundary cadence). Default binds the live seam; fail-soft.
   const reflectAtClose =
@@ -620,45 +644,73 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(ledger.summary ? {} : { summary: directive.summary ?? decided.step.reason }),
         updatedAt: now(),
       };
-      // Reflect a COMPLETED run's outcome into the governed ledger so the next pass on
-      // this project recalls it (the "grow memory" capstone arc). Only on a genuine
-      // completion, not give-up; fail-soft (a write failure leaves the run succeeded).
+      // Grow memory at loop close, on a genuine completion only (not give-up). The SHARED governed
+      // decision is distilled and written first, THEN each participant's PRIVATE memory.md — kept
+      // sequential so the member half's abort check (after the distill turn) still suppresses it
+      // when an abort lands mid-distill. Both halves are fail-soft and skipped on abort.
       if (status === "done") {
-        const wrote = await reflectOutcome(
-          memory,
-          project?.id,
-          opts.task,
-          ledger.summary ?? "",
-          ledger.facts,
-        );
-        if (wrote) {
+        const summary = ledger.summary ?? "";
+        let memoryNote: string | undefined;
+        // Distill the run into ONE durable governed decision, or abstain (a confused run must not
+        // pollute the ledger it grounds the next pass on). try/catch keeps a throwing injected
+        // distill seam from crashing loop close and treats the throw like an `unavailable` verdict
+        // — a raw fallback so a completed run still records something.
+        if (memory && project?.id && !opts.abortSignal?.aborted) {
+          try {
+            const distilled = await distill({ summary, facts: ledger.facts });
+            // Re-check abort after the paid turn — don't mutate memory during teardown.
+            if (!opts.abortSignal?.aborted) {
+              if (distilled.kind === "lesson") {
+                memoryNote = (await reflectDistilled(memory, project.id, distilled))
+                  ? "[memory] recorded a distilled decision"
+                  : "[memory] distilled decision not recorded (deduped or blocked)";
+              } else if (distilled.kind === "abstain") {
+                memoryNote = "[memory] run yielded no durable decision (memory unchanged)";
+              } else if (
+                await reflectOutcome(memory, project.id, opts.task, summary, ledger.facts)
+              ) {
+                memoryNote = "[memory] recorded the outcome as a governed decision";
+              }
+            }
+          } catch {
+            if (
+              !opts.abortSignal?.aborted &&
+              (await reflectOutcome(memory, project.id, opts.task, summary, ledger.facts))
+            ) {
+              memoryNote = "[memory] recorded the outcome as a governed decision";
+            }
+          }
+        }
+        if (memoryNote) {
           ledger = {
             ...ledger,
             transcript: appendEntry(ledger.transcript, {
               round: ledger.round,
               kind: "coordinator",
-              text: "[memory] recorded the outcome as a governed decision",
+              text: memoryNote,
             }),
             updatedAt: now(),
           };
         }
-        // Per-member reflection at the loop-close boundary: each member that did substantive
-        // work grows its OWN memory.md once over its whole contribution — the per-agent half of
-        // the capstone's "grow memory" arc (the shared half is reflectOutcome above). Bounded to
-        // one paid turn per participant per run; skipped on abort; fail-soft.
+        // Each member that did substantive work grows its OWN memory.md once over its whole
+        // contribution — the per-agent half of the grow-memory arc; fail-soft, skipped on abort.
         const contributions = collectContributions(ledger.transcript, opts.roster);
         if (contributions.length > 0 && !opts.abortSignal?.aborted) {
-          const reflected = await reflectAtClose(contributions);
-          if (reflected.length > 0) {
-            ledger = {
-              ...ledger,
-              transcript: appendEntry(ledger.transcript, {
-                round: ledger.round,
-                kind: "coordinator",
-                text: `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`,
-              }),
-              updatedAt: now(),
-            };
+          try {
+            const reflected = await reflectAtClose(contributions);
+            if (reflected.length > 0) {
+              ledger = {
+                ...ledger,
+                transcript: appendEntry(ledger.transcript, {
+                  round: ledger.round,
+                  kind: "coordinator",
+                  text: `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`,
+                }),
+                updatedAt: now(),
+              };
+            }
+          } catch {
+            // fail-soft: a rejecting reflection seam must not crash a completed run
           }
         }
       }
