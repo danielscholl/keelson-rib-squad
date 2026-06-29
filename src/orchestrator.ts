@@ -63,9 +63,9 @@ export const DEFAULT_LIMITS: OrchestratorLimits = { maxRounds: 24, maxStall: 3, 
 
 // Merge a partial limits override with DEFAULT_LIMITS so callers may specify only the
 // fields they care about (e.g. tightening maxStall for a test) without having to
-// repeat the others.
+// repeat the others. Always returns a FRESH object (never the shared DEFAULT_LIMITS by
+// reference) so a caller can't mutate the module-level default.
 export function overlayLimits(over?: Partial<OrchestratorLimits>): OrchestratorLimits {
-  if (!over) return DEFAULT_LIMITS;
   return { ...DEFAULT_LIMITS, ...over };
 }
 

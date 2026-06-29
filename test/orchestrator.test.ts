@@ -38,8 +38,9 @@ function decide(input: Partial<DecideInput> & { progress: ProgressLedger }) {
 }
 
 describe("overlayLimits", () => {
-  test("no argument returns DEFAULT_LIMITS exactly", () => {
+  test("no argument returns a fresh copy of DEFAULT_LIMITS (not the shared reference)", () => {
     expect(overlayLimits()).toEqual(DEFAULT_LIMITS);
+    expect(overlayLimits()).not.toBe(DEFAULT_LIMITS); // can't alias/mutate the module default
   });
 
   test("empty object returns DEFAULT_LIMITS exactly", () => {
