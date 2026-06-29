@@ -66,8 +66,16 @@ const raiFloor: Policy = {
       return { outcome: "allow" };
     }
 
-    // response phase: a BLOCK verdict fails the node (the engine clears the text).
-    if (event.phase === "response" && BLOCK_VERDICT.test(event.text)) {
+    // response phase: deny a BLOCK verdict only on the workflow surface (the squad-pr-review
+    // verdict node). On the rib surface the floor can't distinguish a reviewer emitting the
+    // verdict from an engineer writing the sentinel into source, so gating every rib response
+    // self-blocks any turn that touches the review machinery; verdict enforcement for rib
+    // turns belongs to the coordinator, not this floor.
+    if (
+      event.phase === "response" &&
+      ctx.surface === "workflow" &&
+      BLOCK_VERDICT.test(event.text)
+    ) {
       return {
         outcome: "deny",
         reason: "squad RAI floor: review returned a BLOCK verdict — integration is blocked",
