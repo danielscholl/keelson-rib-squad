@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { MemoryTools, RibContext } from "@keelson/shared";
+import type { MemoryTools, RibContext, RibExec } from "@keelson/shared";
 import { runCodeTurn } from "./code.ts";
 import { parseTrailingDirective } from "./control-json.ts";
 import {
@@ -55,7 +55,7 @@ export interface CoordinatorLedger {
   // "active" resumes on a same-task re-run; the terminal states (done / gave-up /
   // max-rounds) do not, so a finished task starts fresh rather than re-tripping its
   // own ceiling and returning a stale summary having run zero turns.
-  status: "active" | "done" | "gave-up" | "max-rounds";
+  status: "active" | "done" | "gave-up" | "max-rounds" | "verification-failed";
   transcript: CoordinatorEntry[];
   // Steps attempted on a now-abandoned plan, swept on a re-plan so the rebuild is told not
   // to resume them; cleared once a non-stalled round shows the new plan is working again.
@@ -63,6 +63,13 @@ export interface CoordinatorLedger {
   // Specialists the squad judged its roster lacks for this goal — a "cast this" recommendation
   // surfaced to the operator, NOT acted on autonomously (roster mutation stays operator-gated).
   teamGaps?: string[];
+  // The latest deterministic verification result — operator-configured checks run against the
+  // project at the done-gate. A red result vetoes `done`, so squad's "done" is machine-proven,
+  // not self-asserted. Absent when no verify commands are configured or no code was edited.
+  verification?: VerificationRecord;
+  // Consecutive done-gate verify failures; bounds the fix-and-recheck loop so a run that can't
+  // go green terminates `verification-failed` rather than burning the whole round budget.
+  verifyFailures?: number;
   summary?: string;
   createdAt: string;
   updatedAt: string;
@@ -70,13 +77,24 @@ export interface CoordinatorLedger {
 
 export interface CoordinatorEntry {
   round: number;
-  kind: "coordinator" | "dispatch" | "code" | "workflow" | "replan" | "failed";
+  kind: "coordinator" | "dispatch" | "code" | "workflow" | "replan" | "failed" | "verify";
   speaker?: string;
   instruction?: string;
   text: string;
   // The provider id that produced this step's work (code / dispatch arms) — the served-provider
   // provenance the standup and Run-loop board surface for a mixed-provider team.
   provider?: string;
+}
+
+// A deterministic verification result: the operator-configured check that gates `done`.
+// `command` is the failing command (or a count summary on pass); `summary` is a capped tail of
+// its output so a failure's actual reason reaches the manager and the board.
+export interface VerificationRecord {
+  command: string;
+  exitCode: number;
+  passed: boolean;
+  summary: string;
+  atRound: number;
 }
 
 // The directive a coordinator turn must end with: `progress` carries the five Progress
@@ -91,6 +109,9 @@ const MAX_FAILED = 20; // bounded list of recently-abandoned steps surfaced on a
 const STEP_DESC_CAP = 200; // per-swept-step char cap so the re-plan prompt stays compact
 const MAX_GAPS = 6; // bounded list of "the roster lacks X" recommendations
 const GAP_CAP = 160; // per-gap char cap so a recommendation stays a short headline
+const MAX_VERIFY_FAILURES = 3; // consecutive done-gate verify failures before terminating verification-failed
+const VERIFY_TIMEOUT_MS = 300_000; // per verify command — test suites can be slow
+const VERIFY_SUMMARY_CAP = 800; // capped tail of a failing command's output folded as a fact
 const LEDGER_FILE = "coordinator-ledger.json";
 
 interface ParsedDirective {
@@ -357,6 +378,12 @@ export interface RunCoordinatorOptions {
   // the outcome BACK as a governed decision on completion (#15 capstone). Optional and
   // fail-soft — absent (or no project) degrades to no memory, the pre-capstone behavior.
   getMemory?: () => MemoryTools;
+  // The process-exec seam (RibContext.getExec) + operator-configured verify commands. When both
+  // are present AND a project is bound AND code was edited this run, the done-gate runs the
+  // commands against project.rootPath and a red exit VETOES `done` — done becomes machine-proven,
+  // not self-asserted. Empty/absent degrades to today's prose-trusting behavior (fail open).
+  getExec?: RibExec;
+  verify?: readonly string[];
   // Injected for testability; default binds distillOutcome to runAgentTurn (closing over the
   // run's task + recalled memory). One reflection turn at loop-close distills the run into a
   // durable governed decision, or abstains when nothing generalizable came of it.
@@ -371,7 +398,7 @@ export interface RunCoordinatorOptions {
 export interface RunCoordinatorResult {
   ledger: CoordinatorLedger;
   rounds: number;
-  status: "done" | "gave-up" | "max-rounds" | "error" | "aborted";
+  status: "done" | "gave-up" | "max-rounds" | "error" | "aborted" | "verification-failed";
   summary: string;
   // Served-provider provenance compiled from the run's code/dispatch steps, e.g.
   // "atlas (claude) coded · vera (copilot) contributed". Absent when no step resolved a provider.
@@ -382,6 +409,46 @@ const DEFAULT_COORDINATOR_TIMEOUT_MS = 180_000;
 
 function cap(text: string, n: number): string {
   return text.length > n ? `${text.slice(0, n)}…` : text;
+}
+
+// Tail of a command's output — failures surface at the end, so keep the last N chars.
+function tailCap(text: string, n: number): string {
+  const t = text.trimEnd();
+  return t.length > n ? `…${t.slice(-n)}` : t;
+}
+
+// Run the operator-configured verify commands against the project root via the exec seam.
+// Non-paid (processes, not LLM turns). Fail-fast: stop at the first non-zero exit and return it;
+// an all-green pass returns a count summary. Each command runs through `bash -c` so an operator
+// string like "bun run check" or "bun --filter '*' test" works verbatim. acceptNonZeroExit makes
+// a non-zero exit a returned result, not an error, so a failing suite is data, not a throw.
+async function runVerification(
+  exec: RibExec,
+  commands: readonly string[],
+  cwd: string,
+  atRound: number,
+): Promise<VerificationRecord> {
+  for (const command of commands) {
+    const res = await exec.runText("bash", ["-c", command], {
+      cwd,
+      acceptNonZeroExit: true,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+    });
+    const exitCode = res.ok ? (res.exitCode ?? 0) : (res.code ?? 1);
+    if (!res.ok || exitCode !== 0) {
+      const out = res.ok ? res.data : res.error;
+      return {
+        command,
+        exitCode,
+        passed: false,
+        summary: tailCap(out, VERIFY_SUMMARY_CAP),
+        atRound,
+      };
+    }
+  }
+  const n = commands.length;
+  const label = `${n} check${n === 1 ? "" : "s"}`;
+  return { command: label, exitCode: 0, passed: true, summary: `${label} passed`, atRound };
 }
 
 // The distinct provider ids among a wave's successful members, joined for one entry's
@@ -506,6 +573,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   const limits = overlayLimits(opts.limits);
   const timeoutMs = opts.perTurnTimeoutMs ?? DEFAULT_COORDINATOR_TIMEOUT_MS;
   const project = opts.project;
+  const verify = opts.verify ?? [];
   // Recall the team's prior governed decisions/lessons ONCE (project-scoped; [] without a
   // seam or project) so they ground BOTH the coordinator's planning AND each dispatched
   // member's turn. The recalled knowledge has to reach the agent doing the work, not just
@@ -689,10 +757,88 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     };
 
     if (decided.step.kind === "end") {
-      status = decided.step.reason.includes("gave up") ? "gave-up" : "done";
+      const givingUp = decided.step.reason.includes("gave up");
+      // Verification gate: a senior never accepts "done" on a code change without a green check.
+      // Fires only when the manager wants done (not give-up), the exec seam + verify commands are
+      // present, a project is bound, AND code was actually edited this run. A red exit VETOES done
+      // — the real failure is handed back to the manager (or, past the retry bound, terminates the
+      // run verification-failed) so squad never narrates a broken build as finished.
+      if (
+        !givingUp &&
+        opts.getExec &&
+        verify.length > 0 &&
+        project &&
+        ledger.transcript.some((e) => e.kind === "code") &&
+        !opts.abortSignal?.aborted
+      ) {
+        const v = await runVerification(opts.getExec, verify, project.rootPath, ledger.round);
+        ledger = {
+          ...ledger,
+          verification: v,
+          transcript: appendEntry(ledger.transcript, {
+            round: ledger.round,
+            kind: "verify",
+            text: v.passed
+              ? `verification passed: ${v.command}`
+              : `verification FAILED: ${v.command} (exit ${v.exitCode})\n${v.summary}`,
+          }),
+          updatedAt: now(),
+        };
+        if (!v.passed) {
+          const failures = (ledger.verifyFailures ?? 0) + 1;
+          // Keep the failure's TAIL (where the actual error is) within FACT_CAP — `cap` would
+          // truncate from the start and drop the most informative final lines.
+          const failLabel = `[verification FAILED: ${v.command} exit ${v.exitCode}] `;
+          ledger = {
+            ...ledger,
+            verifyFailures: failures,
+            facts: foldFacts(ledger.facts, [
+              failLabel + tailCap(v.summary, Math.max(0, FACT_CAP - failLabel.length)),
+            ]),
+            updatedAt: now(),
+          };
+          if (failures >= MAX_VERIFY_FAILURES) {
+            status = "verification-failed";
+            ledger = {
+              ...ledger,
+              status: "verification-failed",
+              summary: `verification failed after ${failures} attempts: ${v.command} (exit ${v.exitCode})`,
+              updatedAt: now(),
+            };
+            await saveLedger(opts.dataHome, ledger);
+            break;
+          }
+          // Veto the manager's done: advance the round and hand the failure back so the next
+          // manager turn must fix the red build rather than re-declare done on it.
+          ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
+          await saveLedger(opts.dataHome, ledger);
+          continue;
+        }
+        // Green: clear the failure counter, then fall through to accept done.
+        ledger = { ...ledger, verifyFailures: 0, updatedAt: now() };
+      } else if (
+        !givingUp &&
+        verify.length > 0 &&
+        !opts.getExec &&
+        project &&
+        ledger.transcript.some((e) => e.kind === "code")
+      ) {
+        // Verification was requested but the exec seam is unavailable (an older harness): surface
+        // the ungated done rather than silently accepting it, so the operator isn't misled.
+        ledger = {
+          ...ledger,
+          transcript: appendEntry(ledger.transcript, {
+            round: ledger.round,
+            kind: "verify",
+            text: "verification skipped: exec seam unavailable on this harness (done not gated)",
+          }),
+          updatedAt: now(),
+        };
+      }
+      status = givingUp ? "gave-up" : "done";
       ledger = {
         ...ledger,
-        status: status === "gave-up" ? "gave-up" : "done",
+        status: givingUp ? "gave-up" : "done",
         ...(ledger.summary ? {} : { summary: directive.summary ?? decided.step.reason }),
         updatedAt: now(),
       };
