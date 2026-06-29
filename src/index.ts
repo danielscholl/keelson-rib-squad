@@ -50,6 +50,7 @@ import type { Member } from "./types.ts";
 let refreshWorkflow: RibContext["refreshWorkflow"];
 let runAgentTurn: RibContext["runAgentTurn"];
 let getProjects: RibContext["getProjects"];
+let getProviders: RibContext["getProviders"];
 
 // Absolute path to the roster collector, resolved at module load so the workflow
 // node runs the right file regardless of the run's (nominal) cwd. fileURLToPath
@@ -881,6 +882,7 @@ const rib: Rib = {
     refreshWorkflow = ctx.refreshWorkflow;
     runAgentTurn = ctx.runAgentTurn;
     getProjects = ctx.getProjects;
+    getProviders = ctx.getProviders;
     return [
       makeEmitMemberTool(ctx.refreshWorkflow),
       makeListMembersTool(),
@@ -951,6 +953,7 @@ const rib: Rib = {
     refreshWorkflow = undefined;
     runAgentTurn = undefined;
     getProjects = undefined;
+    getProviders = undefined;
   },
 };
 
@@ -1048,6 +1051,13 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   const resolved = resolveProject(getProjects(), asNonEmptyString(payload.project));
   if (!resolved.ok) return resolved;
   const missionRaw = asNonEmptyString(payload.mission);
+  // A provider-listing hiccup must not block casting — degrade to unpinned members.
+  let providers: ReturnType<NonNullable<RibContext["getProviders"]>> = [];
+  try {
+    providers = getProviders?.() ?? [];
+  } catch {
+    providers = [];
+  }
   try {
     const result = await proposeCast({
       runAgentTurn,
@@ -1057,6 +1067,9 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
         rootPath: resolved.project.rootPath,
       },
       ...(missionRaw ? { mission: missionRaw.slice(0, MAX_MISSION_CHARS) } : {}),
+      // Available-provider catalog so the scan can auto-assign each member's engine by
+      // role (leaning overpowered). Absent seam / no providers → unpinned members.
+      providers,
     });
     if (!result.ok) return { ok: false, error: result.error };
     await writeProposal(squadDataHome(), result.proposal);

@@ -74,6 +74,11 @@ export interface ProposeCastOptions {
   project: { id: string; name: string; rootPath: string };
   mission?: string;
   maxMembers?: number;
+  // The providers registered on this harness (RibContext.getProviders). When supplied
+  // and non-empty, the scan turn is asked to assign each member a provider/model from
+  // these — matched to its role, leaning overpowered. Empty/omitted leaves members
+  // unpinned (the harness default provider serves every turn).
+  providers?: ReturnType<NonNullable<RibContext["getProviders"]>>;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
 }
@@ -81,20 +86,46 @@ export interface ProposeCastOptions {
 const SCAN_SYSTEM =
   "You are a staffing architect for a Keelson Squad — a small team of persistent AI agents an operator talks to directly. You inspect a real software project and propose the team best suited to the work in it. You read the repository to staff it well; you never modify it.";
 
-function scanPrompt(projectName: string, mission: string | undefined, maxMembers: number): string {
+// Registered providers a member must never be assigned to: "workflow" is the always-on
+// provider backing workflow-linked conversations (echo-only for chat), and "stub" is the
+// test echo provider. getProviders() lists every registration, so the cast filters these
+// out before offering the catalog to the scan — mirroring the host's own non-stub /
+// non-workflow default selection.
+const NON_ASSIGNABLE_PROVIDER_IDS = new Set(["workflow", "stub"]);
+
+function scanPrompt(
+  projectName: string,
+  mission: string | undefined,
+  maxMembers: number,
+  providers: readonly { id: string; displayName: string }[],
+): string {
   const missionBlock = mission
     ? `\nThe operator's mission for this squad:\n---\n${mission}\n---\n`
     : "";
+  // Only ask for provider/model assignment when the harness actually exposes the
+  // registered set; otherwise members come back unpinned and run on the default.
+  const assignBlock =
+    providers.length > 0
+      ? `\n- provider (and optionally model): the engine this member runs on. The providers AVAILABLE on this harness are: ${providers.map((p) => JSON.stringify(p.id)).join(", ")}. Use ONLY these provider ids. Match the engine to the role, and when unsure lean OVERPOWERED (a stronger model), never underpowered:
+  · planning / coordination / lead / architect roles → prefer "claude" with an Opus-class model (e.g. "claude-opus-4-8") for planning + coordination strength
+  · coding / implementation / review / QA roles → prefer "copilot" with a GPT-5.5-class model (e.g. "gpt-5.5") for coding + reviewing strength
+  · generic / triage / support roles → "copilot" on its default model (omit "model")
+  If a preferred provider is not in the AVAILABLE list, fall back to the strongest available one. A model REQUIRES its provider: if you set "model", set "provider" too; you may set "provider" alone (a vendor pin that uses the provider's default model). If unsure of a provider's exact model id, pin the provider alone and omit "model".`
+      : "";
+  const jsonExample =
+    providers.length > 0
+      ? `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"provider":"claude","model":"claude-opus-4-8"}],"summary":"one line describing the team"}`
+      : `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"]}],"summary":"one line describing the team"}`;
   return `Inspect the project at the current working directory ("${projectName}"). Use the read-only tools (Read, Glob, Grep) to learn what it actually is: its languages and frameworks, how the code is laid out, its docs, tests, and CI. Read enough to staff it well — do not modify anything.
 ${missionBlock}
 Propose the SMALL team (typically 3-5 members, never more than ${maxMembers}) best suited to THIS project and mission. For each member decide:
 - name: a short proper handle (a person-like name, NOT a job title)
 - role: a 1-4 word role title (e.g. "Backend Engineer", "Reviewer", "Tech Lead")
 - charter: a Markdown identity doc with these sections in order — "# <name>", "## Role", "## Mission", "## Voice" — grounded in what you actually found in the repo (name the real frameworks/dirs you saw). Be honest: do not invent tools, credentials, or capabilities the member will not have.
-- tools: capability tags that decide how this member can later be routed. Use ONLY these tags: "code" (may modify the repo) and "read" (may read the repo). An implementer/engineer gets ["code","read"]; a reviewer, lead, planner, or PM gets ["read"] or [] (text-only). Reserve "code" for true implementers — most members are text-only or read-only.
+- tools: capability tags that decide how this member can later be routed. Use ONLY these tags: "code" (may modify the repo) and "read" (may read the repo). An implementer/engineer gets ["code","read"]; a reviewer, lead, planner, or PM gets ["read"] or [] (text-only). Reserve "code" for true implementers — most members are text-only or read-only.${assignBlock}
 
 Return EXACTLY ONE JSON object as your entire reply — no prose, no code fence:
-{"members":[{"name":"...","role":"...","charter":"...","tools":["read"]}],"summary":"one line describing the team"}`;
+${jsonExample}`;
 }
 
 // Run ONE confined repo-scan turn and return a validated, capped proposal. The turn
@@ -110,12 +141,15 @@ export async function proposeCast(opts: ProposeCastOptions): Promise<ProposeCast
   }
   const maxMembers = Math.max(1, opts.maxMembers ?? MAX_CAST_MEMBERS);
   const mission = opts.mission?.trim() || undefined;
+  const assignableProviders = (opts.providers ?? []).filter(
+    (p) => !NON_ASSIGNABLE_PROVIDER_IDS.has(p.id),
+  );
 
   const outcome = await runScanTurn(
     opts.runAgentTurn,
     {
       system: SCAN_SYSTEM,
-      prompt: scanPrompt(opts.project.name, mission, maxMembers),
+      prompt: scanPrompt(opts.project.name, mission, maxMembers, assignableProviders),
       cwd: root,
       allowedDirectories: [root],
       allowedTools: [...SCAN_TOOLS],
