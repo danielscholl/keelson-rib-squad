@@ -626,6 +626,12 @@ function makeCoordinateTool(
 // run whichever of check/typecheck/test scripts exist, via the project's runner (bun if a bun
 // lockfile is present, else npm). Returns [] for a non-node project or on any read error — the
 // gate then fails OPEN (today's behavior), keeping the rib project-agnostic.
+//
+// This resolves ONCE at run start (before the loop), so the command LIST is fixed before any code
+// edit — a code turn can't add/remove scripts to dodge the gate. It does NOT defend against a code
+// turn rewriting a script's BODY (e.g. gutting `test`); that change-quality concern is the
+// regression guard's job (issue #52). Operators wanting a tamper-proof check pass `verify`
+// explicitly with commands that don't route through editable project scripts.
 async function autoDetectVerify(rootPath: string): Promise<string[]> {
   try {
     const pkg = JSON.parse(await readFile(join(rootPath, "package.json"), "utf-8")) as {

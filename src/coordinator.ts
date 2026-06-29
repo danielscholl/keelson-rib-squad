@@ -786,11 +786,14 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         };
         if (!v.passed) {
           const failures = (ledger.verifyFailures ?? 0) + 1;
+          // Keep the failure's TAIL (where the actual error is) within FACT_CAP — `cap` would
+          // truncate from the start and drop the most informative final lines.
+          const failLabel = `[verification FAILED: ${v.command} exit ${v.exitCode}] `;
           ledger = {
             ...ledger,
             verifyFailures: failures,
             facts: foldFacts(ledger.facts, [
-              cap(`[verification FAILED: ${v.command} exit ${v.exitCode}] ${v.summary}`, FACT_CAP),
+              failLabel + tailCap(v.summary, Math.max(0, FACT_CAP - failLabel.length)),
             ]),
             updatedAt: now(),
           };
@@ -813,6 +816,24 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         }
         // Green: clear the failure counter, then fall through to accept done.
         ledger = { ...ledger, verifyFailures: 0, updatedAt: now() };
+      } else if (
+        !givingUp &&
+        verify.length > 0 &&
+        !opts.getExec &&
+        project &&
+        ledger.transcript.some((e) => e.kind === "code")
+      ) {
+        // Verification was requested but the exec seam is unavailable (an older harness): surface
+        // the ungated done rather than silently accepting it, so the operator isn't misled.
+        ledger = {
+          ...ledger,
+          transcript: appendEntry(ledger.transcript, {
+            round: ledger.round,
+            kind: "verify",
+            text: "verification skipped: exec seam unavailable on this harness (done not gated)",
+          }),
+          updatedAt: now(),
+        };
       }
       status = givingUp ? "gave-up" : "done";
       ledger = {

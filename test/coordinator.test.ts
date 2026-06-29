@@ -747,6 +747,25 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.verification).toBeUndefined();
   });
 
+  test("verification gate: verify requested but no exec seam → done, surfaced (not silent)", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      // no getExec injected — an older harness without the exec seam
+      verify: ["bun run test"],
+    });
+    expect(res.status).toBe("done");
+    expect(res.ledger.verification).toBeUndefined();
+    expect(
+      res.ledger.transcript.some(
+        (e) => e.kind === "verify" && e.text.includes("exec seam unavailable"),
+      ),
+    ).toBe(true);
+  });
+
   test("the live distillation seam runs its own turn and records the distilled decision", async () => {
     // No injected `distill` — exercise the default seam end-to-end. The scribe turn (not a
     // "Goal:" coordinator turn) returns the record directive that becomes the governed row.
