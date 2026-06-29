@@ -1,0 +1,8 @@
+name: CodeQL config
+
+# Keep CodeQL focused on the rib's shipped surface (src/, bin/). Tests are
+# noise for security analysis.
+paths-ignore:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "test/**"

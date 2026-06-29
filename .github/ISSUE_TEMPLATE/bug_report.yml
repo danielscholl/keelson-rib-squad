@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in the Squad rib isn't working as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Squad is a [Keelson](https://github.com/danielscholl/keelson)
+        rib — please confirm it still reproduces on the latest release first. For a
+        security issue, do **not** file here — see keelson's
+        [SECURITY.md](https://github.com/danielscholl/keelson/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The actual behavior, with the exact command, chat action, or surface control that triggered it.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. KEELSON_RIBS=squad bun dev  (or `keelson rib add …`)
+        2. open the Squad surface
+        3. cast a team and start a coordinator run on a project
+        4. ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: The rib version (or commit), your keelson version, OS, and which provider(s) you used (copilot / claude / codex / stub).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Any useful `[rib-squad]` lines from the server log. Redact credentials.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched existing issues for a duplicate.
+          required: true
+        - label: This is a Squad rib bug, not a harness (keelson) issue.
+          required: false
