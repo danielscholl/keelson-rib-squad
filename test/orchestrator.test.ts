@@ -7,6 +7,7 @@ import {
   executeStep,
   type OrchestratorLimits,
   type OrchestratorState,
+  overlayLimits,
   type ProgressLedger,
 } from "../src/orchestrator.ts";
 import type { Member } from "../src/types.ts";
@@ -35,6 +36,39 @@ function state(over: Partial<OrchestratorState> = {}): OrchestratorState {
 function decide(input: Partial<DecideInput> & { progress: ProgressLedger }) {
   return decideOrchestratorStep({ state: state(), roster: ROSTER, ...input });
 }
+
+describe("overlayLimits", () => {
+  test("no argument returns DEFAULT_LIMITS exactly", () => {
+    expect(overlayLimits()).toEqual(DEFAULT_LIMITS);
+  });
+
+  test("empty object returns DEFAULT_LIMITS exactly", () => {
+    expect(overlayLimits({})).toEqual(DEFAULT_LIMITS);
+  });
+
+  test("only maxStall overridden keeps default maxRounds and maxResets", () => {
+    const result = overlayLimits({ maxStall: 1 });
+    expect(result).toEqual({
+      maxRounds: DEFAULT_LIMITS.maxRounds,
+      maxStall: 1,
+      maxResets: DEFAULT_LIMITS.maxResets,
+    } satisfies OrchestratorLimits);
+  });
+
+  test("only maxRounds overridden keeps default maxStall and maxResets", () => {
+    const result = overlayLimits({ maxRounds: 5 });
+    expect(result).toEqual({
+      maxRounds: 5,
+      maxStall: DEFAULT_LIMITS.maxStall,
+      maxResets: DEFAULT_LIMITS.maxResets,
+    } satisfies OrchestratorLimits);
+  });
+
+  test("all fields overridden replaces defaults entirely", () => {
+    const over = { maxRounds: 10, maxStall: 2, maxResets: 1 };
+    expect(overlayLimits(over)).toEqual(over satisfies OrchestratorLimits);
+  });
+});
 
 describe("decideOrchestratorStep", () => {
   test("satisfied request ends the loop (over everything else)", () => {
@@ -127,6 +161,29 @@ describe("decideOrchestratorStep", () => {
     const out = decide({ progress: ledger(), state: state({ round: 24 }) });
     expect(out.step.kind).toBe("end");
     if (out.step.kind === "end") expect(out.step.reason).toContain("max rounds");
+  });
+
+  test("partial limits overlay: only maxStall set still respects default maxRounds", () => {
+    // maxRounds from DEFAULT_LIMITS (24) should guard — round 24 must end the loop.
+    const out = decide({
+      progress: ledger(),
+      state: state({ round: DEFAULT_LIMITS.maxRounds }),
+      limits: { maxStall: 1 }, // only override maxStall; maxRounds/maxResets from defaults
+    });
+    expect(out.step.kind).toBe("end");
+    if (out.step.kind === "end") expect(out.step.reason).toContain("max rounds");
+  });
+
+  test("partial limits overlay: only maxStall set still respects default maxResets", () => {
+    // With maxStall:1 and stallCount already at 0, one stalled round triggers a replan.
+    // maxResets from DEFAULT_LIMITS (2) means resetCount:2 exhausts re-plans.
+    const out = decide({
+      progress: ledger({ isProgressBeingMade: false }),
+      state: state({ stallCount: 0, resetCount: DEFAULT_LIMITS.maxResets }),
+      limits: { maxStall: 1 }, // only override maxStall
+    });
+    expect(out.step.kind).toBe("end");
+    if (out.step.kind === "end") expect(out.step.reason).toContain("gave up");
   });
 
   test("an unknown next-speaker falls back to the first roster member", () => {

@@ -515,7 +515,11 @@ const coordinateSchema = z.object({
   task: z.string().min(1),
   project: z.string().optional(),
   members: z.array(z.string()).optional(),
-  maxRounds: z.number().int().positive().optional(),
+  // maxRounds bounds above DEFAULT_LIMITS.maxRounds (24) so the default is a valid explicit
+  // value; maxStall/maxResets (defaults 3/2) stay tight — they exist to cut a run SHORT.
+  maxRounds: z.number().int().min(1).max(100).optional(),
+  maxStall: z.number().int().min(1).max(20).optional(),
+  maxResets: z.number().int().min(1).max(20).optional(),
 });
 
 function makeCoordinateTool(
@@ -527,7 +531,7 @@ function makeCoordinateTool(
   return {
     name: "squad_coordinate",
     description:
-      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is a text dispatch, a confined coding turn that edits the repo (when `project` is set and the member is code-capable), or authoring a reusable workflow DAG (persisted as an artifact for the operator to run). `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` caps the loop. Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
+      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is a text dispatch, a confined coding turn that edits the repo (when `project` is set and the member is code-capable), or authoring a reusable workflow DAG (persisted as an artifact for the operator to run). `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` (1–100), `maxStall`, and `maxResets` (each 1–20) cap the loop. Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
     inputSchema: coordinateSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -540,7 +544,7 @@ function makeCoordinateTool(
         emitResult(ctx, "squad_coordinate: agent-turn seam unavailable on this harness", true);
         return;
       }
-      const { task, members: requested, maxRounds } = parsed.data;
+      const { task, members: requested, maxRounds, maxStall, maxResets } = parsed.data;
       try {
         let project: { id: string; name: string; rootPath: string } | undefined;
         const selector = asNonEmptyString(parsed.data.project);
@@ -577,15 +581,12 @@ function makeCoordinateTool(
           ...(project ? { project } : {}),
           ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
           ...(memorySeam ? { getMemory: memorySeam } : {}),
-          ...(maxRounds
-            ? {
-                limits: {
-                  maxRounds,
-                  maxStall: DEFAULT_LIMITS.maxStall,
-                  maxResets: DEFAULT_LIMITS.maxResets,
-                },
-              }
-            : {}),
+          limits: {
+            ...DEFAULT_LIMITS,
+            ...(maxRounds !== undefined ? { maxRounds } : {}),
+            ...(maxStall !== undefined ? { maxStall } : {}),
+            ...(maxResets !== undefined ? { maxResets } : {}),
+          },
         });
         // Push the Run-loop panel to the run's final state (the same publish path cast uses);
         // best-effort, so a refresh failure never masks the run's own result.
