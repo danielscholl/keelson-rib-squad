@@ -516,6 +516,28 @@ describe("runCoordinator loop", () => {
     expect(writebacks).toHaveLength(0);
   });
 
+  test("a throwing distill seam falls back to the raw outcome (treated like unavailable)", async () => {
+    const writebacks: WritebackRequest[] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"shipped it"}']),
+      dispatch: fakeDispatch().fn,
+      getMemory: () => capturingMemory(writebacks),
+      distill: async () => {
+        throw new Error("distill boom");
+      },
+    });
+    expect(res.status).toBe("done"); // a throwing distill seam must not crash the completed run
+    expect(writebacks).toHaveLength(1); // and still records the raw outcome
+    expect(writebacks[0]?.memories[0]?.content).toContain("shipped it");
+    expect(
+      res.ledger.transcript.some((e) =>
+        e.text.includes("recorded the outcome as a governed decision"),
+      ),
+    ).toBe(true);
+  });
+
   test("falls back to the raw outcome when distillation is unavailable (no regression)", async () => {
     const writebacks: WritebackRequest[] = [];
     const res = await runCoordinator({

@@ -644,66 +644,70 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(ledger.summary ? {} : { summary: directive.summary ?? decided.step.reason }),
         updatedAt: now(),
       };
-      // Grow memory at loop close, on a genuine completion only (not give-up). The two halves
-      // are independent — they write different targets (the shared governed ledger vs each
-      // member's private memory.md) and neither reads the other — so they run concurrently.
-      // Both fail-soft, both skipped on abort.
+      // Grow memory at loop close, on a genuine completion only (not give-up). The SHARED governed
+      // decision is distilled and written first, THEN each participant's PRIVATE memory.md — kept
+      // sequential so the member half's abort check (after the distill turn) still suppresses it
+      // when an abort lands mid-distill. Both halves are fail-soft and skipped on abort.
       if (status === "done") {
         const summary = ledger.summary ?? "";
-        const contributions = collectContributions(ledger.transcript, opts.roster);
-
+        let memoryNote: string | undefined;
         // Distill the run into ONE durable governed decision, or abstain (a confused run must not
-        // pollute the ledger it grounds the next pass on). Re-check abort after the paid turn, and
-        // try/catch so a throwing injected distill seam can't crash loop close.
-        const distillNote = async (): Promise<string | undefined> => {
-          if (!memory || !project?.id || opts.abortSignal?.aborted) return undefined;
+        // pollute the ledger it grounds the next pass on). try/catch keeps a throwing injected
+        // distill seam from crashing loop close and treats the throw like an `unavailable` verdict
+        // — a raw fallback so a completed run still records something.
+        if (memory && project?.id && !opts.abortSignal?.aborted) {
           try {
             const distilled = await distill({ summary, facts: ledger.facts });
-            if (opts.abortSignal?.aborted) return undefined;
-            if (distilled.kind === "lesson") {
-              return (await reflectDistilled(memory, project.id, distilled))
-                ? "[memory] recorded a distilled decision"
-                : "[memory] distilled decision not recorded (deduped or blocked)";
+            // Re-check abort after the paid turn — don't mutate memory during teardown.
+            if (!opts.abortSignal?.aborted) {
+              if (distilled.kind === "lesson") {
+                memoryNote = (await reflectDistilled(memory, project.id, distilled))
+                  ? "[memory] recorded a distilled decision"
+                  : "[memory] distilled decision not recorded (deduped or blocked)";
+              } else if (distilled.kind === "abstain") {
+                memoryNote = "[memory] run yielded no durable decision (memory unchanged)";
+              } else if (
+                await reflectOutcome(memory, project.id, opts.task, summary, ledger.facts)
+              ) {
+                memoryNote = "[memory] recorded the outcome as a governed decision";
+              }
             }
-            if (distilled.kind === "abstain") {
-              return "[memory] run yielded no durable decision (memory unchanged)";
+          } catch {
+            if (
+              !opts.abortSignal?.aborted &&
+              (await reflectOutcome(memory, project.id, opts.task, summary, ledger.facts))
+            ) {
+              memoryNote = "[memory] recorded the outcome as a governed decision";
             }
-            // unavailable (turn failed/unparseable): fall back to the raw outcome so a completed
-            // run still records something.
-            return (await reflectOutcome(memory, project.id, opts.task, summary, ledger.facts))
-              ? "[memory] recorded the outcome as a governed decision"
-              : undefined;
-          } catch {
-            return undefined; // fail-soft
           }
-        };
-
-        // Each member that did substantive work grows its OWN memory.md once over its whole
-        // contribution — the per-agent half of the grow-memory arc.
-        const memberNote = async (): Promise<string | undefined> => {
-          if (contributions.length === 0 || opts.abortSignal?.aborted) return undefined;
-          try {
-            const reflected = await reflectAtClose(contributions);
-            return reflected.length > 0
-              ? `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`
-              : undefined;
-          } catch {
-            return undefined; // fail-soft
-          }
-        };
-
-        const notes = await Promise.all([distillNote(), memberNote()]);
-        for (const text of notes) {
-          if (!text) continue;
+        }
+        if (memoryNote) {
           ledger = {
             ...ledger,
             transcript: appendEntry(ledger.transcript, {
               round: ledger.round,
               kind: "coordinator",
-              text,
+              text: memoryNote,
             }),
             updatedAt: now(),
           };
+        }
+        // Each member that did substantive work grows its OWN memory.md once over its whole
+        // contribution — the per-agent half of the grow-memory arc; fail-soft, skipped on abort.
+        const contributions = collectContributions(ledger.transcript, opts.roster);
+        if (contributions.length > 0 && !opts.abortSignal?.aborted) {
+          const reflected = await reflectAtClose(contributions);
+          if (reflected.length > 0) {
+            ledger = {
+              ...ledger,
+              transcript: appendEntry(ledger.transcript, {
+                round: ledger.round,
+                kind: "coordinator",
+                text: `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`,
+              }),
+              updatedAt: now(),
+            };
+          }
         }
       }
       await saveLedger(opts.dataHome, ledger);
