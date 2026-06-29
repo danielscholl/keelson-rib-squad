@@ -100,8 +100,8 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
         system,
         prompt: buildDispatchPrompt(opts.task, opts.project),
         ...(root ? { cwd: root, allowedDirectories: [root], allowedTools: [...READ_TOOLS] } : {}),
-        ...(member.model ? { model: member.model } : {}),
-        ...(member.model && member.provider ? { provider: member.provider } : {}),
+        ...(member.provider ? { provider: member.provider } : {}),
+        ...(member.provider && member.model ? { model: member.model } : {}),
       },
       perTurnTimeoutMs,
       opts.abortSignal,
@@ -126,9 +126,9 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
       {
         system: synthSystem,
         prompt: buildSynthesisPrompt(opts.task, oks),
-        ...(opts.synthesizer?.model ? { model: opts.synthesizer.model } : {}),
-        ...(opts.synthesizer?.model && opts.synthesizer.provider
-          ? { provider: opts.synthesizer.provider }
+        ...(opts.synthesizer?.provider ? { provider: opts.synthesizer.provider } : {}),
+        ...(opts.synthesizer?.provider && opts.synthesizer.model
+          ? { model: opts.synthesizer.model }
           : {}),
       },
       perTurnTimeoutMs,
@@ -198,8 +198,8 @@ async function reflectMembers(
         system,
         prompt: buildReflectionPrompt(member, opts.task, result.text, prior),
         allowedTools: [],
-        ...(member.model ? { model: member.model } : {}),
-        ...(member.model && member.provider ? { provider: member.provider } : {}),
+        ...(member.provider ? { provider: member.provider } : {}),
+        ...(member.provider && member.model ? { model: member.model } : {}),
       },
       perTurnTimeoutMs,
       opts.abortSignal,
@@ -268,8 +268,8 @@ export async function reflectMembersAtClose(opts: ReflectAtCloseOptions): Promis
         system,
         prompt: buildReflectionPrompt(member, opts.task, contribution, prior),
         allowedTools: [],
-        ...(member.model ? { model: member.model } : {}),
-        ...(member.model && member.provider ? { provider: member.provider } : {}),
+        ...(member.provider ? { provider: member.provider } : {}),
+        ...(member.provider && member.model ? { model: member.model } : {}),
       },
       perTurnTimeoutMs,
       opts.abortSignal,

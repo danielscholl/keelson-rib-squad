@@ -169,9 +169,11 @@ function normalizeMember(m: z.infer<typeof castMemberSchema>): CastProposalMembe
     role: m.role.trim(),
     charter: m.charter,
     ...(tools.length > 0 ? { tools } : {}),
-    ...(model ? { model } : {}),
-    // provider only rides alongside a model (the same coherence rule the store keeps)
-    ...(model && provider ? { provider } : {}),
+    // A provider may stand alone (pin the vendor, default model); a model needs its
+    // provider — the same coherence rule the store keeps. Lenient: an incoherent
+    // model-without-provider proposal drops the model rather than rejecting.
+    ...(provider ? { provider } : {}),
+    ...(provider && model ? { model } : {}),
   };
 }
 
@@ -328,9 +330,9 @@ function normalizeStoredMember(m: CastProposalMember): CastProposalMember {
     ...(Array.isArray(m.tools) && m.tools.length > 0
       ? { tools: m.tools.filter((t): t is string => typeof t === "string") }
       : {}),
-    ...(typeof m.model === "string" && m.model ? { model: m.model } : {}),
-    ...(typeof m.model === "string" && m.model && typeof m.provider === "string" && m.provider
-      ? { provider: m.provider }
+    ...(typeof m.provider === "string" && m.provider ? { provider: m.provider } : {}),
+    ...(typeof m.provider === "string" && m.provider && typeof m.model === "string" && m.model
+      ? { model: m.model }
       : {}),
   };
 }

@@ -234,12 +234,17 @@ export async function setMemberModel(
   const rec = JSON.parse(await readFile(join(dir, "member.json"), "utf8")) as MemberRecord;
   const model = pin.model?.trim();
   const provider = pin.provider?.trim();
-  if (provider && !model) throw new Error("provider requires a model");
+  // A model is vendor-specific, so a pinned model needs its provider; a provider may
+  // stand alone (pin the vendor, let it pick the model) — the mixed-provider team case
+  // (e.g. a copilot triager with no model pin).
+  if (model && !provider) {
+    throw new Error("a pinned model needs its provider — set provider alongside model");
+  }
 
-  if (model) {
-    rec.model = model;
-    if (provider) rec.provider = provider;
-    else delete rec.provider;
+  if (provider) {
+    rec.provider = provider;
+    if (model) rec.model = model;
+    else delete rec.model;
   } else {
     delete rec.model;
     delete rec.provider;

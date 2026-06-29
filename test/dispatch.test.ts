@@ -66,6 +66,35 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
 }
 
 describe("dispatchFanout", () => {
+  test("routes each member's own provider/model into its turn (mixed-provider)", async () => {
+    // A vendor-pinned triager (provider only, default model) and a fully-pinned reviewer.
+    const triager = { ...(await seed("t", "Triager")), provider: "copilot" };
+    const reviewer = {
+      ...(await seed("r", "Reviewer")),
+      provider: "claude",
+      model: "claude-opus-4.8",
+    };
+    const seen = new Map<string, { provider?: string; model?: string }>();
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      const name = req.system?.match(/^# (.+)$/m)?.[1] ?? "?";
+      seen.set(name, { provider: req.provider, model: req.model });
+      return fakeTurn(Promise.resolve(okResult("ok")));
+    };
+
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members: [triager, reviewer],
+      task: "T",
+      synthesize: false,
+    });
+
+    // Provider-only member: the vendor is pinned, the model is left to its default.
+    expect(seen.get("Triager")).toEqual({ provider: "copilot", model: undefined });
+    // Fully-pinned member: both coordinates ride through to its own turn.
+    expect(seen.get("Reviewer")).toEqual({ provider: "claude", model: "claude-opus-4.8" });
+  });
+
   test("fans out concurrently, bounded by `concurrency`", async () => {
     const members = await Promise.all([
       seed("a", "Alpha"),

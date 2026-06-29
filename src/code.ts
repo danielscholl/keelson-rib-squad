@@ -80,10 +80,11 @@ export async function runCodeTurn(opts: RunCodeTurnOptions): Promise<RunCodeTurn
       allowedDirectories: [root],
       allowedTools: [...CODE_TOOLS],
       // The member's pinned coordinates, honored per call — this is the mixed-provider
-      // story (a Claude coder, a Codex coder) the original squad can't have. provider
-      // only rides alongside a model (the store's coherence rule).
-      ...(opts.member.model ? { model: opts.member.model } : {}),
-      ...(opts.member.model && opts.member.provider ? { provider: opts.member.provider } : {}),
+      // story (a Claude coder, a Codex coder) the original squad can't have. A provider
+      // may stand alone (pin the vendor, default model); a model needs its provider
+      // (the store's coherence rule), so a model is sent only alongside its provider.
+      ...(opts.member.provider ? { provider: opts.member.provider } : {}),
+      ...(opts.member.provider && opts.member.model ? { model: opts.member.model } : {}),
     },
     opts.timeoutMs ?? DEFAULT_CODE_TIMEOUT_MS,
     opts.abortSignal,

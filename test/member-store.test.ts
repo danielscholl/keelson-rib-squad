@@ -212,12 +212,11 @@ describe("setMemberModel", () => {
     expect(member?.provider).toBe("anthropic");
   });
 
-  test("sets model alone and drops provider", async () => {
-    await scaffoldMember(root, record({ provider: "anthropic", model: "old" }));
-    await setMemberModel(root, "scout", { model: "gpt-5.3-codex" });
-    const [member] = await readMembers(root);
-    expect(member?.model).toBe("gpt-5.3-codex");
-    expect(member?.provider).toBeUndefined();
+  test("rejects a model pinned without its provider", async () => {
+    await scaffoldMember(root, record());
+    await expect(setMemberModel(root, "scout", { model: "gpt-5.3-codex" })).rejects.toThrow(
+      /needs its provider/,
+    );
   });
 
   test("blank model clears both model and provider", async () => {
@@ -228,11 +227,12 @@ describe("setMemberModel", () => {
     expect(member?.provider).toBeUndefined();
   });
 
-  test("rejects provider without model", async () => {
-    await scaffoldMember(root, record());
-    await expect(setMemberModel(root, "scout", { provider: "anthropic" })).rejects.toThrow(
-      /requires a model/,
-    );
+  test("sets provider alone — a vendor pin with the provider's default model", async () => {
+    await scaffoldMember(root, record({ model: "old", provider: "anthropic" }));
+    await setMemberModel(root, "scout", { provider: "copilot" });
+    const [member] = await readMembers(root);
+    expect(member?.provider).toBe("copilot");
+    expect(member?.model).toBeUndefined();
   });
 
   test("throws on unknown and unsafe slugs", async () => {
