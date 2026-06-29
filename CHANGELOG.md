@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.2.0...v0.3.0) (2026-06-29)
+
+
+### Added
+
+* attribute each work unit to its served provider ([#46](https://github.com/danielscholl/keelson-rib-squad/issues/46)) ([4eb4bf8](https://github.com/danielscholl/keelson-rib-squad/commit/4eb4bf806f10a02cb12b2c0027c015d7ff641b08))
+* **cast:** auto-assign provider/model from the available catalog by role ([#43](https://github.com/danielscholl/keelson-rib-squad/issues/43)) ([0c5cf92](https://github.com/danielscholl/keelson-rib-squad/commit/0c5cf9256067e9bfc0f62cdd4253657f51b04581))
+* **mixed-provider:** allow provider-only pins, a model needs its provider ([#41](https://github.com/danielscholl/keelson-rib-squad/issues/41)) ([91570db](https://github.com/danielscholl/keelson-rib-squad/commit/91570dbc8620d3b7c78a0830a4da5fc14af2f5f6))
+
+
+### Fixed
+
+* close correctness gaps found in the audit pass ([#44](https://github.com/danielscholl/keelson-rib-squad/issues/44)) ([a3ea113](https://github.com/danielscholl/keelson-rib-squad/commit/a3ea113f22a76b17766c7c3a7b32bc93228288a1))
+
 ## [0.2.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.1.0...v0.2.0) (2026-06-29)
 
 
