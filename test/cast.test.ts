@@ -60,6 +60,82 @@ describe("proposeCast", () => {
     expect(req?.prompt).toContain("ship search");
   });
 
+  test("injects the available providers and the role→engine heuristic into the scan", async () => {
+    let req: RibAgentTurnRequest | undefined;
+    const runAgentTurn = (r: RibAgentTurnRequest): RibAgentTurn => {
+      req = r;
+      return fakeTurn(
+        Promise.resolve(
+          okResult(rosterReply([{ name: "Atlas", role: "Engineer", charter: "# Atlas" }])),
+        ),
+      );
+    };
+    await proposeCast({
+      runAgentTurn,
+      project: PROJECT,
+      providers: [
+        { id: "claude", displayName: "Claude" },
+        { id: "copilot", displayName: "Copilot" },
+      ],
+    });
+    // The available provider ids and the overpowered heuristic reach the scan turn.
+    expect(req?.prompt).toContain('"claude"');
+    expect(req?.prompt).toContain('"copilot"');
+    expect(req?.prompt).toContain("OVERPOWERED");
+  });
+
+  test("carries the scan's per-member provider/model assignment through", async () => {
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurn(
+        Promise.resolve(
+          okResult(
+            rosterReply([
+              {
+                name: "Atlas",
+                role: "Tech Lead",
+                charter: "# Atlas",
+                provider: "claude",
+                model: "claude-opus-4-8",
+              },
+              { name: "Vera", role: "Triager", charter: "# Vera", provider: "copilot" },
+            ]),
+          ),
+        ),
+      );
+    const result = await proposeCast({
+      runAgentTurn,
+      project: PROJECT,
+      providers: [
+        { id: "claude", displayName: "Claude" },
+        { id: "copilot", displayName: "Copilot" },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Fully-pinned lead survives; the vendor-only triager keeps its provider, no model.
+    expect(result.proposal.members[0]).toMatchObject({
+      provider: "claude",
+      model: "claude-opus-4-8",
+    });
+    expect(result.proposal.members[1]?.provider).toBe("copilot");
+    expect(result.proposal.members[1]?.model).toBeUndefined();
+  });
+
+  test("omits the assignment block when no providers are available", async () => {
+    let req: RibAgentTurnRequest | undefined;
+    const runAgentTurn = (r: RibAgentTurnRequest): RibAgentTurn => {
+      req = r;
+      return fakeTurn(
+        Promise.resolve(
+          okResult(rosterReply([{ name: "Atlas", role: "Engineer", charter: "# Atlas" }])),
+        ),
+      );
+    };
+    await proposeCast({ runAgentTurn, project: PROJECT, providers: [] });
+    expect(req?.prompt).not.toContain("AVAILABLE on this harness");
+    expect(req?.prompt).not.toContain("OVERPOWERED");
+  });
+
   test("parses the structured roster and keeps each member's capability tags", async () => {
     const runAgentTurn = (): RibAgentTurn =>
       fakeTurn(
