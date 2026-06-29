@@ -17,6 +17,7 @@ import {
   type CoordinatorLedger,
   failStuckTasks,
   loadLedger,
+  MAX_CHANGE_QUALITY_FAILURES,
   parseCoordinatorDirective,
   runCoordinator,
   saveLedger,
@@ -730,7 +731,10 @@ describe("runCoordinator loop", () => {
   ];
   const fakeExec = (exitCode: number, out = ""): RibExec => ({
     runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
-    runText: async () => ({ ok: true as const, data: out, exitCode }),
+    runText: async (_cmd, args) => {
+      if (args[0] === "write-tree") return { ok: true as const, data: "deadbeef", exitCode: 0 };
+      return { ok: true as const, data: out, exitCode };
+    },
   });
   const codeThenDone = () =>
     queuedRun([
@@ -798,11 +802,15 @@ describe("runCoordinator loop", () => {
       dispatch: d.fn,
       getExec: {
         runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
-        runText: async () => {
-          verifyCalls += 1;
-          return verifyCalls === 1
-            ? { ok: true as const, data: "failing check", exitCode: 1 }
-            : { ok: true as const, data: "green now", exitCode: 0 };
+        runText: async (cmd, args) => {
+          if (cmd === "bash") {
+            verifyCalls += 1;
+            return verifyCalls === 1
+              ? { ok: true as const, data: "failing check", exitCode: 1 }
+              : { ok: true as const, data: "green now", exitCode: 0 };
+          }
+          if (args[0] === "write-tree") return { ok: true as const, data: "abc123", exitCode: 0 };
+          return { ok: true as const, data: "", exitCode: 0 };
         },
       },
       verify: ["bun run test"],
@@ -830,7 +838,184 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.facts.some((f) => f.includes("verification FAILED"))).toBe(true);
   });
 
-  test("verification gate: no verify commands → done as before (fail open)", async () => {
+  test("change-quality gate: done is vetoed and bounded to change-quality-failed", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const maxRounds = 20;
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(
+        [
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
+          'done\n{"action":"done","summary":"shipped"}',
+        ],
+        seen,
+      ),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: {
+        runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+        runText: async (_cmd, args) => {
+          if (args[0] === "write-tree") return { ok: true as const, data: "abc123", exitCode: 0 };
+          if (args[0] === "status") {
+            return { ok: true as const, data: " M src/coordinator.ts", exitCode: 0 };
+          }
+          if (args[0] === "diff" && args.includes("--numstat")) {
+            return {
+              ok: true as const,
+              data: "0\t12\ttest/removed.test.ts\n1\t0\tsrc/coordinator.ts\n",
+              exitCode: 0,
+            };
+          }
+          if (args[0] === "diff" && args.includes("--unified=0")) {
+            return {
+              ok: true as const,
+              data: "diff --git a/src/coordinator.ts b/src/coordinator.ts\n+++ b/src/coordinator.ts\n@@ -0,0 +1 @@\n+// @ts-ignore temporary\n",
+              exitCode: 0,
+            };
+          }
+          return { ok: true as const, data: "", exitCode: 0 };
+        },
+      },
+      limits: { maxRounds },
+    });
+    const qualityFailures = res.ledger.transcript.filter(
+      (e) => e.kind === "verify" && e.text.includes("change-quality FAILED"),
+    );
+    expect(res.status).toBe("change-quality-failed");
+    expect(res.status).not.toBe("max-rounds");
+    expect(res.rounds).toBeLessThan(maxRounds);
+    expect(seen).toHaveLength(4);
+    expect(qualityFailures).toHaveLength(MAX_CHANGE_QUALITY_FAILURES);
+    expect(res.ledger.changeQualityFailures).toBe(MAX_CHANGE_QUALITY_FAILURES);
+    expect(res.ledger.summary).toContain(
+      `change-quality failed after ${MAX_CHANGE_QUALITY_FAILURES} attempts`,
+    );
+    expect(res.ledger.summary).toContain("net-test-file-removal");
+    expect(res.ledger.summary).toContain("added-suppression-comment");
+  });
+
+  test("mixed gate failures keep independent caps and terminal attribution", async () => {
+    let verifyRuns = 0;
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: {
+        runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+        runText: async (cmd, args) => {
+          if (cmd === "bash") {
+            verifyRuns += 1;
+            return verifyRuns === 1
+              ? { ok: true as const, data: "1 fail\nexpect mismatch", exitCode: 1 }
+              : { ok: true as const, data: "all good", exitCode: 0 };
+          }
+          if (args[0] === "write-tree") return { ok: true as const, data: "abc123", exitCode: 0 };
+          if (args[0] === "status")
+            return { ok: true as const, data: " M src/coordinator.ts", exitCode: 0 };
+          if (args[0] === "diff" && args.includes("--numstat")) {
+            return {
+              ok: true as const,
+              data: "0\t12\ttest/removed.test.ts\n",
+              exitCode: 0,
+            };
+          }
+          if (args[0] === "diff" && args.includes("--unified=0")) {
+            return {
+              ok: true as const,
+              data: "diff --git a/test/removed.test.ts b/test/removed.test.ts\n--- a/test/removed.test.ts\n+++ /dev/null\n",
+              exitCode: 0,
+            };
+          }
+          return { ok: true as const, data: "", exitCode: 0 };
+        },
+      },
+      verify: ["bun run test"],
+      limits: { maxRounds: 20 },
+    });
+    expect(verifyRuns).toBeGreaterThanOrEqual(2);
+    expect(res.status).toBe("change-quality-failed");
+    expect(res.status).not.toBe("verification-failed");
+    expect(res.ledger.verifyFailures).toBe(0);
+    expect(res.ledger.changeQualityFailures).toBe(MAX_CHANGE_QUALITY_FAILURES);
+    expect(res.ledger.summary).toContain(
+      `change-quality failed after ${MAX_CHANGE_QUALITY_FAILURES} attempts`,
+    );
+    expect(res.ledger.summary).not.toContain("verification failed after");
+  });
+
+  const resumedChangeQualityCases = [
+    {
+      name: "net test-file removal",
+      numstat: "0\t12\ttest/removed.test.ts\n1\t0\tsrc/coordinator.ts\n",
+      patch:
+        "diff --git a/src/coordinator.ts b/src/coordinator.ts\n+++ b/src/coordinator.ts\n@@ -1 +1 @@\n+const keep = true;\n",
+      expectedCode: "net-test-file-removal",
+    },
+    {
+      name: "added @ts-ignore suppression",
+      numstat: "1\t0\tsrc/coordinator.ts\n",
+      patch:
+        "diff --git a/src/coordinator.ts b/src/coordinator.ts\n+++ b/src/coordinator.ts\n@@ -0,0 +1 @@\n+// @ts-ignore temporary\n",
+      expectedCode: "added-suppression-comment",
+    },
+  ] as const;
+
+  for (const c of resumedChangeQualityCases) {
+    test(`change-quality gate: resumed ledger baseline still blocks ${c.name}`, async () => {
+      await saveLedger(home, {
+        task: "ship the feature",
+        projectId: "p1",
+        baselineTree: "baseline-tree",
+        facts: ["earlier code change happened before this invocation"],
+        plan: [],
+        round: 2,
+        stallCount: 0,
+        resetCount: 0,
+        status: "active",
+        transcript: [{ round: 1, kind: "code", speaker: "atlas", text: "edited earlier" }],
+        lastCodeRound: 1,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+      let capturedNumstatBaseline: string | undefined;
+      const res = await runCoordinator({
+        ...base(),
+        roster: coder(),
+        project: { id: "p1", name: "repo", rootPath: "/repo" },
+        runAgentTurn: queuedRun(['done\n{"action":"done","summary":"ship it"}']),
+        dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+        getExec: {
+          runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+          runText: async (_cmd, args) => {
+            if (args[0] === "add") return { ok: true as const, data: "", exitCode: 0 };
+            if (args[0] === "write-tree") {
+              return { ok: true as const, data: "current-tree", exitCode: 0 };
+            }
+            if (args[0] === "diff" && args.includes("--numstat")) {
+              capturedNumstatBaseline = args[3];
+              return { ok: true as const, data: c.numstat, exitCode: 0 };
+            }
+            if (args[0] === "diff" && args.includes("--unified=0")) {
+              return { ok: true as const, data: c.patch, exitCode: 0 };
+            }
+            return { ok: true as const, data: "", exitCode: 0 };
+          },
+        },
+        limits: { maxRounds: 20 },
+      });
+      expect(capturedNumstatBaseline).toBe("baseline-tree");
+      expect(res.status).toBe("change-quality-failed");
+      expect(res.ledger.summary).toContain(c.expectedCode);
+    });
+  }
+
+  test("verification gate: no verify commands skips command verification (quality gate may still run)", async () => {
+    let ranVerifyCommand = false;
     const res = await runCoordinator({
       ...base(),
       roster: coder(),
@@ -839,17 +1024,24 @@ describe("runCoordinator loop", () => {
       code: async () => ({ status: "ok" as const, text: "edited" }),
       getExec: {
         runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
-        runText: async () => {
-          throw new Error("verify must not run when no commands are configured");
+        runText: async (cmd, args) => {
+          if (cmd === "bash") {
+            ranVerifyCommand = true;
+            return { ok: true as const, data: "unexpected", exitCode: 0 };
+          }
+          if (args[0] === "write-tree") return { ok: true as const, data: "abc123", exitCode: 0 };
+          return { ok: true as const, data: "", exitCode: 0 };
         },
       },
     });
     expect(res.status).toBe("done");
     expect(res.ledger.verification).toBeUndefined();
+    expect(ranVerifyCommand).toBe(false);
   });
 
-  test("verification gate: skipped when no code was edited this run (no false gate)", async () => {
-    let ran = false;
+  test("verification gate: skipped when no code was edited this run (no false command verify)", async () => {
+    let ranVerifyCommand = false;
+    let ranGit = false;
     const res = await runCoordinator({
       ...base(), // roster atlas/vera are read-only (no code) → a dispatch-only run
       project: { id: "p1", name: "repo", rootPath: "/repo" },
@@ -860,15 +1052,23 @@ describe("runCoordinator loop", () => {
       dispatch: fakeDispatch().fn,
       getExec: {
         runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
-        runText: async () => {
-          ran = true;
+        runText: async (cmd, args) => {
+          if (cmd === "bash") {
+            ranVerifyCommand = true;
+            return { ok: true as const, data: "", exitCode: 0 };
+          }
+          ranGit = true;
+          if (args[0] === "write-tree") {
+            return { ok: true as const, data: "abc123", exitCode: 0 };
+          }
           return { ok: true as const, data: "", exitCode: 0 };
         },
       },
       verify: ["bun run test"],
     });
     expect(res.status).toBe("done");
-    expect(ran).toBe(false); // no code entry → the gate never ran
+    expect(ranGit).toBe(true); // baseline capture still runs at coordinator start
+    expect(ranVerifyCommand).toBe(false); // no code entry → command verification never ran
     expect(res.ledger.verification).toBeUndefined();
   });
 

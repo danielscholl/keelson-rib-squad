@@ -704,8 +704,12 @@ function summarizeCoordinator(result: RunCoordinatorResult): string {
     lines.push("", "Steps:");
     for (const e of steps) {
       const tag = e.kind === "dispatch" ? "" : ` [${e.kind}]`;
+      const touched =
+        e.kind === "code" && e.touched
+          ? ` (touched ${e.touched.files} file${e.touched.files === 1 ? "" : "s"}, +${e.touched.insertions} -${e.touched.deletions})`
+          : "";
       lines.push(
-        `- R${e.round} ${e.speaker ?? "team"}${tag}: ${e.text.slice(0, COORD_STEP_EXCERPT)}`,
+        `- R${e.round} ${e.speaker ?? "team"}${tag}: ${e.text.slice(0, COORD_STEP_EXCERPT)}${touched}`,
       );
     }
   }
