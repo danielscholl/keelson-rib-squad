@@ -75,9 +75,8 @@ export interface DecideOutput {
 }
 
 // Resolve the next speaker against the live roster: honor the manager's pick when it
-// names a real member, else fall back to the first roster member (least-spoken
-// selection needs the transcript and lands with the live loop in P1). Undefined only
-// when the roster is empty — the driver then ends the run.
+// names a real member, else fall back to the first roster member. Undefined only when
+// the roster is empty — the driver then ends the run.
 function resolveSpeaker(
   pick: string | undefined,
   roster: readonly Pick<Member, "slug">[],

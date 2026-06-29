@@ -1160,6 +1160,9 @@ async function retireAction(action: RibAction): Promise<RibActionResult> {
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
     return { ok: true, data: { slug } };
   } catch (e) {
+    // retireMember throws when the dir is already gone, but a registry entry can linger
+    // (a phantom reservation); free the cast name here too, same as the tool path.
+    await retireCastingName(squadDataHome(), slug);
     return { ok: false, error: errText(e) };
   }
 }

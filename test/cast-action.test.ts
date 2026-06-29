@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MessageChunk, RibAgentTurn, RibAgentTurnRequest, RibContext } from "@keelson/shared";
 import { readProposal } from "../src/cast.ts";
+import { loadRegistry, saveRegistry } from "../src/casting/registry.ts";
 import rib from "../src/index.ts";
 import { CAST_KEY } from "../src/keys.ts";
 import { readMembers } from "../src/member-store.ts";
@@ -189,5 +190,31 @@ describe("approve-cast / discard-cast actions", () => {
     expect(res?.ok).toBe(true);
     expect(await readProposal(home)).toBeUndefined();
     expect(refreshed).toContain("squad-cast");
+  });
+});
+
+describe("retire action", () => {
+  test("frees the cast name even when the member dir is already gone (no phantom leak)", async () => {
+    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    // A phantom reservation: a casting-registry entry with no member dir (a failed scaffold).
+    await saveRegistry(home, {
+      version: 1,
+      activeThemeId: "usual-suspects",
+      themeHistory: ["usual-suspects"],
+      members: {
+        ghost: {
+          themedName: "Keyser",
+          themeId: "usual-suspects",
+          status: "active",
+          originalName: "Ghost",
+        },
+      },
+    });
+    const res = await rib.onAction?.(
+      { type: "retire", payload: { slug: "ghost" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(false); // retireMember throws on the missing dir...
+    expect((await loadRegistry(home)).members.ghost?.status).toBe("retired"); // ...name still freed
   });
 });

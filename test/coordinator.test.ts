@@ -559,6 +559,49 @@ describe("runCoordinator loop", () => {
     ).toBe(true);
   });
 
+  test("a raw-fallback outcome the store rejects is noted, not silently dropped", async () => {
+    const writebacks: WritebackRequest[] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun(['done\n{"action":"done","summary":"shipped it"}']),
+      dispatch: fakeDispatch().fn,
+      getMemory: () => capturingMemory(writebacks, [], false), // store persists nothing
+      distill: async () => ({ kind: "unavailable" }),
+    });
+    expect(res.status).toBe("done");
+    expect(writebacks).toHaveLength(1); // the raw fallback attempted the write
+    expect(
+      res.ledger.transcript.some((e) => e.text.includes("not recorded (deduped or blocked)")),
+    ).toBe(true);
+  });
+
+  test("an abort during the execute arm leaves the ledger unmutated (no junk fact, no persist)", async () => {
+    const ac = new AbortController();
+    // The manager names a dispatch step; the abort lands while the execute arm runs, so the
+    // arm returns empty. The loop must break before folding a "(no synthesis)" fact.
+    const abortingDispatch = async (
+      _members: Member[],
+      instruction: string,
+    ): Promise<DispatchOutcome> => {
+      ac.abort();
+      return { task: instruction, perMember: [], notes: [] };
+    };
+    const res = await runCoordinator({
+      ...base(),
+      abortSignal: ac.signal,
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
+      ]),
+      dispatch: abortingDispatch,
+    });
+    expect(res.status).toBe("aborted");
+    expect(res.ledger.round).toBe(0); // the aborted round did not advance
+    expect(res.ledger.facts.some((f) => f.includes("(no synthesis)"))).toBe(false);
+    expect(res.ledger.transcript.some((e) => e.kind === "dispatch")).toBe(false);
+    expect(await loadLedger(home)).toBeUndefined(); // nothing persisted on the aborted round
+  });
+
   test("the live distillation seam runs its own turn and records the distilled decision", async () => {
     // No injected `distill` — exercise the default seam end-to-end. The scribe turn (not a
     // "Goal:" coordinator turn) returns the record directive that becomes the governed row.

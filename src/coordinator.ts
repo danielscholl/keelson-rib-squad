@@ -666,18 +666,29 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
                   : "[memory] distilled decision not recorded (deduped or blocked)";
               } else if (distilled.kind === "abstain") {
                 memoryNote = "[memory] run yielded no durable decision (memory unchanged)";
-              } else if (
-                await reflectOutcome(memory, project.id, opts.task, summary, ledger.facts)
-              ) {
-                memoryNote = "[memory] recorded the outcome as a governed decision";
+              } else {
+                memoryNote = (await reflectOutcome(
+                  memory,
+                  project.id,
+                  opts.task,
+                  summary,
+                  ledger.facts,
+                ))
+                  ? "[memory] recorded the outcome as a governed decision"
+                  : "[memory] outcome not recorded (deduped or blocked)";
               }
             }
           } catch {
-            if (
-              !opts.abortSignal?.aborted &&
-              (await reflectOutcome(memory, project.id, opts.task, summary, ledger.facts))
-            ) {
-              memoryNote = "[memory] recorded the outcome as a governed decision";
+            if (!opts.abortSignal?.aborted) {
+              memoryNote = (await reflectOutcome(
+                memory,
+                project.id,
+                opts.task,
+                summary,
+                ledger.facts,
+              ))
+                ? "[memory] recorded the outcome as a governed decision"
+                : "[memory] outcome not recorded (deduped or blocked)";
             }
           }
         }
@@ -761,6 +772,15 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       workflow,
       roster: opts.roster,
     });
+    // An abort during the execute arm returns aborted member results that would
+    // otherwise fold a junk "(no synthesis)" fact and advance the round; break without
+    // mutating or persisting (the manager-turn abort discipline) so abort+resume can't
+    // erode the round budget.
+    if (opts.abortSignal?.aborted) {
+      status = "aborted";
+      ledger = { ...ledger, updatedAt: now() };
+      break;
+    }
     if (result.dispatch) {
       const d = result.dispatch;
       const oks = d.perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0);
