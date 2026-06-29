@@ -235,8 +235,8 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
           role,
           charter,
           createdAt: new Date().toISOString(),
-          ...(model ? { model } : {}),
-          ...(model && provider ? { provider } : {}),
+          ...(provider ? { provider } : {}),
+          ...(provider && model ? { model } : {}),
           ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
         });
         await scaffoldMember(membersDir(), record);

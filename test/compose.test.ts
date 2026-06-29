@@ -155,11 +155,17 @@ describe("buildSeedFor", () => {
     expect(seed.name.length).toBe(80);
   });
 
-  test("carries the member's model when set, omits it otherwise", async () => {
+  test("carries the member's model only alongside its provider (provider-primary)", async () => {
     expect((await buildSeedFor(root, member())).model).toBeUndefined();
-    expect((await buildSeedFor(root, member({ model: "claude-sonnet-4-6" }))).model).toBe(
-      "claude-sonnet-4-6",
-    );
+    // A model needs its provider — a model-only member omits the model from the seed.
+    expect(
+      (await buildSeedFor(root, member({ model: "claude-sonnet-4-6" }))).model,
+    ).toBeUndefined();
+    // With both pinned, the model rides through.
+    expect(
+      (await buildSeedFor(root, member({ provider: "anthropic", model: "claude-sonnet-4-6" })))
+        .model,
+    ).toBe("claude-sonnet-4-6");
   });
 
   test("carries the member's provider as providerId when set, omits it otherwise", async () => {

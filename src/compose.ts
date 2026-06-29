@@ -145,8 +145,10 @@ export async function buildSeedFor(
     systemPrompt: await composeMemberSystemPrompt(membersRoot, member),
     name: member.name.slice(0, 80),
     openingPrompt: ENTER_OPENING_PROMPT,
-    ...(member.model ? { model: member.model } : {}),
+    // Provider-primary: pin the provider when set, and the model only alongside it, so
+    // a seed never requests a model without its provider hint.
     ...(member.provider ? { providerId: member.provider } : {}),
+    ...(member.provider && member.model ? { model: member.model } : {}),
   };
 }
 

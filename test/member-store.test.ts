@@ -90,6 +90,15 @@ describe("readMembers", () => {
     expect(member?.role).toBe("Researcher");
   });
 
+  test("a legacy model-only record reads as unpinned (provider-primary coercion)", async () => {
+    // Written before the coherence rule: a model with no provider. The read boundary
+    // drops the orphan model so no consumer runs it as a stray model on the default.
+    await scaffoldMember(root, record({ model: "gpt-5" }));
+    const [member] = await readMembers(root);
+    expect(member?.model).toBeUndefined();
+    expect(member?.provider).toBeUndefined();
+  });
+
   test("an empty / missing data home yields an empty roster", async () => {
     expect(await readMembers(join(root, "nope"))).toEqual([]);
   });

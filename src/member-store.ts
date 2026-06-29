@@ -126,8 +126,17 @@ export async function listMemberRecords(
         charter: rec.charter,
         status: rec.status === "inactive" ? "inactive" : "active",
         createdAt: typeof rec.createdAt === "string" ? rec.createdAt : "",
-        ...(typeof rec.model === "string" && rec.model ? { model: rec.model } : {}),
+        // Provider-primary coherence at the read boundary: a model is surfaced only
+        // with its provider, so a legacy model-only record (written before the rule)
+        // reads as unpinned rather than reaching a turn as a stray model on the default
+        // provider. Consumers (dispatch, code, seed) therefore never see model-only.
         ...(typeof rec.provider === "string" && rec.provider ? { provider: rec.provider } : {}),
+        ...(typeof rec.provider === "string" &&
+        rec.provider &&
+        typeof rec.model === "string" &&
+        rec.model
+          ? { model: rec.model }
+          : {}),
         ...(Array.isArray(rec.tools) && rec.tools.length > 0
           ? { tools: rec.tools.filter((t): t is string => typeof t === "string") }
           : {}),
