@@ -1,0 +1,62 @@
+/*
+  Keelson blueprint theme for Starlight.
+  Maps the keelson palette onto Starlight's CSS custom properties: a brass accent
+  against navy structure, Inter + monospace type, and a faint blueprint grid.
+  Keep this the single source of docs color; mirror docs/public/assets/keelson.css.
+*/
+
+:root {
+  --sl-font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --sl-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+
+  /* brass accent (dark theme) */
+  --sl-color-accent-low: #3f2f15;
+  --sl-color-accent: #c08a44;
+  --sl-color-accent-high: #ecdcc4;
+  --keelson-grid: rgba(146, 170, 201, 0.07);
+}
+
+/* light: the keelson blueprint */
+:root[data-theme="light"] {
+  --sl-color-accent-low: #ecdcc4;
+  --sl-color-accent: #a66a25;
+  --sl-color-accent-high: #5e3c12;
+  --sl-color-text-accent: #a66a25;
+  --sl-color-bg: #f3f5f8;
+  --sl-color-bg-sidebar: #eef2f7;
+  --keelson-grid: rgba(30, 58, 95, 0.05);
+}
+
+/* faint blueprint grid behind everything */
+body {
+  background-image:
+    linear-gradient(var(--keelson-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--keelson-grid) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-attachment: fixed;
+}
+
+/* wordmark spacing, echoing the landing brand */
+.site-title {
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* figures: light blueprint frame around docs diagrams */
+.sl-markdown-content figure :is(img, svg) {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 14px;
+  border: 1px solid rgba(30, 58, 95, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.sl-markdown-content figure figcaption {
+  margin-top: 10px;
+  color: var(--sl-color-gray-3);
+  font-size: var(--sl-text-sm);
+  line-height: 1.6;
+}

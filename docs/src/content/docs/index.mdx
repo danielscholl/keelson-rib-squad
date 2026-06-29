@@ -1,0 +1,60 @@
+---
+title: Keelson Rib · Squad
+description: "A governed, multi-provider dev squad for Keelson: cast a team, pick a method, grow memory as it works."
+---
+
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+A single chat agent gets work done, but the team is fixed at one model, the method
+is whatever that agent reaches for, and nothing it learns survives the session.
+
+Squad adds a **governed, self-improving dev squad** to Keelson. A coordinator
+assesses a task, casts the specialists it needs, chooses how to execute — author a
+reusable workflow, dispatch specialists in parallel, or modify code directly — and
+records what it decided to the governed memory ledger so the next pass starts smarter.
+
+Use Squad to run an issue-driven dev loop where the reviewer, coder, and triager can
+each run on a different provider, every consequential action is approval-gated, and
+every run and decision is auditable in SQLite.
+
+**Cast** composes the team. The **coordinator** picks the method and runs the loop.
+**Memory** keeps what was learned.
+
+Squad is a [Keelson](https://danielscholl.github.io/keelson/) rib: it installs into
+the harness you already run and reuses what the harness owns — provider routing, the
+workflow engine, the governed memory ledger, and the canvas — so the squad renders a
+live run board with no hand-coded UI. Everything here is what Squad adds.
+
+:::note[Docs in progress]
+This site is scaffolded; the tier pages below are stubs we are filling in. Start
+from the [README](https://github.com/danielscholl/keelson-rib-squad) for the current
+picture.
+:::
+
+<CardGrid>
+  <LinkCard
+    title="Concepts"
+    href="concepts/"
+    description="The model behind the rib: cast, the coordinator loop, method agency, and governed memory."
+  />
+  <LinkCard
+    title="Guides"
+    href="guides/"
+    description="Task-oriented how-tos: install the rib, cast a team, run a coordinator loop."
+  />
+  <LinkCard
+    title="Tutorials"
+    href="tutorials/"
+    description="A problem-first learning rail, from a first squad run to an autonomous loop."
+  />
+  <LinkCard
+    title="Reference"
+    href="reference/"
+    description="The contract tier: surfaces, snapshot keys, workflows, tools, and on-disk layout."
+  />
+  <LinkCard
+    title="Design"
+    href="design/"
+    description="Decision records and the rationale behind the rib's seams."
+  />
+</CardGrid>
