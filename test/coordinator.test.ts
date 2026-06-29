@@ -602,6 +602,56 @@ describe("runCoordinator loop", () => {
     expect(await loadLedger(home)).toBeUndefined(); // nothing persisted on the aborted round
   });
 
+  test("compiles served-provider provenance from the code and dispatch steps", async () => {
+    const team: Member[] = [
+      {
+        slug: "atlas",
+        name: "atlas",
+        role: "Engineer",
+        charter: "x",
+        status: "active",
+        tools: ["code", "read"],
+      },
+      {
+        slug: "vera",
+        name: "vera",
+        role: "Reviewer",
+        charter: "x",
+        status: "active",
+        tools: ["read"],
+      },
+    ];
+    const res = await runCoordinator({
+      ...base(),
+      roster: team,
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X","mode":"code"}',
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"vera","instruction":"review X"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      // Atlas codes on claude; Vera reviews on copilot — the mixed-provider story made visible.
+      dispatch: async (members, instruction): Promise<DispatchOutcome> => ({
+        task: instruction,
+        perMember: members.map((m) => ({
+          slug: m.slug,
+          name: m.name,
+          status: "ok" as const,
+          text: "looks good",
+          providerId: "copilot",
+        })),
+        synthesis: "reviewed",
+        notes: [],
+      }),
+      code: async () => ({ status: "ok" as const, text: "edited files", providerId: "claude" }),
+    });
+    expect(res.status).toBe("done");
+    expect(res.provenance).toContain("atlas (claude) coded");
+    expect(res.provenance).toContain("vera (copilot) contributed");
+    expect(res.ledger.transcript.find((e) => e.kind === "code")?.provider).toBe("claude");
+    expect(res.ledger.transcript.find((e) => e.kind === "dispatch")?.provider).toBe("copilot");
+  });
+
   test("the live distillation seam runs its own turn and records the distilled decision", async () => {
     // No injected `distill` — exercise the default seam end-to-end. The scribe turn (not a
     // "Goal:" coordinator turn) returns the record directive that becomes the governed row.

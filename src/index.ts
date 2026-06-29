@@ -607,6 +607,9 @@ function summarizeCoordinator(result: RunCoordinatorResult): string {
     "Summary:",
     result.summary,
   ];
+  if (result.provenance) {
+    lines.push("", `Worked by: ${result.provenance}`);
+  }
   if (result.ledger.plan.length > 0) {
     lines.push("", "Plan:", ...result.ledger.plan.map((s, i) => `${i + 1}. ${s}`));
   }

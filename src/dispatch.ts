@@ -33,6 +33,8 @@ export interface DispatchResult {
   status: DispatchStatus;
   text: string;
   error?: string;
+  // The provider id the host resolved this member's turn to — for "contributed by X" provenance.
+  providerId?: string;
 }
 
 export interface DispatchOutcome {
@@ -404,7 +406,13 @@ async function executeTurn(
 
 function mapResult(result: RibAgentTurnResult, aborted: boolean): TurnOutcome {
   if (aborted || result.status === "aborted") return { status: "aborted", text: result.text ?? "" };
-  if (result.status === "ok") return { status: "ok", text: result.text };
+  if (result.status === "ok") {
+    return {
+      status: "ok",
+      text: result.text,
+      ...(result.providerId ? { providerId: result.providerId } : {}),
+    };
+  }
   return {
     status: result.status,
     text: "",

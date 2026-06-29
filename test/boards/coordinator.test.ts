@@ -77,6 +77,21 @@ describe("buildCoordinatorBoard with a ledger", () => {
     expect(rowsTitled(board, "Outcome").some((i) => i.text.includes("shipped it"))).toBe(true);
   });
 
+  test("renders served-provider provenance (Worked by) from code/dispatch entries", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        transcript: [
+          { round: 0, kind: "code", speaker: "atlas", text: "edited", provider: "claude" },
+          { round: 1, kind: "dispatch", speaker: "vera", text: "reviewed", provider: "copilot" },
+        ],
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const worked = rowsTitled(board, "Worked by");
+    expect(worked.some((i) => i.text.includes("atlas (claude) coded"))).toBe(true);
+    expect(worked.some((i) => i.text.includes("vera (copilot) contributed"))).toBe(true);
+  });
+
   test("recent activity surfaces the transcript entries", () => {
     const board = buildCoordinatorBoard(
       ledger({

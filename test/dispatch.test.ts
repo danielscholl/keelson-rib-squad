@@ -95,6 +95,25 @@ describe("dispatchFanout", () => {
     expect(seen.get("Reviewer")).toEqual({ provider: "claude", model: "claude-opus-4.8" });
   });
 
+  test("captures the served providerId on each member's result (provenance)", async () => {
+    const triager = { ...(await seed("t", "Triager")), provider: "copilot" };
+    const reviewer = { ...(await seed("r", "Reviewer")), provider: "claude" };
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      const name = req.system?.match(/^# (.+)$/m)?.[1] ?? "?";
+      const providerId = name === "Triager" ? "copilot" : "claude";
+      return fakeTurn(Promise.resolve({ status: "ok", text: "ok", providerId }));
+    };
+    const out = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members: [triager, reviewer],
+      task: "T",
+      synthesize: false,
+    });
+    expect(out.perMember.find((r) => r.slug === "t")?.providerId).toBe("copilot");
+    expect(out.perMember.find((r) => r.slug === "r")?.providerId).toBe("claude");
+  });
+
   test("fans out concurrently, bounded by `concurrency`", async () => {
     const members = await Promise.all([
       seed("a", "Alpha"),

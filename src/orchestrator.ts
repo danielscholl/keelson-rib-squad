@@ -163,6 +163,8 @@ export interface CodeStepOutcome {
   status: "ok" | "error" | "timeout" | "aborted";
   text: string;
   error?: string;
+  // The provider id the host resolved the coding turn to — for "coded by X" provenance.
+  providerId?: string;
 }
 
 // The normalized outcome of a workflow-authoring arm (#20 P3): a workflow DAG authored,
