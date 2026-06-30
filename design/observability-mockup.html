@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Squad · observability mockup (v2 · primitive-faithful)</title>
+<style>
+/* ============================================================
+   Palette + tokens — verbatim from keelson apps/web/src/app.css.
+   v2: every element maps to a REAL view->board primitive
+   (rows / cards / stats / segments / bars / actions / header).
+   No .cvb-card-body, .callout, .is-primary, or pulse-spam.
+   ============================================================ */
+:root {
+  --bg:#0d1429; --bg-soft:#131a30; --card:#161e3b; --card-2:#1f2a4d;
+  --border:#2a3258; --border-soft:#1f2746;
+  --fg:#d8def0; --fg-strong:#f0f3ff; --muted:#8993b2; --dim:#5e6789;
+  --accent:#9b8eff; --green:#6dd28d; --yellow:#f5c352; --red:#f08793;
+  --magenta:#c7a8f0; --cyan:#7cc0ff; --orange:#f59f6c; --danger:#e06666;
+  --shadow-card:0 2px 6px rgba(0,0,0,0.4); color-scheme:dark;
+}
+:root[data-theme="light"] {
+  --bg:#f3f0fa; --bg-soft:#eeeaf7; --card:#fff; --card-2:#eeeaf7;
+  --border:#c8bfdc; --border-soft:#d9d1e8;
+  --fg:#161b31; --fg-strong:#0b0f1e; --muted:#5d5876; --dim:#7e7896;
+  --accent:#6d4fe0; --green:#15834f; --yellow:#b57a00; --red:#d9385e;
+  --magenta:#804bc1; --cyan:#2e6fd8; --orange:#b66229; --danger:#d9385e;
+  --shadow-card:0 10px 28px rgba(57,43,92,0.08); color-scheme:light;
+}
+*{box-sizing:border-box;} html,body{margin:0;padding:0;}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;letter-spacing:.005em;min-height:100vh;}
+
+/* mock app frame */
+.app{max-width:1180px;margin:0 auto;padding:0 24px 72px;}
+.topbar{display:flex;align-items:center;gap:18px;padding:14px 0;border-bottom:1px solid var(--border-soft);}
+.brand{font-weight:700;color:var(--fg-strong);} .brand .keel{color:var(--accent);}
+.nav{display:flex;gap:4px;} .nav a{font-size:13px;color:var(--muted);text-decoration:none;padding:5px 11px;border-radius:7px;}
+.nav a.active{color:var(--fg-strong);background:var(--card-2);}
+.topbar-spacer{flex:1;}
+.toolbtn{font-size:12px;color:var(--muted);background:var(--card);cursor:pointer;border:1px solid var(--border);border-radius:7px;padding:5px 10px;font-family:inherit;}
+.toolbtn:hover{color:var(--fg);}
+.mockbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:16px 0 22px;padding:10px 12px;border:1px dashed var(--border);border-radius:10px;background:var(--bg-soft);}
+.mockbar-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);}
+.seg{display:flex;gap:4px;flex-wrap:wrap;}
+.seg button{font-size:12px;font-family:inherit;cursor:pointer;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:7px;padding:5px 11px;}
+.seg button.on{color:var(--fg-strong);background:var(--accent);border-color:var(--accent);}
+:root[data-theme="light"] .seg button.on{color:#fff;}
+.mockbar .hint{font-size:12px;color:var(--muted);margin-left:auto;}
+.mock-state{display:none;} .mock-state.on{display:block;}
+
+/* surface chrome */
+.surface-page{display:flex;flex-direction:column;gap:16px;}
+.surface-identity{display:flex;flex-direction:column;gap:4px;margin-bottom:2px;}
+.surface-identity-title{margin:0;font-size:18px;font-weight:700;letter-spacing:-0.01em;color:var(--fg);}
+.surface-identity-subtitle{margin:0;font-size:13px;color:var(--muted);}
+.surface-zone{display:flex;flex-direction:column;gap:14px;}
+.surface-zone-title{margin:0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);}
+.surface-row{display:flex;gap:16px;align-items:stretch;flex-wrap:wrap;}
+.surface-row > .surface-region{flex:1 1 320px;min-width:320px;}
+.surface-region{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:12px;background:var(--card);box-shadow:var(--shadow-card);overflow:hidden;}
+.surface-region-head{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 16px 10px;border-bottom:1px solid var(--border-soft);background:linear-gradient(180deg,var(--card-2) 0%,var(--card) 100%);}
+.surface-region-glyph-chip{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;border:1px solid var(--border-soft);background:var(--bg-soft);font-size:13px;flex:none;color:var(--fg);}
+.surface-region-glyph-chip[data-tone="brand"]{color:var(--magenta);}
+.surface-region-glyph-chip[data-tone="info"]{color:var(--cyan);}
+.surface-region-glyph-chip[data-tone="caution"]{color:var(--orange);}
+.surface-region-glyph-chip[data-tone="ok"]{color:var(--green);}
+.surface-region-glyph-chip[data-tone="accent"]{color:var(--accent);}
+.surface-region-glyph-chip[data-tone="error"]{color:var(--red);}
+.surface-region-identity{display:flex;flex-direction:column;gap:1px;min-width:0;}
+.surface-region-title{font-size:15px;font-weight:600;color:var(--fg);}
+.surface-region-byline{font-size:11px;color:var(--muted);}
+.surface-region-byline .mono{font-family:ui-monospace,monospace;color:var(--cyan);}
+.surface-region-spacer{flex:1 1 auto;}
+.surface-region-freshness{flex:none;font-size:11px;color:var(--muted);white-space:nowrap;display:inline-flex;align-items:center;gap:5px;}
+.surface-region-freshness[data-tone="brand"]{color:var(--magenta);}
+.surface-region-icon{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;font-size:14px;color:var(--muted);border:none;background:none;cursor:pointer;}
+.surface-region-body{padding:14px 16px;display:flex;flex-direction:column;gap:16px;}
+.surface-region-idle{display:flex;flex-direction:column;align-items:flex-start;gap:12px;padding:6px 0;}
+.surface-region-idle-note{margin:0;font-size:13px;color:var(--muted);max-width:60ch;}
+
+/* ONE focal live cue: a single guarded pulse, used only on the freshness label
+   of the actively-streaming region and the in-flight card dot. Maps to a
+   host-derived live freshness state on the region head (one sanctioned core add). */
+@keyframes fresh-pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+.fresh-dot{width:7px;height:7px;border-radius:50%;background:var(--magenta);box-shadow:0 0 6px var(--magenta);display:inline-block;animation:fresh-pulse 1.5s ease-in-out infinite;}
+@media (prefers-reduced-motion:reduce){.fresh-dot{animation:none;}}
+
+/* board sections */
+.canvas-view-board{display:flex;flex-direction:column;gap:16px;}
+.cvb-section{display:flex;flex-direction:column;gap:8px;}
+.cvb-section-title{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;align-items:baseline;}
+.cvb-section-title .more{color:var(--dim);text-transform:none;letter-spacing:0;font-size:11px;}
+.cvb-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.cvb-title{font-size:15px;font-weight:600;color:var(--fg-strong);}
+.cvb-header-status{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;border:1px solid var(--border);background:var(--bg-soft);color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;flex:none;}
+.cvb-header-status[data-tone="ok"]{color:var(--green);border-color:color-mix(in srgb,var(--green) 45%,transparent);background:color-mix(in srgb,var(--green) 8%,transparent);}
+.cvb-header-status[data-tone="warn"]{color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 45%,transparent);background:color-mix(in srgb,var(--yellow) 8%,transparent);}
+.cvb-header-status[data-tone="error"]{color:var(--red);border-color:color-mix(in srgb,var(--red) 45%,transparent);background:color-mix(in srgb,var(--red) 8%,transparent);}
+.cvb-header-status[data-tone="brand"]{color:var(--magenta);border-color:color-mix(in srgb,var(--magenta) 45%,transparent);background:color-mix(in srgb,var(--magenta) 8%,transparent);}
+.cvb-header-status[data-tone="caution"]{color:var(--orange);border-color:color-mix(in srgb,var(--orange) 45%,transparent);background:color-mix(in srgb,var(--orange) 8%,transparent);}
+
+/* segments — only ever non-zero counts (zero drops by design) */
+.cvb-segments{display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--muted);}
+.cvb-segment{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
+.cvb-segment:not(:first-child)::before{content:"·";color:var(--dim);margin-right:6px;}
+.cvb-segment-bullet{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dim);}
+.cvb-segment-bullet[data-tone="ok"]{background:var(--green);box-shadow:0 0 4px var(--green);}
+.cvb-segment-bullet[data-tone="warn"]{background:var(--yellow);box-shadow:0 0 4px var(--yellow);}
+.cvb-segment-bullet[data-tone="error"]{background:var(--red);box-shadow:0 0 4px var(--red);}
+.cvb-segment-bullet[data-tone="info"]{background:var(--cyan);box-shadow:0 0 4px var(--cyan);}
+.cvb-segment-bullet[data-tone="brand"]{background:var(--magenta);box-shadow:0 0 4px var(--magenta);}
+.cvb-segment-bullet[data-tone="accent"]{background:var(--accent);box-shadow:0 0 4px var(--accent);}
+
+/* stats */
+.cvb-stats{display:grid;grid-template-columns:repeat(var(--cvb-stat-cols,4),minmax(0,1fr));gap:10px;}
+@media (max-width:520px){.cvb-stats{grid-template-columns:repeat(2,minmax(0,1fr));}}
+.cvb-stat{display:flex;flex-direction:column;gap:2px;padding:10px 12px;background:var(--card-2);border:1px solid var(--border);border-radius:8px;}
+.cvb-stat-value{font-size:20px;font-weight:700;font-family:ui-monospace,monospace;color:var(--fg-strong);}
+.cvb-stat-value[data-tone="ok"]{color:var(--green);} .cvb-stat-value[data-tone="warn"]{color:var(--yellow);}
+.cvb-stat-value[data-tone="error"]{color:var(--red);} .cvb-stat-value[data-tone="brand"]{color:var(--magenta);}
+.cvb-stat-value[data-tone="accent"]{color:var(--accent);} .cvb-stat-value[data-tone="info"]{color:var(--cyan);}
+.cvb-stat-label{font-size:11px;color:var(--fg);text-transform:uppercase;letter-spacing:.04em;}
+.cvb-stat-sub{font-size:11px;color:var(--muted);}
+
+/* bars — round budget / plan progress */
+.cvb-bars{display:flex;flex-direction:column;gap:10px;}
+.cvb-bars--inline .cvb-bar{display:grid;grid-template-columns:max-content 1fr max-content;align-items:center;gap:10px;}
+.cvb-bar-head{display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;}
+.cvb-bar-label{color:var(--fg);} .cvb-bars--inline .cvb-bar-label{font-size:12px;}
+.cvb-bar-trailing{color:var(--muted);font-family:ui-monospace,monospace;font-size:11px;}
+.cvb-bar-track{height:6px;border-radius:999px;background:color-mix(in srgb,var(--border) 70%,transparent);overflow:hidden;}
+.cvb-bars--inline .cvb-bar-track{height:5px;}
+.cvb-bar-fill{height:100%;border-radius:999px;background:var(--accent);}
+.cvb-bar-fill[data-tone="ok"]{background:var(--green);} .cvb-bar-fill[data-tone="brand"]{background:var(--magenta);}
+
+/* cards — roster, in-flight turns, runs index */
+.cvb-cards{display:flex;flex-direction:column;gap:8px;}
+.cvb-cards--grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;}
+.cvb-card{display:flex;flex-direction:column;gap:6px;padding:10px 12px;background:var(--card-2);border:1px solid var(--border);border-radius:8px;}
+.cvb-card--live{border-color:color-mix(in srgb,var(--magenta) 42%,var(--border));}
+.cvb-card-head{display:flex;align-items:center;gap:8px;}
+.cvb-card-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;background:var(--muted);}
+.cvb-card-dot[data-tone="ok"]{background:var(--green);box-shadow:0 0 8px color-mix(in srgb,var(--green) 55%,transparent);}
+.cvb-card-dot[data-tone="neutral"]{background:var(--cyan);} .cvb-card-dot[data-tone="warn"]{background:var(--yellow);}
+.cvb-card-dot[data-tone="error"]{background:var(--red);} .cvb-card-dot[data-tone="info"]{background:var(--cyan);}
+.cvb-card-dot[data-tone="caution"]{background:var(--orange);} .cvb-card-dot[data-tone="brand"]{background:var(--magenta);}
+.cvb-card-dot[data-tone="accent"]{background:var(--accent);}
+.cvb-card--live .cvb-card-dot{animation:fresh-pulse 1.5s ease-in-out infinite;}
+@media (prefers-reduced-motion:reduce){.cvb-card--live .cvb-card-dot{animation:none;}}
+.cvb-card-title{font-size:13px;font-weight:600;color:var(--fg-strong);flex:1 1 auto;min-width:0;}
+.cvb-card-title--mono{font-family:ui-monospace,monospace;}
+.cvb-card-fields{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px;}
+.cvb-field{display:inline-flex;align-items:baseline;gap:5px;}
+.cvb-cards:not(.cvb-cards--grid) .cvb-card-fields .cvb-field:not(:first-child)::before,
+.cvb-cards--grid .cvb-card-fields .cvb-field:not(:first-child)::before{content:"·";color:var(--dim);}
+.cvb-field-label{color:var(--muted);}
+.cvb-field-value{font-family:ui-monospace,monospace;color:var(--fg);}
+.cvb-field-value[data-tone="ok"]{color:var(--green);} .cvb-field-value[data-tone="error"]{color:var(--red);}
+.cvb-field-value[data-tone="info"]{color:var(--cyan);} .cvb-field-value[data-tone="accent"]{color:var(--accent);}
+.cvb-field-value[data-tone="brand"]{color:var(--magenta);}
+.cvb-card-footnote{font-size:11px;color:var(--muted);font-style:italic;}
+.cvb-card-reason{margin-top:4px;padding-top:6px;border-top:1px dashed var(--border-soft);font-size:12px;color:var(--muted);font-style:italic;}
+.cvb-card-reason-label{color:var(--muted);font-style:normal;font-weight:600;}
+
+/* rows — the transcript, presence, plan, worked-by, findings (text = main fg) */
+.cvb-rows{display:flex;flex-direction:column;}
+.cvb-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-soft);font-size:12.5px;}
+.cvb-rows .cvb-row:last-child{border-bottom:none;}
+.cvb-glyph{width:8px;height:8px;border-radius:999px;background:var(--muted);flex:none;}
+.cvb-glyph[data-tone="ok"]{background:var(--green);} .cvb-glyph[data-tone="warn"]{background:var(--yellow);}
+.cvb-glyph[data-tone="error"]{background:var(--red);} .cvb-glyph[data-tone="info"]{background:var(--cyan);}
+.cvb-glyph[data-tone="caution"]{background:var(--orange);} .cvb-glyph[data-tone="brand"]{background:var(--magenta);}
+.cvb-glyph[data-tone="accent"]{background:var(--accent);}
+.cvb-row-text{color:var(--fg);flex:1;overflow-wrap:anywhere;}
+.cvb-row-text .mono{font-family:ui-monospace,monospace;color:var(--muted);font-size:11.5px;}
+.cvb-row-trailing{color:var(--muted);font-family:ui-monospace,monospace;flex:none;font-size:11px;}
+/* boxed rows — a status list (verification gate: tsc/biome/tests with marks) */
+.cvb-rows--boxed{gap:6px;}
+.cvb-rows--boxed .cvb-row,.cvb-rows--boxed .cvb-row:last-child{padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-soft);}
+.cvb-rows--boxed .cvb-glyph{width:14px;height:auto;border-radius:0;background:none;display:inline-flex;justify-content:center;font-size:12px;line-height:1;}
+.cvb-rows--boxed .cvb-glyph::before{content:"•";color:var(--muted);}
+.cvb-rows--boxed .cvb-glyph[data-tone="ok"]::before{content:"✓";color:var(--green);}
+.cvb-rows--boxed .cvb-glyph[data-tone="error"]::before{content:"✕";color:var(--red);}
+.cvb-rows--boxed .cvb-glyph[data-tone="warn"]::before{content:"!";color:var(--yellow);}
+.cvb-rows--boxed .cvb-row-text{flex:0 0 120px;}
+.cvb-rows--boxed .cvb-row-trailing{flex:1 1 auto;text-align:left;color:var(--fg);}
+
+/* chips / pills */
+.cvb-chip,.cvb-pill{font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--card);flex:none;}
+.cvb-pill{background:transparent;}
+.cvb-pill[data-tone="ok"]{color:var(--green);border-color:color-mix(in srgb,var(--green) 32%,transparent);}
+.cvb-pill[data-tone="warn"]{color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 32%,transparent);}
+.cvb-pill[data-tone="error"]{color:var(--red);border-color:color-mix(in srgb,var(--red) 32%,transparent);}
+.cvb-pill[data-tone="info"]{color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 32%,transparent);}
+.cvb-pill[data-tone="caution"]{color:var(--orange);border-color:color-mix(in srgb,var(--orange) 32%,transparent);}
+.cvb-pill[data-tone="brand"]{color:var(--magenta);border-color:color-mix(in srgb,var(--magenta) 32%,transparent);}
+.cvb-pill[data-tone="accent"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 32%,transparent);}
+.cvb-chip[data-tone="ok"]{color:var(--green);border-color:color-mix(in srgb,var(--green) 30%,transparent);background:color-mix(in srgb,var(--green) 14%,transparent);}
+.cvb-chip[data-tone="error"]{color:var(--red);border-color:color-mix(in srgb,var(--red) 30%,transparent);background:color-mix(in srgb,var(--red) 14%,transparent);}
+.cvb-chip[data-tone="info"]{color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 30%,transparent);background:color-mix(in srgb,var(--cyan) 14%,transparent);}
+.cvb-chip[data-tone="caution"]{color:var(--orange);border-color:color-mix(in srgb,var(--orange) 30%,transparent);background:color-mix(in srgb,var(--orange) 14%,transparent);}
+.cvb-chip[data-tone="brand"]{color:var(--magenta);border-color:color-mix(in srgb,var(--magenta) 30%,transparent);background:color-mix(in srgb,var(--magenta) 14%,transparent);}
+.cvb-chip[data-tone="accent"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 30%,transparent);background:color-mix(in srgb,var(--accent) 14%,transparent);}
+
+/* actions — tone colors text; destructive=danger; NO filled-primary variant */
+.cvb-actions{display:flex;flex-wrap:wrap;gap:6px;}
+.cvb-action-button{background:var(--bg-soft);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:12px;font-family:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:8px;}
+.cvb-action-button:hover{background:var(--card-2);}
+.cvb-action-button[data-tone="ok"]{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent);}
+.cvb-action-button[data-tone="accent"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);}
+.cvb-action-button.is-destructive{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent);}
+.cvb-action-glyph{display:inline-flex;width:14px;justify-content:center;flex:none;}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <span class="brand"><span class="keel">▟</span> keelson</span>
+    <nav class="nav"><a href="#">Chat</a><a href="#">Workflows</a><a href="#" class="active">Squad</a></nav>
+    <span class="topbar-spacer"></span>
+    <button class="toolbtn" id="themeBtn">◐ theme</button>
+  </div>
+
+  <div class="mockbar">
+    <span class="mockbar-label">Mock states</span>
+    <div class="seg" id="stateSeg">
+      <button data-state="cold">Cold start</button>
+      <button data-state="idle">Idle</button>
+      <button data-state="live" class="on">● Live</button>
+      <button data-state="wave">Wave</button>
+      <button data-state="done">Done</button>
+      <button data-state="blocked">Blocked</button>
+      <button data-state="failed">Failed</button>
+    </div>
+    <span class="hint">v2 · primitive-faithful (transcript = real <code>rows</code>; no card-body / callout / pulse-spam)</span>
+  </div>
+
+  <!-- ============ COLD START (0 members) ============ -->
+  <section class="mock-state" data-state="cold">
+    <div class="surface-page">
+      <div class="surface-identity"><h1 class="surface-identity-title">Squad</h1><p class="surface-identity-subtitle">A governed, self-managed dev team.</p></div>
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="brand">◆</span><div class="surface-region-identity"><span class="surface-region-title">Roster</span><span class="surface-region-byline">no members yet</span></div></div>
+          <div class="surface-region-body">
+            <div class="cvb-section"><div class="cvb-stats" style="--cvb-stat-cols:3">
+              <div class="cvb-stat"><span class="cvb-stat-value">—</span><span class="cvb-stat-label">Team</span></div>
+              <div class="cvb-stat"><span class="cvb-stat-value">—</span><span class="cvb-stat-label">Working</span></div>
+              <div class="cvb-stat"><span class="cvb-stat-value">—</span><span class="cvb-stat-label">Runs</span></div>
+            </div></div>
+            <div class="surface-region-idle">
+              <p class="surface-region-idle-note">No squad yet. Cast your first member — name a role and a charter, or let the squad auto-propose a team from the repo. <b>Start a run</b> unlocks once at least one member exists.</p>
+              <div class="cvb-actions">
+                <button class="cvb-action-button" data-tone="accent"><span class="cvb-action-glyph">✦</span>Cast a member…</button>
+                <button class="cvb-action-button"><span class="cvb-action-glyph">⌕</span>Auto-propose from repo</button>
+                <button class="cvb-action-button" disabled><span class="cvb-action-glyph">▶</span>Start a run…</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ IDLE / READY ============ -->
+  <section class="mock-state" data-state="idle">
+    <div class="surface-page">
+      <div class="surface-identity"><h1 class="surface-identity-title">Squad</h1><p class="surface-identity-subtitle">A governed, self-managed dev team. Give it a goal and watch it work.</p></div>
+
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="info">↻</span><div class="surface-region-identity"><span class="surface-region-title">Run loop</span><span class="surface-region-byline">no active run</span></div></div>
+          <div class="surface-region-body"><div class="surface-region-idle">
+            <p class="surface-region-idle-note">Nothing running. Hand the squad a goal — it will plan, dispatch, code, review, and verify, round by round, here.</p>
+            <div class="cvb-actions"><button class="cvb-action-button" data-tone="accent"><span class="cvb-action-glyph">▶</span>Start a run…</button></div>
+          </div></div>
+        </div>
+      </div>
+
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="brand">◆</span><div class="surface-region-identity"><span class="surface-region-title">Roster</span><span class="surface-region-byline">4 members · all idle</span></div><span class="surface-region-spacer"></span><span class="surface-region-freshness">updated 2m ago</span></div>
+          <div class="surface-region-body">
+            <div class="cvb-section"><div class="cvb-cards cvb-cards--grid">
+              <div class="cvb-card"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="accent"></span><span class="cvb-card-title">atlas</span><span class="cvb-pill" data-tone="accent">Engineer</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-label">model</span><span class="cvb-field-value" data-tone="info">codex · gpt-5.5</span></span><span class="cvb-field"><span class="cvb-field-value">code, read</span></span></div><div class="cvb-card-footnote">Owns implementation; reads adjacent contracts first.</div></div>
+              <div class="cvb-card"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="info"></span><span class="cvb-card-title">vera</span><span class="cvb-pill" data-tone="info">Reviewer</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-label">model</span><span class="cvb-field-value" data-tone="info">claude · opus-4.8</span></span><span class="cvb-field"><span class="cvb-field-value">read</span></span></div><div class="cvb-card-footnote">Adversarial review; a BLOCK must cite a reproducible defect.</div></div>
+              <div class="cvb-card"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="caution"></span><span class="cvb-card-title">ozzy</span><span class="cvb-pill" data-tone="caution">Triager</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-label">model</span><span class="cvb-field-value" data-tone="info">copilot · gpt-5-mini</span></span><span class="cvb-field"><span class="cvb-field-value">read</span></span></div><div class="cvb-card-footnote">Cheap, fast issue routing and labeling.</div></div>
+              <div class="cvb-card"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="brand"></span><span class="cvb-card-title">sage</span><span class="cvb-pill" data-tone="brand">Architect</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-label">model</span><span class="cvb-field-value" data-tone="info">claude · opus-4.8</span></span><span class="cvb-field"><span class="cvb-field-value">read</span></span></div><div class="cvb-card-footnote">Boundaries and contracts; consulted, not on every round.</div></div>
+            </div></div>
+            <div class="cvb-section"><div class="cvb-section-title">Roster gaps · the squad flagged</div>
+              <div class="cvb-rows">
+                <div class="cvb-row"><span class="cvb-glyph" data-tone="caution"></span><span class="cvb-row-text">No <b>security reviewer</b> — recent runs touched auth/keychain with no specialist.</span><button class="cvb-action-button" data-tone="accent" style="padding:3px 9px"><span class="cvb-action-glyph">✦</span>Cast</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="info">▦</span><div class="surface-region-identity"><span class="surface-region-title">Recent runs</span><span class="surface-region-byline">last 3 · reopen any transcript</span></div></div>
+          <div class="surface-region-body"><div class="cvb-cards">
+            <div class="cvb-card"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="ok"></span><span class="cvb-card-title cvb-card-title--mono">r-7f3a</span><span class="cvb-pill" data-tone="ok">done</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-value">untracked files visible to review</span></span><span class="cvb-field"><span class="cvb-field-label">rounds</span><span class="cvb-field-value">5</span></span><span class="cvb-field"><span class="cvb-field-label">net</span><span class="cvb-field-value" data-tone="ok">+30/−4</span></span></div></div>
+            <div class="cvb-card"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="warn"></span><span class="cvb-card-title cvb-card-title--mono">r-6e1c</span><span class="cvb-pill" data-tone="warn">max-rounds</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-value">change-quality gate hardening</span></span><span class="cvb-field"><span class="cvb-field-label">rounds</span><span class="cvb-field-value">18</span></span></div></div>
+            <div class="cvb-card"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="ok"></span><span class="cvb-card-title cvb-card-title--mono">r-6a02</span><span class="cvb-pill" data-tone="ok">done</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-value">ground BLOCK verdicts</span></span><span class="cvb-field"><span class="cvb-field-label">rounds</span><span class="cvb-field-value">7</span></span><span class="cvb-field"><span class="cvb-field-label">net</span><span class="cvb-field-value" data-tone="ok">+88/−12</span></span></div></div>
+          </div>
+          <p class="cvb-card-footnote" style="margin:2px 2px 0">Requires a backing store — the rib persists one ledger today; a runs index means archiving each closed ledger.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ LIVE RUN (hero) ============ -->
+  <section class="mock-state on" data-state="live">
+    <div class="surface-page">
+      <div class="surface-identity"><h1 class="surface-identity-title">Squad</h1><p class="surface-identity-subtitle">A governed, self-managed dev team. Give it a goal and watch it work.</p></div>
+
+      <!-- roster presence: rows (one per member), single source of truth -->
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="brand">◆</span><div class="surface-region-identity"><span class="surface-region-title">Roster</span><span class="surface-region-byline">1 working · 3 idle</span></div></div>
+          <div class="surface-region-body"><div class="cvb-section"><div class="cvb-rows">
+            <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-chip" data-tone="accent">atlas</span><span class="cvb-row-text">coding — regression test</span><span class="cvb-row-trailing">R4</span></div>
+            <div class="cvb-row"><span class="cvb-glyph"></span><span class="cvb-chip" data-tone="info">vera</span><span class="cvb-row-text" style="color:var(--muted)">idle · last reviewed R3</span><span class="cvb-row-trailing">—</span></div>
+            <div class="cvb-row"><span class="cvb-glyph"></span><span class="cvb-chip" data-tone="caution">ozzy</span><span class="cvb-row-text" style="color:var(--muted)">idle</span><span class="cvb-row-trailing">—</span></div>
+            <div class="cvb-row"><span class="cvb-glyph"></span><span class="cvb-chip" data-tone="brand">sage</span><span class="cvb-row-text" style="color:var(--muted)">idle</span><span class="cvb-row-trailing">—</span></div>
+          </div></div></div>
+        </div>
+      </div>
+
+      <!-- HERO: run loop -->
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head">
+            <span class="surface-region-glyph-chip" data-tone="brand">↻</span>
+            <div class="surface-region-identity"><span class="surface-region-title">Run loop</span><span class="surface-region-byline"><span class="mono">r-7f3a</span> · make untracked NEW files visible to review · proj <span class="mono">keelson-rib-squad</span></span></div>
+            <span class="surface-region-spacer"></span>
+            <span class="surface-region-freshness" data-tone="brand"><span class="fresh-dot"></span> streaming · 2s ago</span>
+            <button class="surface-region-icon" title="Open full transcript in canvas">⤢</button>
+          </div>
+          <div class="surface-region-body">
+            <!-- vitals: region head owns identity/freshness; board header owns run STATE -->
+            <div class="cvb-section" role="status" aria-live="polite">
+              <div class="cvb-header">
+                <span class="cvb-header-status" data-tone="brand">● Running</span>
+                <span class="cvb-chip">round 4</span>
+                <span class="cvb-segments">
+                  <span class="cvb-segment"><span class="cvb-segment-bullet" data-tone="info"></span><span class="cvb-segment-text">4 findings</span></span>
+                  <span class="cvb-segment"><span class="cvb-segment-bullet" data-tone="accent"></span><span class="cvb-segment-text">1 working</span></span>
+                </span>
+              </div>
+              <div class="cvb-bars cvb-bars--inline">
+                <div class="cvb-bar"><span class="cvb-bar-label">rounds</span><div class="cvb-bar-track"><div class="cvb-bar-fill" data-tone="brand" style="width:20%"></div></div><span class="cvb-bar-trailing">4 / 20</span></div>
+                <div class="cvb-bar"><span class="cvb-bar-label">plan</span><div class="cvb-bar-track"><div class="cvb-bar-fill" style="width:75%"></div></div><span class="cvb-bar-trailing">step 3 / 4</span></div>
+              </div>
+            </div>
+
+            <!-- plan: where is it -->
+            <div class="cvb-section"><div class="cvb-section-title">Plan</div><div class="cvb-rows">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-row-text" style="color:var(--muted)">Reproduce the blind spot</span><span class="cvb-row-trailing">done</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-row-text" style="color:var(--muted)">Add <span class="mono">git add -N</span> to diff capture</span><span class="cvb-row-trailing">done</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-row-text">Write the regression test</span><span class="cvb-row-trailing">current</span></div>
+              <div class="cvb-row"><span class="cvb-glyph"></span><span class="cvb-row-text" style="color:var(--muted)">Verify the tree</span><span class="cvb-row-trailing">pending</span></div>
+            </div></div>
+
+            <!-- NOW: in-flight turn(s) as cards with real fields — the live edge, on top -->
+            <div class="cvb-section"><div class="cvb-section-title">In flight · now</div><div class="cvb-cards">
+              <div class="cvb-card cvb-card--live">
+                <div class="cvb-card-head"><span class="cvb-card-dot" data-tone="accent"></span><span class="cvb-card-title">atlas</span><span class="cvb-pill" data-tone="accent">code</span></div>
+                <div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-label">round</span><span class="cvb-field-value">R4</span></span><span class="cvb-field"><span class="cvb-field-label">file</span><span class="cvb-field-value">capture-diff.test.ts</span></span><span class="cvb-field"><span class="cvb-field-label">elapsed</span><span class="cvb-field-value">0:12</span></span></div>
+                <div class="cvb-card-reason"><span class="cvb-card-reason-label">now </span>writing the regression test: a new untracked file should appear in <span style="font-family:ui-monospace,monospace">captureDiffUnderReview</span> and leave the index clean</div>
+              </div>
+            </div></div>
+
+            <!-- transcript: real rows, windowed tail, newest last -->
+            <div class="cvb-section"><div class="cvb-section-title"><span>Transcript · round by round</span><span class="more">full replay → ⤢</span></div>
+              <div class="cvb-rows">
+                <div class="cvb-row"><span class="cvb-glyph" data-tone="brand"></span><span class="cvb-chip" data-tone="brand">coordinator</span><span class="cvb-row-text">Plan: reproduce → add intent-to-add → test → verify.</span><span class="cvb-row-trailing">R1</span></div>
+                <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-chip" data-tone="accent">atlas</span><span class="cvb-row-text">Reproduced — a new file is invisible to <span class="mono">git diff</span>; capture sees only tracked + staged.</span><span class="cvb-row-trailing">R1 · codex</span></div>
+                <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-chip" data-tone="accent">atlas</span><span class="cvb-row-text">Added intent-to-add before capture; new files now appear in the reviewed diff.</span><span class="cvb-row-trailing">R2 · codex · +18/−2</span></div>
+                <div class="cvb-row"><span class="cvb-glyph" data-tone="error"></span><span class="cvb-chip" data-tone="info">vera</span><span class="cvb-row-text"><b>BLOCK</b> — <span class="mono">add -N</span> leaves the index dirty after capture; staged state leaks.</span><span class="cvb-row-trailing">R2 · claude</span></div>
+                <div class="cvb-row"><span class="cvb-glyph" data-tone="brand"></span><span class="cvb-chip" data-tone="brand">coordinator</span><span class="cvb-row-text">Finding logged. Re-dispatch to atlas with a reset-after-capture requirement.</span><span class="cvb-row-trailing">R3</span></div>
+                <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-chip" data-tone="accent">atlas</span><span class="cvb-row-text">Reset intent-to-add after capture; index clean, repro no longer leaks.</span><span class="cvb-row-trailing">R3 · codex · +6/−1</span></div>
+                <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-chip" data-tone="info">vera</span><span class="cvb-row-text"><b>PASS</b> — new file visible, index clean, repro resolved.</span><span class="cvb-row-trailing">R3 · claude</span></div>
+              </div>
+            </div>
+
+            <!-- operator can act on a black-box run -->
+            <div class="cvb-section"><div class="cvb-actions">
+              <button class="cvb-action-button is-destructive"><span class="cvb-action-glyph">■</span>Stop run</button>
+              <button class="cvb-action-button"><span class="cvb-action-glyph">✎</span>Steer — add a fact / instruction…</button>
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ WAVE (dispatch / fan-out review, N parallel + a failed turn) ============ -->
+  <section class="mock-state" data-state="wave">
+    <div class="surface-page">
+      <div class="surface-identity"><h1 class="surface-identity-title">Squad</h1><p class="surface-identity-subtitle">A governed, self-managed dev team.</p></div>
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="brand">↻</span><div class="surface-region-identity"><span class="surface-region-title">Run loop</span><span class="surface-region-byline"><span class="mono">r-801b</span> · review wave · proj <span class="mono">keelson</span></span></div><span class="surface-region-spacer"></span><span class="surface-region-freshness" data-tone="brand"><span class="fresh-dot"></span> streaming · now</span></div>
+          <div class="surface-region-body">
+            <div class="cvb-section" role="status" aria-live="polite"><div class="cvb-header">
+              <span class="cvb-header-status" data-tone="brand">● Review wave</span><span class="cvb-chip">round 5</span>
+              <span class="cvb-segments"><span class="cvb-segment"><span class="cvb-segment-bullet" data-tone="accent"></span><span class="cvb-segment-text">3 reviewing</span></span><span class="cvb-segment"><span class="cvb-segment-bullet" data-tone="error"></span><span class="cvb-segment-text">1 failed</span></span></span>
+            </div></div>
+            <div class="cvb-section"><div class="cvb-section-title">Round 5 · review wave — 3 dispatched in parallel</div><div class="cvb-cards cvb-cards--grid">
+              <div class="cvb-card cvb-card--live"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="info"></span><span class="cvb-card-title">vera</span><span class="cvb-pill" data-tone="accent">verify</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-label">elapsed</span><span class="cvb-field-value">0:21</span></span><span class="cvb-field"><span class="cvb-field-label">lens</span><span class="cvb-field-value">correctness</span></span></div></div>
+              <div class="cvb-card cvb-card--live"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="brand"></span><span class="cvb-card-title">sage</span><span class="cvb-pill" data-tone="accent">verify</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-label">elapsed</span><span class="cvb-field-value">0:21</span></span><span class="cvb-field"><span class="cvb-field-label">lens</span><span class="cvb-field-value">contracts</span></span></div></div>
+              <div class="cvb-card"><div class="cvb-card-head"><span class="cvb-card-dot" data-tone="error"></span><span class="cvb-card-title">ozzy</span><span class="cvb-pill" data-tone="error">failed</span></div><div class="cvb-card-fields"><span class="cvb-field"><span class="cvb-field-label">lens</span><span class="cvb-field-value">security</span></span></div><div class="cvb-card-reason"><span class="cvb-card-reason-label">error </span>turn timed out after 120s (copilot) — coordinator will re-dispatch or proceed with 2 of 3</div></div>
+            </div></div>
+            <div class="cvb-section"><div class="cvb-section-title">Transcript · tail</div><div class="cvb-rows">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-chip" data-tone="accent">atlas</span><span class="cvb-row-text">Implemented the normalization fix; ready for the done-gate.</span><span class="cvb-row-trailing">R4 · codex · +40/−7</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="brand"></span><span class="cvb-chip" data-tone="brand">coordinator</span><span class="cvb-row-text">Done attempt — fan out review to 3 members (correctness · contracts · security).</span><span class="cvb-row-trailing">R5</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="error"></span><span class="cvb-chip" data-tone="caution">ozzy</span><span class="cvb-row-text">Turn failed — timeout (120s).</span><span class="cvb-row-trailing">R5 · copilot</span></div>
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DONE ============ -->
+  <section class="mock-state" data-state="done">
+    <div class="surface-page">
+      <div class="surface-identity"><h1 class="surface-identity-title">Squad</h1><p class="surface-identity-subtitle">A governed, self-managed dev team.</p></div>
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="ok">↻</span><div class="surface-region-identity"><span class="surface-region-title">Run loop</span><span class="surface-region-byline"><span class="mono">r-7f3a</span> · make untracked NEW files visible to review</span></div><span class="surface-region-spacer"></span><span class="surface-region-freshness">finished 1m ago · 4m12s</span><button class="surface-region-icon" title="Open full transcript">⤢</button></div>
+          <div class="surface-region-body">
+            <div class="cvb-section"><div class="cvb-header"><span class="cvb-header-status" data-tone="ok">✓ Done</span><span class="cvb-chip">5 rounds</span><span class="cvb-title">verified · review clean</span></div></div>
+            <!-- LEAD with the standup payoff (rows: text at full fg) -->
+            <div class="cvb-section"><div class="cvb-section-title">Standup</div><div class="cvb-rows"><div class="cvb-row"><span class="cvb-glyph" data-tone="brand"></span><span class="cvb-row-text">Made untracked NEW files visible to the diff-aware review by adding intent-to-add to the capture, then resetting the index so capture stays side-effect-free. One BLOCK (index-dirty leak) caught by vera, resolved by atlas in 3 rounds. Verified green.</span></div></div></div>
+            <!-- verification facts as a boxed-rows status list -->
+            <div class="cvb-section"><div class="cvb-section-title">Verification · done-gate</div><div class="cvb-rows cvb-rows--boxed">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-row-text">bun test</span><span class="cvb-row-trailing">412 pass</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-row-text">tsc</span><span class="cvb-row-trailing">clean</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-row-text">biome</span><span class="cvb-row-trailing">clean</span></div>
+            </div></div>
+            <!-- worked-by: faithful who(provider) verb -->
+            <div class="cvb-section"><div class="cvb-section-title">Worked by</div><div class="cvb-rows">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-chip" data-tone="accent">atlas</span><span class="cvb-row-text">coded</span><span class="cvb-row-trailing">codex</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="info"></span><span class="cvb-chip" data-tone="info">vera</span><span class="cvb-row-text">reviewed</span><span class="cvb-row-trailing">claude</span></div>
+            </div></div>
+            <!-- artifact path + next -->
+            <div class="cvb-section"><div class="cvb-actions">
+              <button class="cvb-action-button" data-tone="accent"><span class="cvb-action-glyph">⎘</span>View diff</button>
+              <button class="cvb-action-button"><span class="cvb-action-glyph">↗</span>Open PR</button>
+              <button class="cvb-action-button"><span class="cvb-action-glyph">▶</span>Start another run…</button>
+            </div></div>
+            <div class="cvb-section"><div class="cvb-section-title"><span>Transcript · 5 rounds</span><span class="more">collapsed — full replay → ⤢</span></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ BLOCKED (max-rounds · unverifiable BLOCK · tree green) ============ -->
+  <section class="mock-state" data-state="blocked">
+    <div class="surface-page">
+      <div class="surface-identity"><h1 class="surface-identity-title">Squad</h1><p class="surface-identity-subtitle">A governed, self-managed dev team.</p></div>
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="caution">↻</span><div class="surface-region-identity"><span class="surface-region-title">Run loop</span><span class="surface-region-byline"><span class="mono">r-6e1c</span> · change-quality gate hardening</span></div><span class="surface-region-spacer"></span><span class="surface-region-freshness" data-tone="brand">needs you</span><button class="surface-region-icon" title="Open full transcript">⤢</button></div>
+          <div class="surface-region-body">
+            <div class="cvb-section"><div class="cvb-header"><span class="cvb-header-status" data-tone="caution">⚠ Needs you</span><span class="cvb-chip">round 18 / 18</span><span class="cvb-title">blocked on an unverifiable review</span></div></div>
+            <!-- facts (green) as a boxed status list, NOT a callout -->
+            <div class="cvb-section"><div class="cvb-section-title">Artifact · independently green</div><div class="cvb-rows cvb-rows--boxed">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-row-text">bun test</span><span class="cvb-row-trailing">412 pass</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-row-text">tsc · biome</span><span class="cvb-row-trailing">clean</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="warn"></span><span class="cvb-row-text">clean review</span><span class="cvb-row-trailing">lastCleanReviewRound: none</span></div>
+            </div></div>
+            <!-- advisory prose as a rows line (fg), not a callout -->
+            <div class="cvb-section"><div class="cvb-rows"><div class="cvb-row"><span class="cvb-glyph" data-tone="caution"></span><span class="cvb-row-text">The tree is verified green, but the terminal BLOCK can't be grounded in a reproducible defect — the reviewers' refutation checks all passed yet they couldn't name one. This is the reviewer crying wolf, burning to the round cap on correct work.</span></div></div></div>
+            <div class="cvb-section"><div class="cvb-section-title">Transcript · tail</div><div class="cvb-rows">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-chip" data-tone="info">vera</span><span class="cvb-row-text"><b>PASS</b> — tree green since R15.</span><span class="cvb-row-trailing">R15 · claude</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="error"></span><span class="cvb-chip" data-tone="info">vera</span><span class="cvb-row-text"><b>BLOCK</b> — refutation checks pass but reviewers diverge on <i>which</i> defect remains… <span class="mono">[truncated]</span></span><span class="cvb-row-trailing">R16 · claude</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="warn"></span><span class="cvb-chip" data-tone="brand">coordinator</span><span class="cvb-row-text">Same ungrounded BLOCK repeated — no new finding, no ledger change. Hit maxRounds.</span><span class="cvb-row-trailing">R17–18</span></div>
+            </div></div>
+            <!-- worked-by kept (who cast the verdict) + actions; Accept emitted because verification.green -->
+            <div class="cvb-section"><div class="cvb-section-title">Worked by</div><div class="cvb-rows">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-chip" data-tone="accent">atlas</span><span class="cvb-row-text">coded</span><span class="cvb-row-trailing">codex</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="info"></span><span class="cvb-chip" data-tone="info">vera</span><span class="cvb-row-text">reviewed — cast the terminal BLOCK</span><span class="cvb-row-trailing">claude</span></div>
+            </div></div>
+            <div class="cvb-section"><div class="cvb-actions">
+              <button class="cvb-action-button" data-tone="ok"><span class="cvb-action-glyph">✓</span>Accept — artifact is green</button>
+              <button class="cvb-action-button"><span class="cvb-action-glyph">⤢</span>Inspect review</button>
+              <button class="cvb-action-button"><span class="cvb-action-glyph">↻</span>Re-run with read-capable synthesis</button>
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FAILED (verification-failed · tree RED) ============ -->
+  <section class="mock-state" data-state="failed">
+    <div class="surface-page">
+      <div class="surface-identity"><h1 class="surface-identity-title">Squad</h1><p class="surface-identity-subtitle">A governed, self-managed dev team.</p></div>
+      <div class="surface-row">
+        <div class="surface-region">
+          <div class="surface-region-head"><span class="surface-region-glyph-chip" data-tone="error">↻</span><div class="surface-region-identity"><span class="surface-region-title">Run loop</span><span class="surface-region-byline"><span class="mono">r-90fd</span> · refactor memory store</span></div><span class="surface-region-spacer"></span><span class="surface-region-freshness">stopped · 6m ago</span><button class="surface-region-icon" title="Open full transcript">⤢</button></div>
+          <div class="surface-region-body">
+            <div class="cvb-section"><div class="cvb-header"><span class="cvb-header-status" data-tone="error">✕ Verification failed</span><span class="cvb-chip">round 9</span><span class="cvb-title">the done-gate came back red</span></div></div>
+            <div class="cvb-section"><div class="cvb-section-title">Verification · done-gate</div><div class="cvb-rows cvb-rows--boxed">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="error"></span><span class="cvb-row-text">bun test</span><span class="cvb-row-trailing" style="color:var(--red)">3 failing — memory-store.test.ts</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="ok"></span><span class="cvb-row-text">tsc · biome</span><span class="cvb-row-trailing">clean</span></div>
+            </div></div>
+            <div class="cvb-section"><div class="cvb-rows"><div class="cvb-row"><span class="cvb-glyph" data-tone="error"></span><span class="cvb-row-text">The squad asserted done, but the operator-configured checks ran red. No "accept as green" path — the artifact is not passing.</span></div></div></div>
+            <div class="cvb-section"><div class="cvb-section-title">Transcript · tail</div><div class="cvb-rows">
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="accent"></span><span class="cvb-chip" data-tone="accent">atlas</span><span class="cvb-row-text">Refactored the store; asserts the suite is green.</span><span class="cvb-row-trailing">R8 · codex · +120/−64</span></div>
+              <div class="cvb-row"><span class="cvb-glyph" data-tone="error"></span><span class="cvb-chip" data-tone="brand">coordinator</span><span class="cvb-row-text"><b>verify FAILED</b> — bun test: 3 failing. Tree is not green.</span><span class="cvb-row-trailing">R9</span></div>
+            </div></div>
+            <div class="cvb-section"><div class="cvb-actions">
+              <button class="cvb-action-button" data-tone="accent"><span class="cvb-action-glyph">⤢</span>Inspect failures</button>
+              <button class="cvb-action-button"><span class="cvb-action-glyph">↻</span>Re-dispatch to fix</button>
+              <button class="cvb-action-button is-destructive"><span class="cvb-action-glyph">■</span>Stop</button>
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+<script>
+  const seg=document.getElementById('stateSeg');
+  seg.addEventListener('click',(e)=>{const b=e.target.closest('button[data-state]');if(!b)return;const s=b.dataset.state;
+    seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    document.querySelectorAll('.mock-state').forEach(x=>x.classList.toggle('on',x.dataset.state===s));
+    window.scrollTo({top:0,behavior:'smooth'});});
+  document.getElementById('themeBtn').addEventListener('click',()=>{const r=document.documentElement;r.dataset.theme=r.dataset.theme==='light'?'dark':'light';});
+</script>
+</body>
+</html>

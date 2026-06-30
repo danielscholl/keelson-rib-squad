@@ -13,6 +13,7 @@ import type {
 } from "@keelson/shared";
 import { RECALL_RESPONSE_SCHEMA_VERSION, WRITEBACK_RESPONSE_SCHEMA_VERSION } from "@keelson/shared";
 import {
+  actionLabel,
   type CoordinatorEntry,
   type CoordinatorLedger,
   failStuckTasks,
@@ -23,6 +24,7 @@ import {
   saveLedger,
 } from "../src/coordinator.ts";
 import type { DispatchOutcome } from "../src/dispatch.ts";
+import { DEFAULT_SCOPE_ID, scopeDataHome } from "../src/paths.ts";
 import type { Member } from "../src/types.ts";
 
 const NOW = "2026-06-27T00:00:00.000Z";
@@ -159,6 +161,18 @@ describe("parseCoordinatorDirective", () => {
   });
 });
 
+describe("actionLabel", () => {
+  test("maps each execute mode to its short verb, falling back to 'working'", () => {
+    expect(actionLabel({ kind: "execute", mode: "code", instruction: "x" })).toBe("coding");
+    expect(actionLabel({ kind: "execute", mode: "workflow", instruction: "x" })).toBe(
+      "authoring a workflow",
+    );
+    expect(actionLabel({ kind: "execute", mode: "dispatch", instruction: "x" })).toBe("working");
+    expect(actionLabel({ kind: "end", reason: "done" })).toBe("working");
+    expect(actionLabel({ kind: "replan", reason: "stalled" })).toBe("working");
+  });
+});
+
 describe("failStuckTasks", () => {
   test("collects execute steps since the last re-plan boundary, in order", () => {
     const transcript: CoordinatorEntry[] = [
@@ -212,6 +226,25 @@ describe("ledger persistence", () => {
   test("corrupt file loads as undefined (start fresh, no throw)", async () => {
     await writeFile(join(home, "coordinator-ledger.json"), "{ torn json");
     expect(await loadLedger(home)).toBeUndefined();
+  });
+
+  test("the default scope's data home is the legacy ledger path (no-op)", async () => {
+    expect(scopeDataHome(home, DEFAULT_SCOPE_ID)).toBe(home);
+    const ledger: CoordinatorLedger = {
+      task: "ship it",
+      facts: [],
+      plan: [],
+      round: 0,
+      stallCount: 0,
+      resetCount: 0,
+      status: "active",
+      transcript: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    // Saving under the default-scoped home is byte-for-byte the legacy bare-home path.
+    await saveLedger(scopeDataHome(home, DEFAULT_SCOPE_ID), ledger);
+    expect(await loadLedger(home)).toEqual(ledger);
   });
 });
 
@@ -311,6 +344,92 @@ describe("runCoordinator loop", () => {
     expect(d.calls).toEqual([{ members: ["atlas"], instruction: "build X" }]);
     expect(res.ledger.facts).toContain("uses bun");
     expect(res.ledger.facts.some((f) => f.includes("built it"))).toBe(true);
+  });
+
+  test("marks the turn in flight before the execute arm and clears it on the final ledger", async () => {
+    // The marker is persisted just BEFORE the execute arm runs, so the injected dispatch seam
+    // (awaited by the loop) can read the saved ledger and observe the in-flight state.
+    const seen: CoordinatorLedger["inFlight"][] = [];
+    const capturingDispatch = async (
+      _members: Member[],
+      instruction: string,
+    ): Promise<DispatchOutcome> => {
+      seen.push((await loadLedger(home))?.inFlight);
+      return { task: instruction, perMember: [], synthesis: "did it", notes: [] };
+    };
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: capturingDispatch,
+    });
+    expect(res.status).toBe("done");
+    // At least one persisted state during the run carried the in-flight marker.
+    const marked = seen.find((f) => f !== undefined);
+    expect(marked).toBeDefined();
+    expect(marked?.speaker).toBe("atlas");
+    expect(marked?.round).toBe(0);
+    expect(marked?.action).toBe("working");
+    // The completed run has nothing in flight — in memory and on disk.
+    expect(res.ledger.inFlight).toBeUndefined();
+    expect((await loadLedger(home))?.inFlight).toBeUndefined();
+  });
+
+  test("invokes the publish seam after each ledger persist (per-round liveness)", async () => {
+    let publishCount = 0;
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X","facts":["uses bun"]}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: fakeDispatch("built it").fn,
+      publish: () => {
+        publishCount += 1;
+      },
+    });
+    expect(res.status).toBe("done");
+    // One persist closes the dispatch round; one persists the terminal done state.
+    expect(publishCount).toBeGreaterThanOrEqual(2);
+    expect(publishCount).toBeGreaterThanOrEqual(res.rounds);
+  });
+
+  test("a rejecting publish seam never breaks the run (best-effort)", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: fakeDispatch("built it").fn,
+      publish: async () => {
+        throw new Error("publish boom");
+      },
+    });
+    expect(res.status).toBe("done");
+    expect(res.summary).toBe("shipped");
+  });
+
+  test("publishes on a non-done terminal persist (max-rounds ceiling)", async () => {
+    let publishCount = 0;
+    const res = await runCoordinator({
+      ...base(),
+      // Never satisfied but always names a step, so the loop dispatches each round until the
+      // ceiling persists the max-rounds terminal — a persist path distinct from done.
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}',
+      ]),
+      dispatch: fakeDispatch().fn,
+      limits: { maxRounds: 2, maxStall: 99, maxResets: 99 },
+      publish: () => {
+        publishCount += 1;
+      },
+    });
+    expect(res.status).toBe("max-rounds");
+    // Two dispatch-round persists + the terminal max-rounds persist.
+    expect(publishCount).toBeGreaterThanOrEqual(3);
   });
 
   test("a re-plan is recorded, then exhausted resets give up", async () => {
@@ -643,7 +762,7 @@ describe("runCoordinator loop", () => {
     ).toBe(true);
   });
 
-  test("an abort during the execute arm leaves the ledger unmutated (no junk fact, no persist)", async () => {
+  test("an abort during the execute arm folds no junk fact and keeps the round budget intact", async () => {
     const ac = new AbortController();
     // The manager names a dispatch step; the abort lands while the execute arm runs, so the
     // arm returns empty. The loop must break before folding a "(no synthesis)" fact.
@@ -666,7 +785,15 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.round).toBe(0); // the aborted round did not advance
     expect(res.ledger.facts.some((f) => f.includes("(no synthesis)"))).toBe(false);
     expect(res.ledger.transcript.some((e) => e.kind === "dispatch")).toBe(false);
-    expect(await loadLedger(home)).toBeUndefined(); // nothing persisted on the aborted round
+    expect(res.ledger.inFlight).toBeUndefined(); // the cancelled turn's card is cleared
+    // The abort persists at round 0 with the in-flight marker cleared (a connected client stops
+    // seeing a "now executing" card), no junk fact, and no dispatch entry — so a resume re-runs
+    // round 0, budget intact.
+    const persisted = await loadLedger(home);
+    expect(persisted?.inFlight).toBeUndefined();
+    expect(persisted?.round).toBe(0);
+    expect(persisted?.facts.some((f) => f.includes("(no synthesis)"))).toBe(false);
+    expect(persisted?.transcript.some((e) => e.kind === "dispatch")).toBe(false);
   });
 
   test("compiles served-provider provenance from the code and dispatch steps", async () => {
