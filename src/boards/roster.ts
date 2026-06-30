@@ -200,18 +200,14 @@ function coldStartSections(): CanvasBoardView["sections"] {
       title: "Cast a squad",
       items: [
         {
-          // The defining verb: scan a project and propose the team best suited to
-          // it. Project is a free-text name resolved live against getProjects() at
-          // action time (blank = the default / only project); mission is optional.
+          // The defining verb: scan the SELECTED project and propose the team best
+          // suited to it. Scope follows the project picker — casting always targets the
+          // selected project, so the team lands in the same scope a no-arg run reads (no
+          // free-text Project field that could mis-place it). Mission is optional.
           type: CAST_PROPOSE_ACTION,
-          label: "Cast a squad for a project",
+          label: "Cast a squad for the selected project",
           glyph: "✦",
           fields: [
-            {
-              name: "project",
-              label: "Project",
-              placeholder: "project name (blank = the default / only project)",
-            },
             {
               name: "mission",
               label: "Mission (optional)",
