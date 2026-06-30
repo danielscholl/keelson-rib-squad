@@ -1,6 +1,6 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DEFAULT_SCOPE_ID } from "./paths.ts";
+import { DEFAULT_SCOPE_ID, scopeMembersDir } from "./paths.ts";
 
 // The operator's current project selection and a snapshot of the project catalog,
 // both persisted at the GLOBAL home root (NOT a scoped subtree) so the
@@ -78,6 +78,25 @@ export async function writeProjectsSnapshot(
     at: new Date().toISOString(),
   };
   await writeFile(join(home, PROJECTS_FILE), `${JSON.stringify(snapshot, null, 2)}\n`);
+}
+
+// Every scope's members dir: the default (legacy flat) dir FIRST, then one per
+// existing projects/<seg> subtree SORTED by segment name, so a cross-scope reader
+// (chat agents) sees a deterministic order (default wins ties on slug). Degrades to
+// just the default dir when there is no projects/ tree yet. The segments are
+// already-sanitized on disk, so they are read back verbatim (not re-derived).
+export async function listScopeMembersDirs(home: string): Promise<string[]> {
+  const dirs = [scopeMembersDir(home, DEFAULT_SCOPE_ID)];
+  try {
+    const segments = (await readdir(join(home, "projects"), { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    for (const seg of segments) dirs.push(join(home, "projects", seg, "members"));
+  } catch {
+    // no projects/ tree yet — just the default scope
+  }
+  return dirs;
 }
 
 export async function readProjectsSnapshot(home: string): Promise<{ id: string; name: string }[]> {
