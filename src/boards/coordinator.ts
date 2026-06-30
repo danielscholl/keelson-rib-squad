@@ -2,6 +2,7 @@ import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import {
   type CoordinatorEntry,
   type CoordinatorLedger,
+  type InFlightTurn,
   provenanceLines,
   type VerificationRecord,
 } from "../coordinator.ts";
@@ -104,8 +105,29 @@ function activeSections(ledger: CoordinatorLedger): Section[] {
   if (ledger.failedSteps?.length) sections.push(abandonedSection(ledger.failedSteps));
   if (ledger.teamGaps?.length) sections.push(teamGapsSection(ledger.teamGaps));
   pushIf(sections, provenanceSection(ledger.transcript));
+  if (ledger.inFlight) sections.push(inFlightSection(ledger.inFlight));
   pushIf(sections, transcriptSection(ledger.transcript));
   return sections;
+}
+
+// "What's happening now": the one turn currently executing, rendered only while the run is
+// active (the active layout is the only caller). The completed turn then lives in the Transcript.
+function inFlightSection(inFlight: InFlightTurn): Section {
+  return {
+    kind: "cards",
+    title: "In flight",
+    items: [
+      {
+        title: inFlight.speaker ?? "coordinator",
+        dot: identityTone(inFlight.speaker),
+        pill: { label: inFlight.action, tone: "accent" },
+        fields: [{ label: "round", value: `R${inFlight.round}` }],
+        ...(inFlight.instruction
+          ? { reason: { label: "now", text: truncate(inFlight.instruction, STEP_CAP) } }
+          : {}),
+      },
+    ],
+  };
 }
 
 function doneSections(ledger: CoordinatorLedger): Section[] {
