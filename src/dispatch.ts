@@ -22,6 +22,22 @@ const DEFAULT_PER_TURN_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_MEMBERS = 6;
 const execFileAsync = promisify(execFile);
 
+// A reviewer turn's context is finite; an unbounded diff (a big refactor, a regenerated
+// lockfile) blows it and buries the signal the review is meant to catch. Cap the assembled
+// review diff and tell the reviewer to open files directly (it has READ_TOOLS) for the rest.
+const MAX_REVIEW_DIFF_CHARS = 24_000;
+// Part of the budget reserved for the untracked (new-file) section, capped independently of
+// the tracked diff. New files are absent from `git diff` entirely, so a large tracked diff
+// must never be able to truncate the whole new-file section away — that would re-hide exactly
+// what the untracked-visibility fix surfaces, in the large-change case the cap targets.
+const UNTRACKED_DIFF_BUDGET = 8_000;
+// A scaffold can drop dozens of new files at once; diffing every one would crowd out the
+// tracked changes. List the overflow by count instead of diffing all of them.
+const MAX_UNTRACKED_FILES = 25;
+// git's own ceiling on a single diff read — the existing tracked-diff bound, reused for the
+// untracked enumeration and per-file new-file diffs.
+const GIT_DIFF_MAX_BUFFER = 10 * 1024 * 1024;
+
 // The read rail for a project-bound dispatch: enough to inspect the repo (the read subset
 // of code.ts's CODE_TOOLS), and nothing that mutates it. allowedTools present means "these
 // and no others" at the host, so a dispatched member can ground its answer in real files but
@@ -58,6 +74,10 @@ export interface DispatchFanoutOptions {
   // allowedDirectories) so it can inspect the repo to answer — a reviewer that can't read
   // the diff is useless. Absent keeps the turn text-only (pure reasoning, no filesystem).
   project?: { name: string; rootPath: string };
+  // When the caller KNOWS this is a review (the coordinator's deterministic review gate),
+  // set true to force diff capture + adversarial framing regardless of how the instruction
+  // reads. Omit to fall back to sniffing the task text (an ad-hoc manager-directed review).
+  isReview?: boolean;
   concurrency?: number;
   perTurnTimeoutMs?: number;
   maxMembers?: number;
@@ -94,7 +114,11 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
   const wantSynthesis = opts.synthesize ?? members.length > 1;
 
   const root = opts.project?.rootPath.trim();
-  const reviewDiffUnderReview = await captureDiffUnderReview(opts.task, opts.project);
+  const reviewDiffUnderReview = await captureDiffUnderReview(
+    opts.task,
+    opts.project,
+    opts.isReview,
+  );
   const perMember = await runPool(members, concurrency, async (member): Promise<DispatchResult> => {
     if (opts.abortSignal?.aborted) {
       return { slug: member.slug, name: member.name, status: "aborted", text: "" };
@@ -362,28 +386,66 @@ function isProjectReviewTask(task: string): boolean {
 async function captureDiffUnderReview(
   task: string,
   project?: { name: string; rootPath: string },
+  isReview?: boolean,
 ): Promise<string | undefined> {
   const root = project?.rootPath.trim();
-  if (!root || !isProjectReviewTask(task)) return undefined;
+  if (!root) return undefined;
+  // An explicit `isReview` from the coordinator's deterministic review gate is authoritative:
+  // the gate must capture the diff regardless of how the instruction is phrased. Only fall
+  // back to sniffing the task text when the caller didn't say (an ad-hoc dispatch step).
+  const review = isReview ?? isProjectReviewTask(task);
+  if (!review) return undefined;
   return await collectGitDiff(root);
 }
 
 async function collectGitDiff(rootPath: string): Promise<string> {
-  const [unstaged, staged] = await Promise.all([
+  const [unstaged, staged, untracked] = await Promise.all([
     readGitDiff(rootPath, []),
     readGitDiff(rootPath, ["--staged"]),
+    readUntrackedDiff(rootPath),
   ]);
-  const parts: string[] = [];
+  // A brand-new file never appears in `git diff` (tracked) — exactly the change a review most
+  // needs to see, so the untracked section gets its own reserved budget below.
+  const tracked: string[] = [];
   if (unstaged.kind === "ok" && unstaged.output.trim().length > 0) {
-    parts.push(`### Working tree\n\`\`\`diff\n${unstaged.output.trimEnd()}\n\`\`\``);
+    tracked.push(`### Working tree\n\`\`\`diff\n${unstaged.output.trimEnd()}\n\`\`\``);
   }
   if (staged.kind === "ok" && staged.output.trim().length > 0) {
-    parts.push(`### Staged\n\`\`\`diff\n${staged.output.trimEnd()}\n\`\`\``);
+    tracked.push(`### Staged\n\`\`\`diff\n${staged.output.trimEnd()}\n\`\`\``);
   }
-  if (parts.length > 0) return parts.join("\n\n");
-  if (unstaged.kind === "error") return `_Diff capture unavailable: ${unstaged.error}_`;
-  if (staged.kind === "error") return `_Diff capture unavailable: ${staged.error}_`;
-  return "_No staged or unstaged diff detected in the project working tree._";
+
+  if (tracked.length === 0 && !untracked) {
+    if (unstaged.kind === "error") return `_Diff capture unavailable: ${unstaged.error}_`;
+    if (staged.kind === "error") return `_Diff capture unavailable: ${staged.error}_`;
+    return "_No staged, unstaged, or untracked changes detected in the project working tree._";
+  }
+
+  // Cap the two sections INDEPENDENTLY, never a single cap over the joined string: with one
+  // shared cap that truncates from the front, a large tracked diff drops the whole untracked
+  // section (names included), re-hiding the new files this very change set out to surface.
+  // The untracked section keeps a guaranteed slice (names lead, so they survive); the tracked
+  // diff takes whatever budget remains so the total still fits the review turn.
+  const untrackedSection = untracked
+    ? capDiffSection(untracked, UNTRACKED_DIFF_BUDGET, "new-file diff")
+    : "";
+  const trackedBudget = Math.max(0, MAX_REVIEW_DIFF_CHARS - untrackedSection.length);
+  const trackedSection =
+    tracked.length > 0 ? capDiffSection(tracked.join("\n\n"), trackedBudget, "tracked diff") : "";
+  return [trackedSection, untrackedSection].filter((s) => s.length > 0).join("\n\n");
+}
+
+// Bound one diff section so content + the truncation note together stay within `budget` — one
+// large change can't blow the reviewer's context, and the budgets actually hold (the note's own
+// length comes out of the budget, not on top of it). Closes any open ```diff fence and names
+// what was cut; the reviewer keeps READ_TOOLS, so the note points it at the files for the rest.
+function capDiffSection(diff: string, budget: number, label: string): string {
+  if (diff.length <= budget) return diff;
+  const note = (omitted: number): string =>
+    `\n\`\`\`\n\n_[${label} truncated — ${omitted} more character(s) omitted to fit the review turn; open the files directly with Read/Glob/Grep to review the rest.]_`;
+  // Reserve the note's worst-case length (omitting the whole diff) so the returned string never
+  // exceeds budget; the actual note is no longer than that reservation.
+  const keep = Math.max(0, budget - note(diff.length).length);
+  return `${diff.slice(0, keep)}${note(diff.length - keep)}`;
 }
 
 async function readGitDiff(
@@ -394,11 +456,71 @@ async function readGitDiff(
     const { stdout } = await execFileAsync(
       "git",
       ["-C", rootPath, "--no-pager", "diff", "--no-color", ...args],
-      { maxBuffer: 10 * 1024 * 1024 },
+      { maxBuffer: GIT_DIFF_MAX_BUFFER },
     );
     return { kind: "ok", output: stdout };
   } catch (e) {
     return { kind: "error", error: errText(e) };
+  }
+}
+
+// Enumerate untracked (and not gitignored) files and render each as a new-file diff. Uses
+// `git diff --no-index` against /dev/null rather than `git add -N`: both make a new file show
+// up in a diff, but --no-index is READ-ONLY and never mutates the operator's index. Returns
+// undefined outside a git repo (the tracked-diff error already names that case).
+async function readUntrackedDiff(rootPath: string): Promise<string | undefined> {
+  let files: string[];
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", rootPath, "ls-files", "--others", "--exclude-standard", "-z"],
+      { maxBuffer: GIT_DIFF_MAX_BUFFER },
+    );
+    files = stdout.split("\0").filter((f) => f.length > 0);
+  } catch {
+    return undefined;
+  }
+  if (files.length === 0) return undefined;
+  const shown = files.slice(0, MAX_UNTRACKED_FILES);
+  const overflow = files.length - shown.length;
+  const names = shown.map((f) => `- \`${f}\``).join("\n");
+  const overflowNote = overflow > 0 ? `\n- _…and ${overflow} more new file(s) not shown_` : "";
+  const diffs: string[] = [];
+  for (const f of shown) {
+    const body = await readNewFileDiff(rootPath, f);
+    if (body && body.trim().length > 0) {
+      diffs.push(`#### \`${f}\`\n\`\`\`diff\n${body.trimEnd()}\n\`\`\``);
+    }
+  }
+  const diffBlock = diffs.length > 0 ? `\n\n${diffs.join("\n\n")}` : "";
+  return `### Untracked (new) files\nNew files not yet tracked by git — they never appear in the tracked diffs above:\n${names}${overflowNote}${diffBlock}`;
+}
+
+async function readNewFileDiff(rootPath: string, relPath: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      [
+        "-C",
+        rootPath,
+        "--no-pager",
+        "diff",
+        "--no-color",
+        "--no-index",
+        "--",
+        "/dev/null",
+        relPath,
+      ],
+      { maxBuffer: GIT_DIFF_MAX_BUFFER },
+    );
+    // Identical to /dev/null (an empty new file) → exit 0, no diff body.
+    return stdout;
+  } catch (e) {
+    // `git diff --no-index` exits 1 when the paths differ (always, for a non-empty new file);
+    // its stdout still carries the diff. Any other exit is a real failure — drop that file.
+    const err = e as { code?: unknown; stdout?: unknown };
+    if (err.code === 1 && typeof err.stdout === "string") return err.stdout;
+    return undefined;
   }
 }
 
