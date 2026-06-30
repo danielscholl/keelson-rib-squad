@@ -8,7 +8,8 @@ import { loadRegistry, saveRegistry } from "../src/casting/registry.ts";
 import rib from "../src/index.ts";
 import { CAST_KEY } from "../src/keys.ts";
 import { readMembers } from "../src/member-store.ts";
-import { membersDir, setSquadDataHome } from "../src/paths.ts";
+import { membersDir, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
+import { writeSelectedProject } from "../src/scope.ts";
 
 // onAction reads the runAgentTurn / getProjects / refreshWorkflow seams captured in
 // registerTools, so each test boots the rib with a fake ctx (a canned scan reply, a
@@ -76,7 +77,10 @@ afterEach(async () => {
 describe("cast-propose action", () => {
   test("scans the sole project, persists the proposal, and opens the cast canvas", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
-    const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    const res = await rib.onAction?.(
+      { type: "cast-propose", payload: { project: "keelson" } },
+      {} as RibContext,
+    );
     expect(res?.ok).toBe(true);
     if (res?.ok) {
       expect(res.data).toEqual({ effect: "open-canvas", key: CAST_KEY, title: "Proposed squad" });
@@ -94,7 +98,10 @@ describe("cast-propose action", () => {
   test("carries the operator mission into the scan", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
     await rib.onAction?.(
-      { type: "cast-propose", payload: { mission: "ship the OSDU search rib" } },
+      {
+        type: "cast-propose",
+        payload: { project: "keelson", mission: "ship the OSDU search rib" },
+      },
       {} as RibContext,
     );
     expect(lastReq?.prompt).toContain("ship the OSDU search rib");
@@ -110,10 +117,11 @@ describe("cast-propose action", () => {
     if (!res?.ok) expect(res?.error).toContain('unknown project "nope"');
   });
 
-  test("with several projects and no selector, asks which one", async () => {
+  test("with no selection and no explicit project, requires a project to cast for", async () => {
     bootRib([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
     const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("select a project");
     expect(await readProposal(home)).toBeUndefined();
   });
 
@@ -136,7 +144,10 @@ describe("cast-propose action", () => {
 describe("approve-cast / discard-cast actions", () => {
   test("approve themes + scaffolds the proposed members (with tags) and clears the proposal", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await rib.onAction?.(
+      { type: "cast-propose", payload: { project: "keelson" } },
+      {} as RibContext,
+    );
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
@@ -167,10 +178,16 @@ describe("approve-cast / discard-cast actions", () => {
 
   test("approve is collision-safe — re-approving the same cast skips existing members", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await rib.onAction?.(
+      { type: "cast-propose", payload: { project: "keelson" } },
+      {} as RibContext,
+    );
     await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     // Cast + approve again — the authored members must not be clobbered.
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await rib.onAction?.(
+      { type: "cast-propose", payload: { project: "keelson" } },
+      {} as RibContext,
+    );
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
@@ -185,11 +202,34 @@ describe("approve-cast / discard-cast actions", () => {
 
   test("discard clears the pending proposal", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await rib.onAction?.(
+      { type: "cast-propose", payload: { project: "keelson" } },
+      {} as RibContext,
+    );
     const res = await rib.onAction?.({ type: "discard-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     expect(await readProposal(home)).toBeUndefined();
     expect(refreshed).toContain("squad-cast");
+  });
+
+  test("cast↔run scope agree: a team cast for the SELECTED project lands under its scope", async () => {
+    bootRib([project("px", "proj-x", "/repo/x")]);
+    // Select project X — the single source of truth a no-arg cast (and a no-arg run)
+    // both key on. Casting with no explicit field scans X and stores under X's scope.
+    await writeSelectedProject(home, {
+      scopeId: "px",
+      projectId: "px",
+      name: "proj-x",
+      rootPath: "/repo/x",
+      at: "2026-06-30T00:00:00.000Z",
+    });
+    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
+    expect(res?.ok).toBe(true);
+    // Members land under projects/px/members (the selection's scope), NOT the default
+    // tree — so a no-arg squad_coordinate/squad_code with X selected reads this team.
+    expect(await readMembers(scopeMembersDir(home, "px"))).toHaveLength(2);
+    expect(await readMembers(membersDir())).toHaveLength(0);
   });
 });
 

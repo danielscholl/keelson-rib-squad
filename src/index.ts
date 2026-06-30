@@ -15,6 +15,7 @@ import { asNonEmptyString, DEFAULT_PROJECT_NAME, errText, expectView, z } from "
 import { listAgents, resolveAgent } from "./agents.ts";
 import { APPROVE_CAST_ACTION, CAST_PROPOSE_ACTION, DISCARD_CAST_ACTION } from "./boards/cast.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
+import { SELECT_PROJECT_ACTION } from "./boards/roster.ts";
 import { clearProposal, proposeCast, readProposal, writeProposal } from "./cast.ts";
 import {
   assignThemedIdentity,
@@ -39,6 +40,7 @@ import {
 } from "./member-store.ts";
 import { DEFAULT_LIMITS } from "./orchestrator.ts";
 import {
+  DEFAULT_SCOPE_ID,
   isSquadDataHomeWritable,
   scopeDataHome,
   scopeMembersDir,
@@ -46,7 +48,13 @@ import {
   squadDataHome,
 } from "./paths.ts";
 import { squadPolicies } from "./policies.ts";
-import { readSelectedProject, selectedScopeId } from "./scope.ts";
+import {
+  readSelectedProject,
+  type SelectedProject,
+  selectedScopeId,
+  writeProjectsSnapshot,
+  writeSelectedProject,
+} from "./scope.ts";
 import { GENESIS_STARTERS } from "./starters.ts";
 import type { TurnOutcome } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
@@ -82,6 +90,18 @@ const COORDINATOR_COLLECTOR = fileURLToPath(
 // word-split or expanded.
 function shQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+// Refresh the on-disk project catalog the roster picker renders from. Best-effort
+// and fire-and-forget: the collector reads projects.json, so a project added in
+// core surfaces on the next interaction, one action stale at worst.
+function snapshotProjects(): void {
+  try {
+    const projects = (getProjects?.() ?? []).map((p) => ({ id: p.id, name: p.name }));
+    void writeProjectsSnapshot(squadDataHome(), projects).catch(() => {});
+  } catch {
+    // a throwing projects seam must not break boot or an action dispatch
+  }
 }
 
 // Genesis as a workflow: one agent turn reads a freeform brief, authors the
@@ -474,15 +494,23 @@ function makeCodeTool(
         emitResult(ctx, "squad_code: projects seam unavailable on this harness", true);
         return;
       }
-      const { member: slug, task, project: selector } = parsed.data;
+      const { member: slug, task } = parsed.data;
       try {
-        const resolved = resolveProject(projectsSeam(), selector);
-        if (!resolved.ok) {
-          emitResult(ctx, `squad_code: ${resolved.error}`, true);
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        // The SAME resolution squad_coordinate uses, so a selected team is the team that
+        // codes: an explicit arg binds that repo + scope; a selection binds its scope and
+        // (when live) its repo; a stale selection keeps the scope but degrades to no repo.
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_code: ${resolution.error}`, true);
           return;
         }
-        const home = squadDataHome();
-        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const { scopeId, project: boundProject } = resolution;
         const membersRoot = scopeMembersDir(home, scopeId);
         const member = (await readMembers(membersRoot)).find((m) => m.slug === slug);
         if (!member) {
@@ -501,11 +529,21 @@ function makeCodeTool(
           );
           return;
         }
+        // squad_code MUST have a repo to edit. A stale selection degrades here (scope was
+        // still resolved, so the member lookup above held) instead of hard-erroring earlier.
+        if (!boundProject) {
+          emitResult(
+            ctx,
+            "squad_code: no project bound to code against — the selected project no longer exists or none is selected; re-select a project",
+            true,
+          );
+          return;
+        }
         const result = await runCodeTurn({
           runAgentTurn: turnSeam,
           membersRoot,
           member,
-          project: { name: resolved.project.name, rootPath: resolved.project.rootPath },
+          project: { name: boundProject.name, rootPath: boundProject.rootPath },
           task,
           abortSignal: ctx.abortSignal,
         });
@@ -515,7 +553,7 @@ function makeCodeTool(
         }
         emitResult(
           ctx,
-          summarizeCode(member, resolved.project.name, result.outcome),
+          summarizeCode(member, boundProject.name, result.outcome),
           result.outcome.status !== "ok",
         );
       } catch (e) {
@@ -589,26 +627,25 @@ function makeCoordinateTool(
         verify: verifyInput,
       } = parsed.data;
       try {
-        let project: { id: string; name: string; rootPath: string } | undefined;
-        const selector = asNonEmptyString(parsed.data.project);
-        if (selector) {
-          if (!projectsSeam) {
-            emitResult(ctx, "squad_coordinate: projects seam unavailable on this harness", true);
-            return;
-          }
-          const resolved = resolveProject(projectsSeam(), selector);
-          if (!resolved.ok) {
-            emitResult(ctx, `squad_coordinate: ${resolved.error}`, true);
-            return;
-          }
-          project = {
-            id: resolved.project.id,
-            name: resolved.project.name,
-            rootPath: resolved.project.rootPath,
-          };
-        }
         const home = squadDataHome();
-        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_coordinate: ${resolution.error}`, true);
+          return;
+        }
+        const { scopeId } = resolution;
+        const project = resolution.project
+          ? {
+              id: resolution.project.id,
+              name: resolution.project.name,
+              rootPath: resolution.project.rootPath,
+            }
+          : undefined;
         const membersRoot = scopeMembersDir(home, scopeId);
         const active = (await readMembers(membersRoot)).filter((m) => m.status === "active");
         const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
@@ -999,6 +1036,8 @@ const rib: Rib = {
     runAgentTurn = ctx.runAgentTurn;
     getProjects = ctx.getProjects;
     getProviders = ctx.getProviders;
+    // Seed the picker's project list so it has options on first render.
+    snapshotProjects();
     return [
       makeEmitMemberTool(ctx.refreshWorkflow),
       makeListMembersTool(),
@@ -1024,9 +1063,13 @@ const rib: Rib = {
     if (action.origin === "canvas-html") {
       return { ok: false, error: `'${action.type}' is not permitted from an HTML canvas` };
     }
+    // Keep the picker's project list current on every interaction.
+    snapshotProjects();
     switch (action.type) {
       case "enter-member":
         return enterMemberAction(action);
+      case SELECT_PROJECT_ACTION:
+        return selectProjectAction(action);
       case "author-archetype":
         return authorArchetypeAction(action);
       case "describe-own":
@@ -1099,6 +1142,43 @@ async function enterMemberAction(action: RibAction): Promise<RibActionResult> {
   }
 }
 
+// Select-project: persist the operator's project selection — the scopeId every
+// scoped data path keys on. "default" picks the legacy flat scope; any other id is
+// validated against the live project catalog (a stale board button can't select a
+// removed project). Refreshes projects.json + the three scope-bound panels.
+async function selectProjectAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const scopeId = asNonEmptyString(payload.scopeId);
+  if (!scopeId) return { ok: false, error: "select-project requires payload { scopeId }" };
+  const home = squadDataHome();
+  const at = new Date().toISOString();
+  try {
+    if (scopeId === DEFAULT_SCOPE_ID) {
+      await writeSelectedProject(home, { scopeId: DEFAULT_SCOPE_ID, at });
+    } else {
+      const project = getProjects?.().find((p) => p.id === scopeId);
+      if (!project) return { ok: false, error: "unknown project" };
+      await writeSelectedProject(home, {
+        scopeId: project.id,
+        projectId: project.id,
+        name: project.name,
+        rootPath: project.rootPath,
+        at,
+      });
+    }
+    await writeProjectsSnapshot(
+      home,
+      (getProjects?.() ?? []).map((p) => ({ id: p.id, name: p.name })),
+    );
+    await refreshWorkflow?.("squad-roster")?.catch(() => {});
+    await refreshWorkflow?.("squad-cast")?.catch(() => {});
+    await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+    return { ok: true, data: { scopeId } };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
 // Author one of the starter archetypes: launch squad-genesis with the starter's
 // brief, the same path describe-own takes.
 function authorArchetypeAction(action: RibAction): RibActionResult {
@@ -1160,6 +1240,34 @@ function resolveProject(
   return { ok: false, error: `several projects — name one to cast for: ${names}` };
 }
 
+// The SINGLE scope resolution shared by squad_coordinate and squad_code, with the
+// SELECTION as the source of truth. An EXPLICIT arg overrides to that project's own
+// scope + team and MUST resolve (errors if unknown). Otherwise the selection binds
+// members + ledger to the selection's scope regardless of whether that project still
+// exists in core: a STALE selection degrades to reasoning-only (no boundProject)
+// WITHOUT moving the scope, so the cast team there stays reachable. No explicit + no
+// selection runs reasoning-only on the default scope. resolveProject's sole-project
+// auto-pick is reserved for an EXPLICIT selector — never the empty/selection path
+// (that auto-pick was the regression: a default-scope team went invisible to a no-arg
+// run, which auto-bound to the sole project's own empty scope instead).
+function resolveRunScope(
+  projectsSeam: RibContext["getProjects"],
+  explicit: string,
+  selection: SelectedProject | undefined,
+): { ok: true; scopeId: string; project?: Project } | { ok: false; error: string } {
+  if (explicit) {
+    if (!projectsSeam) return { ok: false, error: "projects seam unavailable on this harness" };
+    const resolved = resolveProject(projectsSeam(), explicit);
+    if (!resolved.ok) return resolved;
+    return { ok: true, scopeId: resolved.project.id, project: resolved.project };
+  }
+  if (selection?.projectId) {
+    const project = projectsSeam?.().find((p) => p.id === selection.projectId);
+    return { ok: true, scopeId: selectedScopeId(selection), ...(project ? { project } : {}) };
+  }
+  return { ok: true, scopeId: DEFAULT_SCOPE_ID };
+}
+
 // Cast-propose: resolve a project, run ONE confined read-only repo-scan turn that
 // auto-composes the roster, persist the proposal, refresh the Proposed-squad panel,
 // and open it in the drawer. The scan is read-only and bounded to the project root
@@ -1173,8 +1281,29 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   if (!getProjects) {
     return { ok: false, error: "casting needs the projects seam (unavailable on this harness)" };
   }
-  const resolved = resolveProject(getProjects(), asNonEmptyString(payload.project));
-  if (!resolved.ok) return resolved;
+  // Cast and the runs scope by the SAME source (the selection), so the team you cast is
+  // exactly the team a no-arg run uses. An explicit field overrides the repo to SCAN;
+  // the proposal still lands in the selection's scope (where approve reads it). A team
+  // can't be auto-composed without a repo, so a missing project fails closed.
+  const selection = await readSelectedProject(squadDataHome());
+  const explicit = asNonEmptyString(payload.project);
+  let scanProject: Project;
+  if (explicit) {
+    const resolved = resolveProject(getProjects(), explicit);
+    if (!resolved.ok) return resolved;
+    scanProject = resolved.project;
+  } else if (selection?.projectId) {
+    const found = getProjects().find((p) => p.id === selection.projectId);
+    if (!found) {
+      return {
+        ok: false,
+        error: "selected project no longer exists — re-select a project to cast",
+      };
+    }
+    scanProject = found;
+  } else {
+    return { ok: false, error: "select a project to cast a team for" };
+  }
   const missionRaw = asNonEmptyString(payload.mission);
   // A provider-listing hiccup must not block casting — degrade to unpinned members.
   let providers: ReturnType<NonNullable<RibContext["getProviders"]>> = [];
@@ -1187,9 +1316,9 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
     const result = await proposeCast({
       runAgentTurn,
       project: {
-        id: resolved.project.id,
-        name: resolved.project.name,
-        rootPath: resolved.project.rootPath,
+        id: scanProject.id,
+        name: scanProject.name,
+        rootPath: scanProject.rootPath,
       },
       ...(missionRaw ? { mission: missionRaw.slice(0, MAX_MISSION_CHARS) } : {}),
       // Available-provider catalog so the scan can auto-assign each member's engine by
@@ -1198,7 +1327,9 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
     });
     if (!result.ok) return { ok: false, error: result.error };
     const home = squadDataHome();
-    const scopeId = selectedScopeId(await readSelectedProject(home));
+    // Write under the selection's scope so approve-cast (which reads that scope)
+    // finds the proposal — the same selection that picked the scan target.
+    const scopeId = selectedScopeId(selection);
     await writeProposal(scopeDataHome(home, scopeId), result.proposal);
     await refreshWorkflow?.("squad-cast");
     return { ok: true, data: { effect: "open-canvas", key: CAST_KEY, title: "Proposed squad" } };
