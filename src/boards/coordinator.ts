@@ -43,14 +43,18 @@ export function outcomeTone(e: CoordinatorEntry): CanvasTone {
     case "failed":
       return "warn";
     case "verify": {
-      if (/\b(pass|passed|clean|green|verified)\b/i.test(e.text)) return "ok";
-      if (/\b(block|blocked|fail|failed|failing|failure|red)\b/i.test(e.text)) return "error";
+      const t = e.text.toLowerCase();
+      const exemptClean =
+        /\bno\s+block\b|\bno\s+blocking\b|\bnothing\s+failed\b|\bno\s+failures?\b/.test(t);
+      const failBlock = /\b(block|blocked|fail|failed|failing|failure|red)\b/.test(t);
+      if (failBlock && !exemptClean) return "error";
+      if (/\b(pass|passed|clean|green|verified)\b/.test(t)) return "ok";
       return "info";
     }
   }
 }
 
-function transcriptTrailing(e: CoordinatorEntry): string {
+export function transcriptTrailing(e: CoordinatorEntry): string {
   let trailing = `R${e.round}`;
   if (e.provider) trailing += ` · ${e.provider}`;
   if (e.touched && (e.touched.insertions || e.touched.deletions)) {
@@ -82,6 +86,13 @@ function sectionsFor(ledger: CoordinatorLedger): Section[] {
       return failedSections(ledger);
     case "gave-up":
       return gaveUpSections(ledger);
+    default:
+      return [
+        {
+          kind: "rows",
+          items: [{ glyph: "warn", text: `Unrecognized run status: ${String(ledger.status)}` }],
+        },
+      ];
   }
 }
 
@@ -296,6 +307,8 @@ function statusPill(status: CoordinatorLedger["status"]): { label: string; tone:
       return { label: "verification failed", tone: "error" };
     case "change-quality-failed":
       return { label: "change quality failed", tone: "error" };
+    default:
+      return { label: "unknown", tone: "neutral" };
   }
 }
 

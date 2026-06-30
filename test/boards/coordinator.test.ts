@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { canvasViewSchema } from "@keelson/shared";
-import { buildCoordinatorBoard, identityTone, outcomeTone } from "../../src/boards/coordinator.ts";
+import {
+  buildCoordinatorBoard,
+  identityTone,
+  outcomeTone,
+  transcriptTrailing,
+} from "../../src/boards/coordinator.ts";
 import type { CoordinatorEntry, CoordinatorLedger } from "../../src/coordinator.ts";
 
 const ledger = (over: Partial<CoordinatorLedger> = {}): CoordinatorLedger => ({
@@ -66,7 +71,7 @@ describe("identityTone / outcomeTone helpers", () => {
     expect(outcomeTone(entry({ kind: "code", text: "edited" }))).toBe("accent");
   });
 
-  test("outcomeTone checks the pass signal before the block signal (no false reds)", () => {
+  test("outcomeTone: fail/block wins unless the signal word is negated (clean review)", () => {
     expect(
       outcomeTone(entry({ kind: "verify", text: "review passed (no BLOCK verdict)\nshipped" })),
     ).toBe("ok");
@@ -81,11 +86,30 @@ describe("identityTone / outcomeTone helpers", () => {
         entry({ kind: "verify", text: "verification FAILED — bun test exit 1: 3 failing" }),
       ),
     ).toBe("error");
+    expect(
+      outcomeTone(entry({ kind: "verify", text: "verification FAILED: 412 pass, 1 fail" })),
+    ).toBe("error");
+    expect(outcomeTone(entry({ kind: "verify", text: "419 pass / 1 fail" }))).toBe("error");
   });
 
   test("outcomeTone respects word boundaries (no substring false-match)", () => {
     expect(outcomeTone(entry({ kind: "verify", text: "the failover node came up" }))).toBe("info");
     expect(outcomeTone(entry({ kind: "verify", text: "passport check unrelated" }))).toBe("info");
+  });
+
+  test("transcriptTrailing renders round always, provider/diff only when present", () => {
+    expect(transcriptTrailing(entry({ round: 3 }))).toBe("R3");
+    expect(transcriptTrailing(entry({ round: 3, provider: "claude" }))).toBe("R3 · claude");
+    expect(
+      transcriptTrailing(
+        entry({ round: 3, provider: "claude", touched: { files: 1, insertions: 0, deletions: 0 } }),
+      ),
+    ).toBe("R3 · claude");
+    const full = transcriptTrailing(
+      entry({ round: 3, provider: "claude", touched: { files: 2, insertions: 7, deletions: 2 } }),
+    );
+    expect(full).toBe("R3 · claude · +7/−2");
+    expect(full).toContain("−");
   });
 });
 
@@ -348,5 +372,14 @@ describe("buildCoordinatorBoard terminal layouts", () => {
       );
       expect(canvasViewSchema.safeParse(board).success).toBe(true);
     }
+  });
+
+  test("a corrupt/unknown status still yields a valid board with a neutral pill", () => {
+    const forged = { ...ledger(), status: "bogus" } as unknown as CoordinatorLedger;
+    const board = buildCoordinatorBoard(forged);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.header?.status?.label).toBe("unknown");
+    expect(board.header?.status?.tone).toBe("neutral");
+    expect(JSON.stringify(board)).toContain("Unrecognized run status: bogus");
   });
 });
