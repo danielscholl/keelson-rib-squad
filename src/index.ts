@@ -38,8 +38,15 @@ import {
   writeMemory,
 } from "./member-store.ts";
 import { DEFAULT_LIMITS } from "./orchestrator.ts";
-import { isSquadDataHomeWritable, membersDir, setSquadDataHome, squadDataHome } from "./paths.ts";
+import {
+  isSquadDataHomeWritable,
+  scopeDataHome,
+  scopeMembersDir,
+  setSquadDataHome,
+  squadDataHome,
+} from "./paths.ts";
 import { squadPolicies } from "./policies.ts";
+import { readSelectedProject, selectedScopeId } from "./scope.ts";
 import { GENESIS_STARTERS } from "./starters.ts";
 import type { TurnOutcome } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
@@ -160,16 +167,19 @@ function emitResult(ctx: ToolContext, content: string, isError = false): void {
 // (squad_emit_member) and auto-cast (the approve/scaffold path) build their records
 // through here, so the two theme with one code path. Theming off / exhausted keeps
 // the proposed name (assignThemedIdentity returns no themeId).
-async function themedRecord(base: {
-  name: string;
-  role: string;
-  charter: string;
-  createdAt: string;
-  model?: string;
-  provider?: string;
-  tools?: readonly string[];
-}): Promise<MemberRecord> {
-  const id = await assignThemedIdentity(squadDataHome(), {
+async function themedRecord(
+  dataHome: string,
+  base: {
+    name: string;
+    role: string;
+    charter: string;
+    createdAt: string;
+    model?: string;
+    provider?: string;
+    tools?: readonly string[];
+  },
+): Promise<MemberRecord> {
+  const id = await assignThemedIdentity(dataHome, {
     proposedName: base.name,
     role: base.role,
   });
@@ -228,12 +238,14 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
       }
       const { name, role, charter, tools, model: rawModel, provider: rawProvider } = parsed.data;
       try {
+        const home = squadDataHome();
+        const scopeId = selectedScopeId(await readSelectedProject(home));
         const model = rawModel?.trim();
         const provider = rawProvider?.trim();
         const dedupedTools = tools
           ? [...new Set(tools.map((t) => t.trim()).filter((t) => t.length > 0))]
           : [];
-        const record = await themedRecord({
+        const record = await themedRecord(scopeDataHome(home, scopeId), {
           name,
           role,
           charter,
@@ -242,7 +254,7 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
           ...(provider && model ? { model } : {}),
           ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
         });
-        await scaffoldMember(membersDir(), record);
+        await scaffoldMember(scopeMembersDir(home, scopeId), record);
         // Re-run the bound squad-roster collector so the new member appears
         // promptly instead of waiting on cadence. Fail-soft (the seam resolves on
         // error and is absent on an older harness) — never throw.
@@ -263,7 +275,9 @@ function makeListMembersTool(): ToolDefinition {
     inputSchema: z.object({}),
     async execute(_input, ctx) {
       try {
-        const members = await readMembers(membersDir());
+        const home = squadDataHome();
+        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const members = await readMembers(scopeMembersDir(home, scopeId));
         emitResult(ctx, JSON.stringify({ members }));
       } catch (e) {
         emitResult(ctx, `squad_list_members failed: ${errText(e)}`, true);
@@ -287,17 +301,20 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
         emitResult(ctx, `squad_retire_member: ${parsed.error.message}`, true);
         return;
       }
+      const home = squadDataHome();
+      const scopeId = selectedScopeId(await readSelectedProject(home));
+      const scopedHome = scopeDataHome(home, scopeId);
       try {
-        await retireMember(membersDir(), parsed.data.slug);
+        await retireMember(scopeMembersDir(home, scopeId), parsed.data.slug);
         // Free the cast name so the ensemble can reuse it (fail-soft, never throws).
-        await retireCastingName(squadDataHome(), parsed.data.slug);
+        await retireCastingName(scopedHome, parsed.data.slug);
         await refresh?.("squad-roster");
         emitResult(ctx, JSON.stringify({ ok: true, slug: parsed.data.slug }));
       } catch (e) {
         // retireMember throws when the dir is already gone — but a registry entry can
         // linger with no dir (a phantom reservation from a failed scaffold). Free it
         // here too, or that character name is consumed forever.
-        await retireCastingName(squadDataHome(), parsed.data.slug);
+        await retireCastingName(scopedHome, parsed.data.slug);
         emitResult(ctx, `squad_retire_member failed: ${errText(e)}`, true);
       }
     },
@@ -330,10 +347,13 @@ function makeRememberTool(): ToolDefinition {
       }
       const { slug, text, target = "log" } = parsed.data;
       try {
+        const home = squadDataHome();
+        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const membersRoot = scopeMembersDir(home, scopeId);
         if (target === "memory") {
-          await writeMemory(membersDir(), slug, text);
+          await writeMemory(membersRoot, slug, text);
         } else {
-          await appendLog(membersDir(), slug, text, new Date().toISOString());
+          await appendLog(membersRoot, slug, text, new Date().toISOString());
         }
         emitResult(ctx, JSON.stringify({ ok: true, slug, target }));
       } catch (e) {
@@ -373,7 +393,10 @@ function makeDispatchTool(turnSeam: RibContext["runAgentTurn"]): ToolDefinition 
       }
       try {
         const { task, members: requested, synthesize } = parsed.data;
-        const active = (await readMembers(membersDir())).filter((m) => m.status === "active");
+        const home = squadDataHome();
+        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const membersRoot = scopeMembersDir(home, scopeId);
+        const active = (await readMembers(membersRoot)).filter((m) => m.status === "active");
         const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
         const members = wanted ? active.filter((m) => wanted.has(m.slug)) : active;
         if (members.length === 0) {
@@ -382,7 +405,7 @@ function makeDispatchTool(turnSeam: RibContext["runAgentTurn"]): ToolDefinition 
         }
         const outcome = await dispatchFanout({
           runAgentTurn: turnSeam,
-          membersRoot: membersDir(),
+          membersRoot,
           members,
           task,
           abortSignal: ctx.abortSignal,
@@ -458,7 +481,10 @@ function makeCodeTool(
           emitResult(ctx, `squad_code: ${resolved.error}`, true);
           return;
         }
-        const member = (await readMembers(membersDir())).find((m) => m.slug === slug);
+        const home = squadDataHome();
+        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const membersRoot = scopeMembersDir(home, scopeId);
+        const member = (await readMembers(membersRoot)).find((m) => m.slug === slug);
         if (!member) {
           emitResult(ctx, `squad_code: unknown member "${slug}"`, true);
           return;
@@ -477,7 +503,7 @@ function makeCodeTool(
         }
         const result = await runCodeTurn({
           runAgentTurn: turnSeam,
-          membersRoot: membersDir(),
+          membersRoot,
           member,
           project: { name: resolved.project.name, rootPath: resolved.project.rootPath },
           task,
@@ -581,7 +607,10 @@ function makeCoordinateTool(
             rootPath: resolved.project.rootPath,
           };
         }
-        const active = (await readMembers(membersDir())).filter((m) => m.status === "active");
+        const home = squadDataHome();
+        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const membersRoot = scopeMembersDir(home, scopeId);
+        const active = (await readMembers(membersRoot)).filter((m) => m.status === "active");
         const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
         const roster = wanted ? active.filter((m) => wanted.has(m.slug)) : active;
         if (roster.length === 0) {
@@ -601,8 +630,8 @@ function makeCoordinateTool(
         const coherentManagerModel = normalizedManagerProvider ? normalizedManagerModel : undefined;
         const result = await runCoordinator({
           runAgentTurn: turnSeam,
-          membersRoot: membersDir(),
-          dataHome: squadDataHome(),
+          membersRoot,
+          dataHome: scopeDataHome(home, scopeId),
           roster,
           task,
           ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
@@ -1058,9 +1087,12 @@ async function enterMemberAction(action: RibAction): Promise<RibActionResult> {
   const slug = asNonEmptyString(payload.slug);
   if (!slug) return { ok: false, error: "enter-member requires payload { slug }" };
   try {
-    const member = (await readMembers(membersDir())).find((m) => m.slug === slug);
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    const membersRoot = scopeMembersDir(home, scopeId);
+    const member = (await readMembers(membersRoot)).find((m) => m.slug === slug);
     if (!member) return { ok: false, error: `unknown member: ${slug}` };
-    const seed = await buildSeedFor(membersDir(), member);
+    const seed = await buildSeedFor(membersRoot, member);
     return { ok: true, data: { effect: "open-chat", seed } };
   } catch (e) {
     return { ok: false, error: errText(e) };
@@ -1165,7 +1197,9 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
       providers,
     });
     if (!result.ok) return { ok: false, error: result.error };
-    await writeProposal(squadDataHome(), result.proposal);
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    await writeProposal(scopeDataHome(home, scopeId), result.proposal);
     await refreshWorkflow?.("squad-cast");
     return { ok: true, data: { effect: "open-canvas", key: CAST_KEY, title: "Proposed squad" } };
   } catch (e) {
@@ -1182,13 +1216,16 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
 // distinct character from the same ensemble.
 async function approveCastAction(): Promise<RibActionResult> {
   try {
-    const proposal = await readProposal(squadDataHome());
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    const scopedHome = scopeDataHome(home, scopeId);
+    const proposal = await readProposal(scopedHome);
     if (!proposal) return { ok: false, error: "no proposal to approve — cast a squad first" };
     const at = new Date().toISOString();
     const records: MemberRecord[] = [];
     for (const m of proposal.members) {
       records.push(
-        await themedRecord({
+        await themedRecord(scopedHome, {
           name: m.name,
           role: m.role,
           charter: m.charter,
@@ -1199,8 +1236,8 @@ async function approveCastAction(): Promise<RibActionResult> {
         }),
       );
     }
-    const outcome = await scaffoldRoster(membersDir(), records);
-    await clearProposal(squadDataHome());
+    const outcome = await scaffoldRoster(scopeMembersDir(home, scopeId), records);
+    await clearProposal(scopedHome);
     await refreshWorkflow?.("squad-roster");
     await refreshWorkflow?.("squad-cast");
     return {
@@ -1219,7 +1256,9 @@ async function approveCastAction(): Promise<RibActionResult> {
 // Discard-cast: drop the pending proposal and refresh the (now idle) cast panel.
 async function discardCastAction(): Promise<RibActionResult> {
   try {
-    await clearProposal(squadDataHome());
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    await clearProposal(scopeDataHome(home, scopeId));
     await refreshWorkflow?.("squad-cast");
     return { ok: true, data: { discarded: true } };
   } catch (e) {
@@ -1234,7 +1273,9 @@ async function setModelAction(action: RibAction): Promise<RibActionResult> {
   const model = asNonEmptyString(payload.model);
   const provider = asNonEmptyString(payload.provider);
   try {
-    await setMemberModel(membersDir(), slug, { model, provider });
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    await setMemberModel(scopeMembersDir(home, scopeId), slug, { model, provider });
     await refreshWorkflow?.("squad-roster");
     return { ok: true, data: { slug, ...(model ? { model } : {}) } };
   } catch (e) {
@@ -1246,16 +1287,19 @@ async function retireAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const slug = asNonEmptyString(payload.slug);
   if (!slug) return { ok: false, error: "retire requires payload { slug }" };
+  const home = squadDataHome();
+  const scopeId = selectedScopeId(await readSelectedProject(home));
+  const scopedHome = scopeDataHome(home, scopeId);
   try {
-    await retireMember(membersDir(), slug);
+    await retireMember(scopeMembersDir(home, scopeId), slug);
     // Free the cast name so the ensemble can reuse it (fail-soft, never throws).
-    await retireCastingName(squadDataHome(), slug);
+    await retireCastingName(scopedHome, slug);
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
     return { ok: true, data: { slug } };
   } catch (e) {
     // retireMember throws when the dir is already gone, but a registry entry can linger
     // (a phantom reservation); free the cast name here too, same as the tool path.
-    await retireCastingName(squadDataHome(), slug);
+    await retireCastingName(scopedHome, slug);
     return { ok: false, error: errText(e) };
   }
 }
