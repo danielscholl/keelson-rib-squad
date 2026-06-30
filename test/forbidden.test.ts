@@ -15,6 +15,9 @@ describe("isForbiddenGitCommand — force-push", () => {
       "git push origin +main", // forced refspec, no flag at all
       "git push origin +HEAD:refs/heads/main",
       "GIT_DIR=/x git push --force", // leading env assignment
+      "GIT_DIR=/x ! git push --force", // env assignment THEN a grouping token (interleaved)
+      "VAR=1 { git push --force; }", // env assignment THEN a brace group
+      "! GIT_DIR=/x git push --force", // grouping token THEN an env assignment
       "cd /tmp && git push --force", // chained
       "echo hi; git push -f", // chained on ;
     ]) {
@@ -50,6 +53,44 @@ describe("isForbiddenGitCommand — gh self-merge", () => {
   });
 });
 
+describe("isForbiddenGitCommand — subshell / brace grouping", () => {
+  test("denies a forbidden op wrapped in a subshell or brace group", () => {
+    for (const cmd of [
+      "( git push --force )", // subshell
+      "( git push -f origin main )",
+      "{ git push --force; }", // brace group
+      "{ git push -f origin main ; }",
+      "( gh pr merge 1 )",
+    ]) {
+      expect(isForbiddenGitCommand(cmd)).toBe(true);
+    }
+  });
+});
+
+describe("isForbiddenGitCommand — command substitution must not mask a force-push", () => {
+  test("a `$(...)` in the args does not hide the surrounding force-push", () => {
+    // Parens are NOT split boundaries (splitting mid-`$(...)` would tear the force flag into
+    // its own segment and let the push slip past) — these must stay blocked.
+    for (const cmd of [
+      "git push origin $(git symbolic-ref --short HEAD) --force",
+      'git -C "$(git rev-parse --show-toplevel)" push --force',
+    ]) {
+      expect(isForbiddenGitCommand(cmd)).toBe(true);
+    }
+  });
+});
+
+describe("isForbiddenGitCommand — gh GraphQL self-merge", () => {
+  test("denies the mergePullRequest / enablePullRequestAutoMerge mutations", () => {
+    for (const cmd of [
+      `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`,
+      `gh api graphql -f query='mutation Foo($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { actor { login } } }'`,
+    ]) {
+      expect(isForbiddenGitCommand(cmd)).toBe(true);
+    }
+  });
+});
+
 describe("isForbiddenGitCommand — allowed (ordinary) ops are NOT denied", () => {
   test("ordinary pushes, commits, PR creation, and reads pass", () => {
     for (const cmd of [
@@ -59,10 +100,19 @@ describe("isForbiddenGitCommand — allowed (ordinary) ops are NOT denied", () =
       "git push --set-upstream origin feature",
       "git push origin main:main", // normal (non-forced) refspec
       "git commit -m 'wip'",
+      "git commit -m '(wip)'", // parens inside a quoted arg must not look like a subshell
       "git status",
+      "(ls -la)", // a benign subshell stays allowed
+      "! git push origin main", // a non-force push, negated, is still an ordinary push
       "gh pr create --fill",
       "gh api repos/o/r/pulls/1", // GET, no /merge
       "gh api repos/o/r/pulls/1/merge", // bare GET on the merge endpoint (checks status)
+      `gh api graphql -f query='query { repository(owner:"o",name:"r") { id } }'`, // a read query
+      // The GraphQL gate is segment-scoped, so merely MENTIONING the mutation in a commit
+      // message or PR/issue body must not block these ordinary ops.
+      'git commit -m "refactor gh api graphql mergePullRequest helper"',
+      'gh pr create --title "Add mergePullRequest detector" --body "blocks gh api graphql mergePullRequest"',
+      'gh issue comment 5 --body "do not call mergePullRequest via gh api graphql"',
     ]) {
       expect(isForbiddenGitCommand(cmd)).toBe(false);
     }
