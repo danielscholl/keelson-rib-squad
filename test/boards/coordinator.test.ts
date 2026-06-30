@@ -227,6 +227,72 @@ describe("buildCoordinatorBoard active layout", () => {
   });
 });
 
+type CardItem = {
+  title: string;
+  dot?: string;
+  pill?: { label: string; tone?: string };
+  fields?: { label?: string; value: string | number | boolean | null }[];
+  reason?: { label?: string; text: string };
+};
+
+function cardsTitled(board: Board, title: string): CardItem[] {
+  const section = board.sections.find((s) => s.kind === "cards" && s.title === title);
+  return section?.kind === "cards" ? (section.items as CardItem[]) : [];
+}
+
+describe("buildCoordinatorBoard in-flight card", () => {
+  test("an active ledger with inFlight renders one 'In flight' card before the Transcript", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "active",
+        round: 3,
+        inFlight: { round: 3, speaker: "atlas", action: "coding", instruction: "edit the loader" },
+        transcript: [entry({ round: 2, kind: "coordinator", text: "planning" })],
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+
+    const cards = cardsTitled(board, "In flight");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.title).toBe("atlas");
+    expect(cards[0]?.pill?.label).toBe("coding");
+    expect(cards[0]?.fields?.some((f) => f.value === "R3")).toBe(true);
+    expect(cards[0]?.reason?.text).toContain("edit the loader");
+
+    // "What's happening now" sits immediately above the history.
+    const titles = sectionTitles(board);
+    expect(titles.indexOf("In flight")).toBeLessThan(titles.indexOf("Transcript"));
+  });
+
+  test("an in-flight card with no speaker falls back to coordinator and omits a reason without instruction", () => {
+    const board = buildCoordinatorBoard(
+      ledger({ status: "active", inFlight: { round: 0, action: "working" } }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const cards = cardsTitled(board, "In flight");
+    expect(cards[0]?.title).toBe("coordinator");
+    expect(cards[0]?.reason).toBeUndefined();
+  });
+
+  test("an active ledger without inFlight renders no in-flight card", () => {
+    const board = buildCoordinatorBoard(ledger({ status: "active", round: 2 }));
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(cardsTitled(board, "In flight")).toHaveLength(0);
+  });
+
+  test("a terminal ledger with a stray inFlight shows no in-flight card (guarded by status)", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "done",
+        summary: "shipped it",
+        inFlight: { round: 4, speaker: "atlas", action: "coding", instruction: "edit" },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(cardsTitled(board, "In flight")).toHaveLength(0);
+  });
+});
+
 describe("buildCoordinatorBoard terminal layouts", () => {
   test("done leads with the Standup, shows a green Verification and worked-by", () => {
     const board = buildCoordinatorBoard(
