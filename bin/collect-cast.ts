@@ -9,7 +9,8 @@ import { buildCastBoard } from "../src/boards/cast.ts";
  * never a throw.
  */
 import { readProposal } from "../src/cast.ts";
-import { squadDataHome } from "../src/paths.ts";
+import { scopeDataHome, squadDataHome } from "../src/paths.ts";
+import { readSelectedProject, selectedScopeId } from "../src/scope.ts";
 
 async function main() {
   // The squad-cast bash node bakes the resolved data home in as argv[2] (the same
@@ -17,7 +18,8 @@ async function main() {
   // proposal from it without resolving the home itself. Fall back to squadDataHome()
   // for a manual/standalone run.
   const home = process.argv[2]?.trim() || squadDataHome();
-  const proposal = await readProposal(home).catch(() => undefined);
+  const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
+  const proposal = await readProposal(scopeDataHome(home, scopeId)).catch(() => undefined);
   process.stdout.write(JSON.stringify(buildCastBoard(proposal)));
 }
 

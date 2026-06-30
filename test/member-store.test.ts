@@ -20,6 +20,7 @@ import {
   setMemberModel,
   writeMemory,
 } from "../src/member-store.ts";
+import { DEFAULT_SCOPE_ID, scopeMembersDir } from "../src/paths.ts";
 
 let root: string;
 
@@ -365,5 +366,28 @@ describe("scaffoldRoster (batch)", () => {
     expect(result.created).toEqual(["a", "b"]);
     expect(result.truncated).toBe(2);
     expect(await readMember(root, "c")).toBeUndefined();
+  });
+});
+
+describe("scope isolation", () => {
+  let home: string;
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "squad-scope-store-"));
+  });
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  test("the default scope writes to the legacy <home>/members tree", async () => {
+    expect(scopeMembersDir(home, DEFAULT_SCOPE_ID)).toBe(join(home, "members"));
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), record());
+    // The legacy path is where the member lands — no scope subtree for the sentinel.
+    expect((await readMembers(join(home, "members"))).map((m) => m.slug)).toEqual(["scout"]);
+  });
+
+  test("a member scaffolded into scope A is invisible from scope B", async () => {
+    await scaffoldMember(scopeMembersDir(home, "alpha"), record({ slug: "ana", name: "Ana" }));
+    expect((await readMembers(scopeMembersDir(home, "alpha"))).map((m) => m.slug)).toEqual(["ana"]);
+    expect(await readMembers(scopeMembersDir(home, "beta"))).toEqual([]);
   });
 });

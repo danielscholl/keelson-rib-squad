@@ -24,6 +24,7 @@ import {
   saveLedger,
 } from "../src/coordinator.ts";
 import type { DispatchOutcome } from "../src/dispatch.ts";
+import { DEFAULT_SCOPE_ID, scopeDataHome } from "../src/paths.ts";
 import type { Member } from "../src/types.ts";
 
 const NOW = "2026-06-27T00:00:00.000Z";
@@ -225,6 +226,25 @@ describe("ledger persistence", () => {
   test("corrupt file loads as undefined (start fresh, no throw)", async () => {
     await writeFile(join(home, "coordinator-ledger.json"), "{ torn json");
     expect(await loadLedger(home)).toBeUndefined();
+  });
+
+  test("the default scope's data home is the legacy ledger path (no-op)", async () => {
+    expect(scopeDataHome(home, DEFAULT_SCOPE_ID)).toBe(home);
+    const ledger: CoordinatorLedger = {
+      task: "ship it",
+      facts: [],
+      plan: [],
+      round: 0,
+      stallCount: 0,
+      resetCount: 0,
+      status: "active",
+      transcript: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    // Saving under the default-scoped home is byte-for-byte the legacy bare-home path.
+    await saveLedger(scopeDataHome(home, DEFAULT_SCOPE_ID), ledger);
+    expect(await loadLedger(home)).toEqual(ledger);
   });
 });
 
