@@ -917,6 +917,58 @@ describe("runCoordinator loop", () => {
     );
   });
 
+  test("#63: review prompt requires a reproducible defect and a PASS-by-default when unsubstantiated", async () => {
+    const d = fakeDispatch("RAI VERDICT: PASS\nno blocking defect found");
+    await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+    });
+    expect(d.calls[0]?.instruction).toMatch(/reproducible/i);
+    expect(d.calls[0]?.instruction).toMatch(/cannot identify or substantiate/i);
+  });
+
+  test("#63: max-rounds with an unresolved BLOCK and a GREEN floor flags an unsubstantiated review", async () => {
+    const d = fakeDispatch("RAI VERDICT: BLOCK\nsrc/x.ts:12 unsafe default");
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+      getExec: fakeExec(0, "all good"),
+      verify: ["bun run test"],
+      limits: { maxRounds: 4 },
+    });
+    expect(res.status).toBe("max-rounds");
+    // The deterministic floor passed, so the ceiling terminal must name the blocker as an
+    // unverified review rather than terminating silently (issue #63).
+    expect(res.ledger.summary ?? "").toMatch(/deterministic floor is GREEN/i);
+    expect(res.ledger.summary ?? "").toMatch(/unsubstantiated or unverified review/i);
+  });
+
+  test("#63: max-rounds with an unresolved BLOCK and a RED floor does not claim the artifact passes", async () => {
+    const d = fakeDispatch("RAI VERDICT: BLOCK\nsrc/x.ts:12 unsafe default");
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+      getExec: fakeExec(1, "1 fail"),
+      verify: ["bun run test"],
+      limits: { maxRounds: 4 },
+    });
+    expect(res.status).toBe("max-rounds");
+    expect(res.ledger.summary ?? "").toMatch(/RED deterministic check/i);
+    expect(res.ledger.summary ?? "").not.toMatch(/passes on its own/i);
+  });
+
   test("review gate: no new code after a clean review does not re-run review", async () => {
     const d = fakeDispatch("RAI VERDICT: PASS\nno blocking defect found");
     let verifyCalls = 0;
