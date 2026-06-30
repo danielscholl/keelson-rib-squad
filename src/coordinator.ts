@@ -444,6 +444,9 @@ export interface RunCoordinatorOptions {
   reflectAtClose?: (contributions: readonly MemberContribution[]) => Promise<readonly string[]>;
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
+  // Best-effort progress publisher invoked after each ledger persist so the host can push a
+  // fresh Run-loop board per round. Undefined leaves persistence byte-for-byte as today.
+  publish?: () => void | Promise<void>;
 }
 
 export interface RunCoordinatorResult {
@@ -945,6 +948,19 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       }));
 
+  const persist = async (next: CoordinatorLedger): Promise<void> => {
+    await saveLedger(opts.dataHome, next);
+    // Fire-and-forget: the live board refresh is best-effort and must never block or stall the
+    // run loop (a try/catch can't rescue a hung refresh — only not awaiting it can).
+    void (async () => {
+      try {
+        await opts.publish?.();
+      } catch {
+        // best-effort
+      }
+    })();
+  };
+
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
   const exec = opts.getExec;
   const runStartTree =
@@ -954,7 +970,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           const captured = await captureWorkingTreeTree(exec, project.rootPath);
           if (captured.ok) {
             ledger = { ...ledger, baselineTree: captured.tree, updatedAt: now() };
-            await saveLedger(opts.dataHome, ledger);
+            await persist(ledger);
           }
           return captured;
         })()
@@ -972,7 +988,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       // Persist a TERMINAL status so a same-task re-run starts fresh instead of
       // resuming this ceiling-hit ledger and short-circuiting straight back here.
       ledger = { ...ledger, status: RUN_STATUS_MAX_ROUNDS, updatedAt: now() };
-      await saveLedger(opts.dataHome, ledger);
+      await persist(ledger);
       break;
     }
 
@@ -1057,7 +1073,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             round: ledger.round + 1,
             updatedAt: now(),
           };
-          await saveLedger(opts.dataHome, ledger);
+          await persist(ledger);
           continue;
         }
         const review = await dispatch(
@@ -1086,7 +1102,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         };
         if (blocked || !hadUsableOutput) {
           ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
-          await saveLedger(opts.dataHome, ledger);
+          await persist(ledger);
           continue;
         }
       }
@@ -1132,13 +1148,13 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
               summary: `verification failed after ${failures} attempts: ${v.command} (exit ${v.exitCode})`,
               updatedAt: now(),
             };
-            await saveLedger(opts.dataHome, ledger);
+            await persist(ledger);
             break;
           }
           // Veto the manager's done: advance the round and hand the failure back so the next
           // manager turn must fix the red build rather than re-declare done on it.
           ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
-          await saveLedger(opts.dataHome, ledger);
+          await persist(ledger);
           continue;
         }
         // Green: clear the failure counter, then fall through to accept done.
@@ -1206,11 +1222,11 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
               summary: `change-quality failed after ${failures} attempts: ${summary}`,
               updatedAt: now(),
             };
-            await saveLedger(opts.dataHome, ledger);
+            await persist(ledger);
             break;
           }
           ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
-          await saveLedger(opts.dataHome, ledger);
+          await persist(ledger);
           continue;
         }
         ledger = { ...ledger, changeQualityFailures: 0, updatedAt: now() };
@@ -1303,7 +1319,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           }
         }
       }
-      await saveLedger(opts.dataHome, ledger);
+      await persist(ledger);
       break;
     }
 
@@ -1339,7 +1355,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         transcript,
         updatedAt: now(),
       };
-      await saveLedger(opts.dataHome, ledger);
+      await persist(ledger);
       continue;
     }
 
@@ -1440,7 +1456,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       ledger = { ...ledger, failedSteps: [] };
     }
     ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
-    await saveLedger(opts.dataHome, ledger);
+    await persist(ledger);
   }
 
   const provenance = summarizeProvenance(ledger.transcript);
