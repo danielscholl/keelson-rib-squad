@@ -313,6 +313,61 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.facts.some((f) => f.includes("built it"))).toBe(true);
   });
 
+  test("invokes the publish seam after each ledger persist (per-round liveness)", async () => {
+    let publishCount = 0;
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X","facts":["uses bun"]}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: fakeDispatch("built it").fn,
+      publish: () => {
+        publishCount += 1;
+      },
+    });
+    expect(res.status).toBe("done");
+    // One persist closes the dispatch round; one persists the terminal done state.
+    expect(publishCount).toBeGreaterThanOrEqual(2);
+    expect(publishCount).toBeGreaterThanOrEqual(res.rounds);
+  });
+
+  test("a rejecting publish seam never breaks the run (best-effort)", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch: fakeDispatch("built it").fn,
+      publish: async () => {
+        throw new Error("publish boom");
+      },
+    });
+    expect(res.status).toBe("done");
+    expect(res.summary).toBe("shipped");
+  });
+
+  test("publishes on a non-done terminal persist (max-rounds ceiling)", async () => {
+    let publishCount = 0;
+    const res = await runCoordinator({
+      ...base(),
+      // Never satisfied but always names a step, so the loop dispatches each round until the
+      // ceiling persists the max-rounds terminal — a persist path distinct from done.
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}',
+      ]),
+      dispatch: fakeDispatch().fn,
+      limits: { maxRounds: 2, maxStall: 99, maxResets: 99 },
+      publish: () => {
+        publishCount += 1;
+      },
+    });
+    expect(res.status).toBe("max-rounds");
+    // Two dispatch-round persists + the terminal max-rounds persist.
+    expect(publishCount).toBeGreaterThanOrEqual(3);
+  });
+
   test("a re-plan is recorded, then exhausted resets give up", async () => {
     const d = fakeDispatch();
     const res = await runCoordinator({

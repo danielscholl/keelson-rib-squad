@@ -608,6 +608,9 @@ function makeCoordinateTool(
           ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
           ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
           abortSignal: ctx.abortSignal,
+          publish: async () => {
+            await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+          },
           ...(project ? { project } : {}),
           ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
           ...(memorySeam ? { getMemory: memorySeam } : {}),
