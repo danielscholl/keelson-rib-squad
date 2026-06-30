@@ -13,7 +13,7 @@ import type {
 import { CODE_TOOLS, memberCanCode, runCodeTurn } from "../src/code.ts";
 import rib from "../src/index.ts";
 import { type MemberRecord, scaffoldMember } from "../src/member-store.ts";
-import { membersDir, setSquadDataHome } from "../src/paths.ts";
+import { scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import type { Member } from "../src/types.ts";
 
 async function* stream(text: string): AsyncGenerator<MessageChunk> {
@@ -212,7 +212,9 @@ describe("squad_code tool", () => {
       createdAt: "2026-06-27T00:00:00.000Z",
       ...(rec.tools && rec.tools.length > 0 ? { tools: rec.tools } : {}),
     };
-    await scaffoldMember(membersDir(), record);
+    // A project-bound run reads the team cast FOR that project (projects/p1/members),
+    // not the default scope — these tests boot the sole project "p1".
+    await scaffoldMember(scopeMembersDir(home, "p1"), record);
   }
 
   beforeEach(async () => {
@@ -233,7 +235,8 @@ describe("squad_code tool", () => {
     const tools = boot([project("p1", "keelson", "/repo/keelson")]);
     await add({ slug: "atlas", name: "Atlas", tools: ["code", "read"] });
     const { ctx, out } = capture();
-    await tool(tools).execute({ member: "atlas", task: "add a flag" }, ctx);
+    // An explicit project binds that repo + its scope (projects/p1/members).
+    await tool(tools).execute({ member: "atlas", task: "add a flag", project: "keelson" }, ctx);
     expect(out().isError).toBe(false);
     expect(lastReq?.cwd).toBe("/repo/keelson");
     expect(lastReq?.allowedDirectories).toEqual(["/repo/keelson"]);
@@ -245,7 +248,7 @@ describe("squad_code tool", () => {
     const tools = boot([project("p1", "keelson", "/repo/keelson")]);
     await add({ slug: "vera", name: "Vera", tools: ["read"] });
     const { ctx, out } = capture();
-    await tool(tools).execute({ member: "vera", task: "x" }, ctx);
+    await tool(tools).execute({ member: "vera", task: "x", project: "keelson" }, ctx);
     expect(out().isError).toBe(true);
     expect(out().content).toContain('lacks the "code" capability');
     expect(lastReq).toBeUndefined();
@@ -254,7 +257,7 @@ describe("squad_code tool", () => {
   test("refuses an unknown member", async () => {
     const tools = boot([project("p1", "keelson", "/repo/keelson")]);
     const { ctx, out } = capture();
-    await tool(tools).execute({ member: "ghost", task: "x" }, ctx);
+    await tool(tools).execute({ member: "ghost", task: "x", project: "keelson" }, ctx);
     expect(out().isError).toBe(true);
     expect(out().content).toContain("unknown member");
   });
@@ -263,17 +266,28 @@ describe("squad_code tool", () => {
     const tools = boot([project("p1", "keelson", "/repo/keelson")]);
     await add({ slug: "atlas", name: "Atlas", tools: ["code"], status: "inactive" });
     const { ctx, out } = capture();
-    await tool(tools).execute({ member: "atlas", task: "x" }, ctx);
+    await tool(tools).execute({ member: "atlas", task: "x", project: "keelson" }, ctx);
     expect(out().isError).toBe(true);
     expect(out().content).toContain("not active");
   });
 
-  test("asks which project when several exist and none is selected", async () => {
+  test("no selection + no explicit project resolves to the default scope (no repo to code)", async () => {
     const tools = boot([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
-    await add({ slug: "atlas", name: "Atlas", tools: ["code"] });
+    // A code-capable member on the DEFAULT scope; with no selection and no arg the run
+    // resolves to the default scope (no auto-pick), finds the member, but has no repo.
+    await scaffoldMember(scopeMembersDir(home, "default"), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas\n\n## Role\n\nx",
+      status: "active",
+      createdAt: "2026-06-27T00:00:00.000Z",
+      tools: ["code"],
+    });
     const { ctx, out } = capture();
     await tool(tools).execute({ member: "atlas", task: "x" }, ctx);
     expect(out().isError).toBe(true);
+    expect(out().content).toContain("no project bound");
     expect(lastReq).toBeUndefined();
   });
 

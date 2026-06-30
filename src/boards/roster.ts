@@ -1,9 +1,15 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import { themeLabel } from "../casting/themes.ts";
 import { stableHash } from "../genesis.ts";
+import { DEFAULT_SCOPE_ID } from "../paths.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
 import type { Member } from "../types.ts";
 import { CAST_PROPOSE_ACTION } from "./cast.ts";
+
+// The picker verb: dispatches the chosen scope to onAction, which persists the
+// selection every scoped data path keys on. Shared with onAction so the type can't
+// drift from its handler.
+export const SELECT_PROJECT_ACTION = "select-project";
 
 // The full canvas tone ramp, used to give each member a deterministic identity dot
 // hashed from its slug — a stable per-member hue, not a status.
@@ -38,13 +44,21 @@ export interface RosterPulse {
 // inline, Set model + Retire alongside). `pulse`, when present, leads the board
 // with a calm stats section. Validated against canvasViewSchema in tests; the
 // producer never parses (validation lives at the binding edge).
-export function buildRosterBoard(members: readonly Member[], pulse?: RosterPulse): CanvasBoardView {
+export function buildRosterBoard(
+  members: readonly Member[],
+  pulse?: RosterPulse,
+  picker?: { projects: { id: string; name: string }[]; activeScopeId: string },
+): CanvasBoardView {
   const sections: CanvasBoardView["sections"] =
     members.length === 0 ? coldStartSections() : [{ kind: "cards", items: members.map(cardFor) }];
 
   // The pulse leads the board so the team size + active split read first; calm by
   // design — a zero count tones neutral so an idle squad doesn't shout.
   if (pulse) sections.unshift(pulseSection(pulse));
+
+  // The picker tops the board when projects exist, so the team you are looking at
+  // and the one you can switch to read before the roster itself.
+  if (picker) sections.unshift(projectPickerSection(picker.projects, picker.activeScopeId));
 
   return {
     view: "board",
@@ -70,6 +84,34 @@ function pulseSection(pulse: RosterPulse): CanvasBoardView["sections"][number] {
       { label: "Members", value: pulse.members, tone: toned(pulse.members, "brand") },
       { label: "Active", value: pulse.active, tone: toned(pulse.active, "ok") },
       { label: "Inactive", value: pulse.inactive, tone: toned(pulse.inactive, "neutral") },
+    ],
+  };
+}
+
+// The project switcher: an `actions` row of scope buttons — a leading "default"
+// (the legacy flat scope) plus one per project. The active scope is marked by a
+// "✓ " label prefix and a brand tone (there is no `current` field on actions).
+export function projectPickerSection(
+  projects: readonly { id: string; name: string }[],
+  activeScopeId: string,
+): CanvasBoardView["sections"][number] {
+  const button = (scopeId: string, name: string, active: boolean) => {
+    // Canvas `label` is min(1); an empty project name would blank the whole roster
+    // board, so every button falls back to the scope id, then a constant.
+    const display = name.trim() || scopeId || "untitled";
+    return {
+      type: SELECT_PROJECT_ACTION,
+      label: active ? `✓ ${display}` : display,
+      ...(active ? { tone: "brand" as CanvasTone } : {}),
+      payload: { scopeId },
+    };
+  };
+  return {
+    kind: "actions",
+    title: "Project",
+    items: [
+      button(DEFAULT_SCOPE_ID, "default", activeScopeId === DEFAULT_SCOPE_ID),
+      ...projects.map((p) => button(p.id, p.name, activeScopeId === p.id)),
     ],
   };
 }
