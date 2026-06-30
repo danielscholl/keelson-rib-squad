@@ -453,8 +453,14 @@ export interface RunCoordinatorOptions {
   limits?: Partial<OrchestratorLimits>;
   perTurnTimeoutMs?: number;
   abortSignal?: AbortSignal;
-  // Injected for testability; default binds dispatchFanout to the live seams.
-  dispatch?: (members: Member[], instruction: string) => Promise<DispatchOutcome>;
+  // Injected for testability; default binds dispatchFanout to the live seams. The optional
+  // third arg lets the deterministic review gate force diff capture (isReview) without the
+  // ad-hoc dispatch path needing it — an injected 2-arg fake still satisfies this type.
+  dispatch?: (
+    members: Member[],
+    instruction: string,
+    opts?: { isReview?: boolean },
+  ) => Promise<DispatchOutcome>;
   // Injected for testability; default binds runCodeTurn when a project is present.
   code?: (member: Member, instruction: string) => Promise<CodeStepOutcome>;
   // Injected for testability; default binds authorWorkflow (no project needed).
@@ -897,7 +903,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   // prefixed with the team's recalled memory so execution benefits from it too.
   const dispatch =
     opts.dispatch ??
-    ((members: Member[], instruction: string) =>
+    ((members: Member[], instruction: string, dopts?: { isReview?: boolean }) =>
       dispatchFanout({
         runAgentTurn: opts.runAgentTurn,
         membersRoot: opts.membersRoot,
@@ -907,6 +913,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         // Pass the project so a dispatched member can READ the repo to ground its answer (a
         // reviewer that can't open the diff is the live gap this closes); absent → text-only.
         ...(project ? { project: { name: project.name, rootPath: project.rootPath } } : {}),
+        ...(dopts?.isReview !== undefined ? { isReview: dopts.isReview } : {}),
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       }));
 
@@ -1160,6 +1167,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         const review = await dispatch(
           reviewers,
           "Adversarial review the current project diff and try to refute it. Cite exact file:line evidence. Only emit the sentinel RAI VERDICT: BLOCK when you can name a SPECIFIC, reproducible defect — a concrete failing input or a wrong line and why it is wrong — not a hunch and not an inability to verify. If your refutation attempts all pass and you cannot identify or substantiate a concrete blocking defect, emit RAI VERDICT: PASS and record any residual concerns as caveats rather than blocking. If no blocker remains, clearly say RAI VERDICT: PASS.",
+          // The gate is a review by construction — capture the diff regardless of how this
+          // instruction reads, instead of relying on the text containing a review keyword.
+          { isReview: true },
         );
         const reviewProvider = distinctProviders(
           review.perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0),

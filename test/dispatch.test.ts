@@ -506,4 +506,153 @@ describe("dispatchFanout", () => {
     expect(prompt).toContain("RAI VERDICT: BLOCK");
     expect(prompt).toContain("shared mutable object");
   });
+
+  test("a review surfaces brand-new untracked files the tracked diff would hide (#59)", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedProjectRepoWithDiff("project-untracked");
+    // A new file git does not track yet — never present in `git diff` (tracked).
+    await writeFile(join(repo, "added-module.ts"), "export const ADDED = 'new module body';\n");
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change and find defects",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+    });
+    const prompt = reqs[0]?.prompt ?? "";
+    expect(prompt).toContain("Untracked (new) files");
+    expect(prompt).toContain("added-module.ts");
+    // The file's actual content reaches the reviewer as a new-file diff, not just its name.
+    expect(prompt).toContain("new module body");
+  });
+
+  test("a review diff is capped so a large change cannot blow the reviewer's context (#59)", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = join(root, "project-bigdiff");
+    await mkdir(repo, { recursive: true });
+    const file = join(repo, "big.ts");
+    await writeFile(file, "export const X = 0;\n");
+    await execFileAsync("git", ["init"], { cwd: repo });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: repo });
+    await execFileAsync("git", ["config", "user.name", "Dispatch Test"], { cwd: repo });
+    await execFileAsync("git", ["add", "big.ts"], { cwd: repo });
+    await execFileAsync("git", ["commit", "-m", "init"], { cwd: repo });
+    const filler = Array.from(
+      { length: 700 },
+      (_, i) => `// filler line ${i} ${"=".repeat(40)}`,
+    ).join("\n");
+    await writeFile(file, `START_MARKER\n${filler}\nZZZ_END_MARKER_ZZZ\n`);
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+    });
+    const prompt = reqs[0]?.prompt ?? "";
+    expect(prompt).toContain("_[tracked diff truncated");
+    // The cut tail (the end of the oversized diff) does not reach the turn.
+    expect(prompt).not.toContain("ZZZ_END_MARKER_ZZZ");
+    // The cap actually holds: the captured diff (content + truncation note) stays within the
+    // 24k budget, not budget + note overhead — the section between the prompt's markers.
+    const captured =
+      prompt.split("## CODE DIFF UNDER REVIEW\n")[1]?.split("\n\n## ADVERSARIAL")[0] ?? "";
+    expect(captured.length).toBeLessThanOrEqual(24_000);
+  });
+
+  test("a large tracked diff cannot crowd out new-file visibility (#59)", async () => {
+    // Regression for the adversarial-review finding: with a single shared cap that truncates
+    // from the front, an oversized tracked diff dropped the whole untracked section (names
+    // included). The untracked section now has its own reserved budget, so new files survive.
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = join(root, "project-bigdiff-untracked");
+    await mkdir(repo, { recursive: true });
+    const file = join(repo, "big.ts");
+    await writeFile(file, "export const X = 0;\n");
+    await execFileAsync("git", ["init"], { cwd: repo });
+    await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: repo });
+    await execFileAsync("git", ["config", "user.name", "Dispatch Test"], { cwd: repo });
+    await execFileAsync("git", ["add", "big.ts"], { cwd: repo });
+    await execFileAsync("git", ["commit", "-m", "init"], { cwd: repo });
+    const filler = Array.from(
+      { length: 700 },
+      (_, i) => `// filler line ${i} ${"=".repeat(40)}`,
+    ).join("\n");
+    await writeFile(file, `${filler}\n`);
+    // A brand-new file added alongside the oversized tracked change.
+    await writeFile(join(repo, "secret-new.ts"), "export const SECRET = 'new file body';\n");
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+    });
+    const prompt = reqs[0]?.prompt ?? "";
+    // The tracked diff is capped...
+    expect(prompt).toContain("_[tracked diff truncated");
+    // ...but the new file's existence and body still reach the reviewer.
+    expect(prompt).toContain("Untracked (new) files");
+    expect(prompt).toContain("secret-new.ts");
+    expect(prompt).toContain("new file body");
+  });
+
+  test("isReview forces diff capture regardless of how the instruction reads (#59)", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedProjectRepoWithDiff("project-explicit-review");
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("ok")));
+    };
+    // A review step phrased WITHOUT any of the sniffed keywords — the heuristic would miss it.
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "is this change correct and safe to ship?",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+      isReview: true,
+    });
+    expect(reqs[0]?.prompt ?? "").toContain("## CODE DIFF UNDER REVIEW");
+  });
+
+  test("isReview:false suppresses capture even when the task reads like a review (#59)", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedProjectRepoWithDiff("project-suppressed-review");
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("ok")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review and audit this change", // keyword-laden, but explicitly NOT a review turn
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+      isReview: false,
+    });
+    expect(reqs[0]?.prompt ?? "").not.toContain("## CODE DIFF UNDER REVIEW");
+  });
 });
