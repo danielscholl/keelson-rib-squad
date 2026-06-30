@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { canvasViewSchema } from "@keelson/shared";
-import { buildCoordinatorBoard } from "../../src/boards/coordinator.ts";
-import type { CoordinatorLedger } from "../../src/coordinator.ts";
+import {
+  buildCoordinatorBoard,
+  identityTone,
+  outcomeTone,
+  transcriptTrailing,
+} from "../../src/boards/coordinator.ts";
+import type { CoordinatorEntry, CoordinatorLedger } from "../../src/coordinator.ts";
 
 const ledger = (over: Partial<CoordinatorLedger> = {}): CoordinatorLedger => ({
   task: "ship the search rib",
@@ -17,9 +22,29 @@ const ledger = (over: Partial<CoordinatorLedger> = {}): CoordinatorLedger => ({
   ...over,
 });
 
-function rowsTitled(board: ReturnType<typeof buildCoordinatorBoard>, title: string) {
+const entry = (over: Partial<CoordinatorEntry> = {}): CoordinatorEntry => ({
+  round: 0,
+  kind: "coordinator",
+  text: "thinking",
+  ...over,
+});
+
+type Board = ReturnType<typeof buildCoordinatorBoard>;
+type RowItem = {
+  icon?: string;
+  glyph?: string;
+  chip?: { label: string };
+  text: string;
+  trailing?: string;
+};
+
+function rowsTitled(board: Board, title: string): RowItem[] {
   const section = board.sections.find((s) => s.kind === "rows" && s.title === title);
-  return section?.kind === "rows" ? section.items : [];
+  return section?.kind === "rows" ? (section.items as RowItem[]) : [];
+}
+
+function sectionTitles(board: Board): (string | undefined)[] {
+  return board.sections.map((s) => ("title" in s ? s.title : undefined));
 }
 
 describe("buildCoordinatorBoard idle", () => {
@@ -31,7 +56,64 @@ describe("buildCoordinatorBoard idle", () => {
   });
 });
 
-describe("buildCoordinatorBoard with a ledger", () => {
+describe("identityTone / outcomeTone helpers", () => {
+  test("coordinator and absent speaker tone brand; a slug is stable", () => {
+    expect(identityTone("coordinator")).toBe("brand");
+    expect(identityTone(undefined)).toBe("brand");
+    expect(identityTone("atlas")).toBe(identityTone("atlas"));
+  });
+
+  test("outcomeTone reads a verify entry's verdict from its text", () => {
+    expect(outcomeTone(entry({ kind: "verify", text: "review came back BLOCK" }))).toBe("error");
+    expect(outcomeTone(entry({ kind: "verify", text: "checks passed" }))).toBe("ok");
+    expect(outcomeTone(entry({ kind: "verify", text: "ran the gate" }))).toBe("info");
+    expect(outcomeTone(entry({ kind: "replan", text: "rebuild" }))).toBe("caution");
+    expect(outcomeTone(entry({ kind: "code", text: "edited" }))).toBe("accent");
+  });
+
+  test("outcomeTone: fail/block wins unless the signal word is negated (clean review)", () => {
+    expect(
+      outcomeTone(entry({ kind: "verify", text: "review passed (no BLOCK verdict)\nshipped" })),
+    ).toBe("ok");
+    expect(outcomeTone(entry({ kind: "verify", text: "all checks green, nothing failed" }))).toBe(
+      "ok",
+    );
+    expect(
+      outcomeTone(entry({ kind: "verify", text: "review came back BLOCK: unsafe cast" })),
+    ).toBe("error");
+    expect(
+      outcomeTone(
+        entry({ kind: "verify", text: "verification FAILED — bun test exit 1: 3 failing" }),
+      ),
+    ).toBe("error");
+    expect(
+      outcomeTone(entry({ kind: "verify", text: "verification FAILED: 412 pass, 1 fail" })),
+    ).toBe("error");
+    expect(outcomeTone(entry({ kind: "verify", text: "419 pass / 1 fail" }))).toBe("error");
+  });
+
+  test("outcomeTone respects word boundaries (no substring false-match)", () => {
+    expect(outcomeTone(entry({ kind: "verify", text: "the failover node came up" }))).toBe("info");
+    expect(outcomeTone(entry({ kind: "verify", text: "passport check unrelated" }))).toBe("info");
+  });
+
+  test("transcriptTrailing renders round always, provider/diff only when present", () => {
+    expect(transcriptTrailing(entry({ round: 3 }))).toBe("R3");
+    expect(transcriptTrailing(entry({ round: 3, provider: "claude" }))).toBe("R3 · claude");
+    expect(
+      transcriptTrailing(
+        entry({ round: 3, provider: "claude", touched: { files: 1, insertions: 0, deletions: 0 } }),
+      ),
+    ).toBe("R3 · claude");
+    const full = transcriptTrailing(
+      entry({ round: 3, provider: "claude", touched: { files: 2, insertions: 7, deletions: 2 } }),
+    );
+    expect(full).toBe("R3 · claude · +7/−2");
+    expect(full).toContain("−");
+  });
+});
+
+describe("buildCoordinatorBoard active layout", () => {
   test("is a valid board; header carries the status pill + round chip", () => {
     const board = buildCoordinatorBoard(ledger({ status: "active", round: 3 }));
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
@@ -68,80 +150,71 @@ describe("buildCoordinatorBoard with a ledger", () => {
     ).toBe(true);
   });
 
-  test("a completed run shows the outcome and a done status", () => {
-    const board = buildCoordinatorBoard(
-      ledger({ status: "done", summary: "shipped it", round: 5 }),
-    );
-    expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(board.header?.status?.label).toBe("done");
-    expect(rowsTitled(board, "Outcome").some((i) => i.text.includes("shipped it"))).toBe(true);
-  });
-
-  test("renders served-provider provenance (Worked by) from code/dispatch entries", () => {
+  test("the Transcript is the hero: last section, speaker chips, R{round}/provider/diff trailing", () => {
     const board = buildCoordinatorBoard(
       ledger({
+        round: 4,
         transcript: [
-          { round: 0, kind: "code", speaker: "atlas", text: "edited", provider: "claude" },
-          { round: 1, kind: "dispatch", speaker: "vera", text: "reviewed", provider: "copilot" },
+          entry({ round: 1, kind: "coordinator", text: "planning the work" }),
+          entry({
+            round: 2,
+            kind: "code",
+            speaker: "atlas",
+            text: "edited the loader",
+            provider: "claude",
+            touched: { files: 2, insertions: 30, deletions: 4 },
+          }),
+          entry({ round: 3, kind: "verify", text: "checks passed" }),
         ],
       }),
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const worked = rowsTitled(board, "Worked by");
-    expect(worked.some((i) => i.text.includes("atlas (claude) coded"))).toBe(true);
-    expect(worked.some((i) => i.text.includes("vera (copilot) contributed"))).toBe(true);
+
+    const titles = sectionTitles(board);
+    expect(titles[titles.length - 1]).toBe("Transcript");
+
+    const rows = rowsTitled(board, "Transcript");
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.chip?.label).toBe("coordinator");
+    expect(rows[1]?.chip?.label).toBe("atlas");
+    expect(rows[1]?.trailing).toContain("R2");
+    expect(rows[1]?.trailing).toContain("claude");
+    expect(rows[1]?.trailing).toContain("+30/−4");
+    expect(rows[2]?.glyph).toBe("ok");
   });
 
-  test("renders a Verification section reflecting the gate result", () => {
-    const passed = buildCoordinatorBoard(
+  test("surfaces Verification while still active (a failed done-gate keeps the run going)", () => {
+    const board = buildCoordinatorBoard(
       ledger({
+        status: "active",
+        round: 4,
+        verifyFailures: 1,
         verification: {
-          command: "2 checks",
-          exitCode: 0,
-          passed: true,
-          summary: "2 checks passed",
-          atRound: 1,
-        },
-      }),
-    );
-    expect(canvasViewSchema.safeParse(passed).success).toBe(true);
-    expect(rowsTitled(passed, "Verification").some((i) => i.text.includes("passed"))).toBe(true);
-
-    const failed = buildCoordinatorBoard(
-      ledger({
-        status: "verification-failed",
-        verification: {
-          command: "bun run test",
+          command: "bun test",
           exitCode: 1,
           passed: false,
-          summary: "1 fail",
-          atRound: 2,
+          summary: "1 failing",
+          atRound: 4,
         },
       }),
     );
-    expect(canvasViewSchema.safeParse(failed).success).toBe(true);
-    expect(rowsTitled(failed, "Verification").some((i) => i.text.includes("FAILED"))).toBe(true);
-    expect(failed.header?.status?.label).toBe("verification failed");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const verify = rowsTitled(board, "Verification");
+    expect(verify).toHaveLength(1);
+    expect(verify[0]?.icon).toBe("✕");
   });
 
-  test("recent activity surfaces the transcript entries", () => {
+  test("an empty-string speaker never yields a schema-invalid empty chip label", () => {
     const board = buildCoordinatorBoard(
       ledger({
-        transcript: [
-          {
-            round: 0,
-            kind: "dispatch",
-            speaker: "atlas",
-            instruction: "do X",
-            text: "did the work",
-          },
-          { round: 1, kind: "replan", text: "stalled — rebuilding the plan" },
-        ],
+        transcript: [{ round: 1, kind: "code", speaker: "", text: "edited", provider: "claude" }],
       }),
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(rowsTitled(board, "Recent activity").length).toBeGreaterThanOrEqual(2);
-    expect(JSON.stringify(board)).toContain("did the work");
+    expect(rowsTitled(board, "Worked by").every((i) => (i.chip?.label.length ?? 0) > 0)).toBe(true);
+    expect(rowsTitled(board, "Transcript").every((i) => (i.chip?.label.length ?? 0) > 0)).toBe(
+      true,
+    );
   });
 
   test("omits empty sections with a bare ledger", () => {
@@ -150,5 +223,163 @@ describe("buildCoordinatorBoard with a ledger", () => {
     expect(rowsTitled(board, "Plan")).toHaveLength(0);
     expect(rowsTitled(board, "Findings")).toHaveLength(0);
     expect(rowsTitled(board, "Abandoned — do not resume")).toHaveLength(0);
+    expect(rowsTitled(board, "Transcript")).toHaveLength(0);
+  });
+});
+
+describe("buildCoordinatorBoard terminal layouts", () => {
+  test("done leads with the Standup, shows a green Verification and worked-by", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "done",
+        summary: "shipped it",
+        round: 5,
+        verification: {
+          command: "bun test",
+          exitCode: 0,
+          passed: true,
+          summary: "all green",
+          atRound: 5,
+        },
+        transcript: [entry({ kind: "code", speaker: "atlas", text: "edited", provider: "claude" })],
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.header?.status?.label).toBe("done");
+    expect(sectionTitles(board)[0]).toBe("Standup");
+    expect(rowsTitled(board, "Standup").some((i) => i.text.includes("shipped it"))).toBe(true);
+
+    const verify = rowsTitled(board, "Verification");
+    expect(verify[0]?.icon).toBe("✓");
+    expect(verify[0]?.glyph).toBe("ok");
+    expect(rowsTitled(board, "Worked by").length).toBeGreaterThan(0);
+  });
+
+  test("a done Verification section is boxed", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "done",
+        summary: "done",
+        verification: { command: "bun test", exitCode: 0, passed: true, summary: "", atRound: 1 },
+      }),
+    );
+    const section = board.sections.find((s) => s.kind === "rows" && s.title === "Verification");
+    expect(section?.kind === "rows" && section.boxed).toBe(true);
+  });
+
+  test("max-rounds shows an Advisory + green Verification and no action section", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "max-rounds",
+        round: 12,
+        verification: {
+          command: "bun test",
+          exitCode: 0,
+          passed: true,
+          summary: "green",
+          atRound: 12,
+        },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.header?.status?.label).toBe("max rounds");
+    expect(rowsTitled(board, "Advisory").length).toBe(1);
+    expect(rowsTitled(board, "Verification")[0]?.icon).toBe("✓");
+    expect(board.sections.some((s) => s.kind === "actions")).toBe(false);
+  });
+
+  test("verification-failed: error pill, a red Verification row, an Advisory, no actions", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "verification-failed",
+        round: 7,
+        verification: {
+          command: "bun run test",
+          exitCode: 1,
+          passed: false,
+          summary: "1 fail",
+          atRound: 7,
+        },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.header?.status?.tone).toBe("error");
+    expect(board.header?.status?.label).toBe("verification failed");
+
+    const verify = rowsTitled(board, "Verification");
+    expect(verify[0]?.icon).toBe("✕");
+    expect(verify[0]?.glyph).toBe("error");
+    expect(verify[0]?.trailing).toContain("exit 1");
+    expect(rowsTitled(board, "Advisory").length).toBe(1);
+    expect(board.sections.some((s) => s.kind === "actions")).toBe(false);
+  });
+
+  test("gave-up surfaces the summary and provenance", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "gave-up",
+        summary: "could not make progress",
+        transcript: [
+          entry({ kind: "dispatch", speaker: "vera", text: "looked", provider: "copilot" }),
+        ],
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.header?.status?.label).toBe("gave up");
+    expect(
+      rowsTitled(board, "Summary").some((i) => i.text.includes("could not make progress")),
+    ).toBe(true);
+    expect(rowsTitled(board, "Worked by").length).toBeGreaterThan(0);
+  });
+
+  test("Worked by uses identity chips and the provider as the trailing", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        transcript: [
+          entry({ kind: "code", speaker: "atlas", text: "edited", provider: "claude" }),
+          entry({ kind: "dispatch", speaker: "vera", text: "reviewed", provider: "copilot" }),
+        ],
+      }),
+    );
+    const worked = rowsTitled(board, "Worked by");
+    expect(worked.some((i) => i.chip?.label === "atlas" && i.trailing === "claude")).toBe(true);
+    expect(worked.some((i) => i.chip?.label === "vera" && i.trailing === "copilot")).toBe(true);
+  });
+
+  test("every terminal status produces a schema-valid board", () => {
+    const statuses: CoordinatorLedger["status"][] = [
+      "active",
+      "done",
+      "gave-up",
+      "max-rounds",
+      "verification-failed",
+      "change-quality-failed",
+    ];
+    for (const status of statuses) {
+      const board = buildCoordinatorBoard(
+        ledger({
+          status,
+          summary: "summary",
+          verification: {
+            command: "bun test",
+            exitCode: 1,
+            passed: false,
+            summary: "x",
+            atRound: 1,
+          },
+          transcript: [entry({ kind: "code", speaker: "atlas", text: "edit", provider: "claude" })],
+        }),
+      );
+      expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    }
+  });
+
+  test("a corrupt/unknown status still yields a valid board with a neutral pill", () => {
+    const forged = { ...ledger(), status: "bogus" } as unknown as CoordinatorLedger;
+    const board = buildCoordinatorBoard(forged);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.header?.status?.label).toBe("unknown");
+    expect(board.header?.status?.tone).toBe("neutral");
+    expect(JSON.stringify(board)).toContain("Unrecognized run status: bogus");
   });
 });
