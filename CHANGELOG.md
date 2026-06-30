@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.4.0...v0.5.0) (2026-06-30)
+
+
+### Added
+
+* **boards:** make the coordinator run loop observable ([#68](https://github.com/danielscholl/keelson-rib-squad/issues/68)) ([5650261](https://github.com/danielscholl/keelson-rib-squad/commit/56502611924583ae7bf97ca817b2a741d197d34d))
+* **change-quality:** deterministic regression guard at done-gate ([#62](https://github.com/danielscholl/keelson-rib-squad/issues/62)) ([69d816a](https://github.com/danielscholl/keelson-rib-squad/commit/69d816a518b91d7670ad19e0cbfe16e035c3e5cb)), closes [#52](https://github.com/danielscholl/keelson-rib-squad/issues/52)
+* **coordinator:** show a live in-flight card for the current turn ([#76](https://github.com/danielscholl/keelson-rib-squad/issues/76)) ([bc17270](https://github.com/danielscholl/keelson-rib-squad/commit/bc17270293463b990073ca38678427f463c185a7))
+* **coordinator:** stream the run-loop board after each ledger persist ([#75](https://github.com/danielscholl/keelson-rib-squad/issues/75)) ([dd85637](https://github.com/danielscholl/keelson-rib-squad/commit/dd856375053ba4059f6776b46b5dcc2b1a27617b))
+* **squad:** per-project squads with a project picker ([#79](https://github.com/danielscholl/keelson-rib-squad/issues/79)) ([285d6e9](https://github.com/danielscholl/keelson-rib-squad/commit/285d6e9452d2154fc75774387bb0abbbdc1a130d))
+
+
+### Fixed
+
+* **loop:** treat a repeated-identical outcome as a stall ([#65](https://github.com/danielscholl/keelson-rib-squad/issues/65)) ([0169254](https://github.com/danielscholl/keelson-rib-squad/commit/0169254bc55bbe78c0905ea1dd7e2460f7edc04c))
+* **review:** give the synthesis turn the project-bound read rail ([#66](https://github.com/danielscholl/keelson-rib-squad/issues/66)) ([5ee7c3a](https://github.com/danielscholl/keelson-rib-squad/commit/5ee7c3aa45fc7d76f6db94e31deaa16db51a22d5))
+* **review:** ground BLOCK verdicts; recognize green-but-blocked runs ([#64](https://github.com/danielscholl/keelson-rib-squad/issues/64)) ([6fbb9d1](https://github.com/danielscholl/keelson-rib-squad/commit/6fbb9d1b6db50ee4a8ce2c26fa74d83979b4bb2f))
+
 ## [0.4.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.3.0...v0.4.0) (2026-06-29)
 
 
