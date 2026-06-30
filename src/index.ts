@@ -1281,28 +1281,29 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   if (!getProjects) {
     return { ok: false, error: "casting needs the projects seam (unavailable on this harness)" };
   }
-  // Cast and the runs scope by the SAME source (the selection), so the team you cast is
-  // exactly the team a no-arg run uses. An explicit field overrides the repo to SCAN;
-  // the proposal still lands in the selection's scope (where approve reads it). A team
-  // can't be auto-composed without a repo, so a missing project fails closed.
+  // Casting is selection-driven: it scans the SELECTED project and the proposal lands in that
+  // same scope (where approve reads it), so the team is exactly the one a no-arg run uses. There
+  // is deliberately no free-text project override — that could scan one project but place the
+  // team in another (the #80 footgun). A team can't be auto-composed without a repo, so no
+  // selection fails closed.
   const selection = await readSelectedProject(squadDataHome());
-  const explicit = asNonEmptyString(payload.project);
-  let scanProject: Project;
-  if (explicit) {
-    const resolved = resolveProject(getProjects(), explicit);
-    if (!resolved.ok) return resolved;
-    scanProject = resolved.project;
-  } else if (selection?.projectId) {
-    const found = getProjects().find((p) => p.id === selection.projectId);
-    if (!found) {
-      return {
-        ok: false,
-        error: "selected project no longer exists — re-select a project to cast",
-      };
-    }
-    scanProject = found;
-  } else {
-    return { ok: false, error: "select a project to cast a team for" };
+  if (!selection?.projectId) {
+    // The default/"none" scope carries no projectId, so it can't be cast for — point the
+    // operator at the fix (the picker, or adding a project first) instead of a flat failure.
+    return {
+      ok: false,
+      error:
+        getProjects().length > 0
+          ? "select a project in the picker first — casting auto-composes a team for the selected project's repo"
+          : "add a project first (keelson project add), then select it to cast a team for it",
+    };
+  }
+  const scanProject = getProjects().find((p) => p.id === selection.projectId);
+  if (!scanProject) {
+    return {
+      ok: false,
+      error: "selected project no longer exists — re-select a project to cast",
+    };
   }
   const missionRaw = asNonEmptyString(payload.mission);
   // A provider-listing hiccup must not block casting — degrade to unpinned members.

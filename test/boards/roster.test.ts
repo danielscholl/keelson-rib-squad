@@ -77,11 +77,12 @@ describe("buildRosterBoard cold start", () => {
     expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "actions", "rows"]);
   });
 
-  test("leads with a cast-a-squad CTA carrying project + mission fields", () => {
+  test("leads with a cast-a-squad CTA carrying just a mission field (selection-driven scope)", () => {
     const board = buildRosterBoard([]);
     const cast = actionItems(board).find((i) => i.type === "cast-propose");
     expect(cast).toBeDefined();
-    expect(cast?.fields?.map((f) => f.name)).toEqual(["project", "mission"]);
+    // No free-text "project" field — casting follows the project picker selection (#80).
+    expect(cast?.fields?.map((f) => f.name)).toEqual(["mission"]);
     expect(cast?.fields?.find((f) => f.name === "mission")?.multiline).toBe(true);
     // The cast section leads the manual author section (the defining capability first).
     const actionTitles = board.sections

@@ -8,7 +8,7 @@ import { loadRegistry, saveRegistry } from "../src/casting/registry.ts";
 import rib from "../src/index.ts";
 import { CAST_KEY } from "../src/keys.ts";
 import { readMembers } from "../src/member-store.ts";
-import { membersDir, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
+import { membersDir, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import { writeSelectedProject } from "../src/scope.ts";
 
 // onAction reads the runAgentTurn / getProjects / refreshWorkflow seams captured in
@@ -44,6 +44,17 @@ function project(id: string, name: string, rootPath: string) {
   return { id, name, rootPath, createdAt: "2026-06-27T00:00:00.000Z" };
 }
 
+// Select a project — casting is selection-driven, so this is the setup a cast needs.
+async function selectProject(id: string, name: string, rootPath: string): Promise<void> {
+  await writeSelectedProject(home, {
+    scopeId: id,
+    projectId: id,
+    name,
+    rootPath,
+    at: "2026-06-30T00:00:00.000Z",
+  });
+}
+
 function bootRib(projects: ReturnType<typeof project>[], reply = ROSTER_REPLY): void {
   const ctx = {
     getExec: () => ({
@@ -75,54 +86,63 @@ afterEach(async () => {
 });
 
 describe("cast-propose action", () => {
-  test("scans the sole project, persists the proposal, and opens the cast canvas", async () => {
+  test("scans the selected project, persists the proposal, and opens the cast canvas", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
-    const res = await rib.onAction?.(
-      { type: "cast-propose", payload: { project: "keelson" } },
-      {} as RibContext,
-    );
+    await selectProject("p1", "keelson", "/repo/keelson");
+    const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
       expect(res.data).toEqual({ effect: "open-canvas", key: CAST_KEY, title: "Proposed squad" });
     }
-    // The scan was confined to the project root with the read-only rail.
+    // The scan was confined to the selected project's root with the read-only rail.
     expect(lastReq?.cwd).toBe("/repo/keelson");
     expect(lastReq?.allowedDirectories).toEqual(["/repo/keelson"]);
     expect(lastReq?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
-    // The proposal landed on disk and the cast panel was refreshed.
-    const proposal = await readProposal(home);
+    // The proposal landed under the selection's scope and the cast panel was refreshed.
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
     expect(proposal?.members.map((m) => m.name)).toEqual(["Atlas", "Vera"]);
     expect(refreshed).toContain("squad-cast");
   });
 
   test("carries the operator mission into the scan", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
     await rib.onAction?.(
-      {
-        type: "cast-propose",
-        payload: { project: "keelson", mission: "ship the OSDU search rib" },
-      },
+      { type: "cast-propose", payload: { mission: "ship the OSDU search rib" } },
       {} as RibContext,
     );
     expect(lastReq?.prompt).toContain("ship the OSDU search rib");
   });
 
-  test("rejects an unknown project selector, listing the choices", async () => {
-    bootRib([project("p1", "keelson", "/repo/keelson")]);
+  test("ignores an explicit project payload — the selection governs scan and scope (#80)", async () => {
+    bootRib([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
+    // Select alpha, but pass project:"beta" in the payload — the field is gone, so it is ignored.
+    await selectProject("p1", "alpha", "/repo/a");
     const res = await rib.onAction?.(
-      { type: "cast-propose", payload: { project: "nope" } },
+      { type: "cast-propose", payload: { project: "beta" } },
       {} as RibContext,
     );
-    expect(res?.ok).toBe(false);
-    if (!res?.ok) expect(res?.error).toContain('unknown project "nope"');
+    expect(res?.ok).toBe(true);
+    // Scan AND proposal both follow the SELECTION (alpha) — never the payload's "beta" — so a
+    // later no-arg run reads the same team. This is the #80 mis-placement footgun, closed.
+    expect(lastReq?.cwd).toBe("/repo/a");
+    expect(await readProposal(scopeDataHome(home, "p1"))).toBeDefined();
+    expect(await readProposal(scopeDataHome(home, "p2"))).toBeUndefined();
   });
 
-  test("with no selection and no explicit project, requires a project to cast for", async () => {
+  test("with no selection but projects available, points the operator at the picker", async () => {
     bootRib([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
     const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     expect(res?.ok).toBe(false);
-    if (!res?.ok) expect(res?.error).toContain("select a project");
+    if (!res?.ok) expect(res?.error).toContain("select a project in the picker");
     expect(await readProposal(home)).toBeUndefined();
+  });
+
+  test("with no projects at all, tells the operator to add one first", async () => {
+    bootRib([]);
+    const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("add a project first");
   });
 
   test("fails closed when the agent-turn / projects seams are absent", async () => {
@@ -144,10 +164,8 @@ describe("cast-propose action", () => {
 describe("approve-cast / discard-cast actions", () => {
   test("approve themes + scaffolds the proposed members (with tags) and clears the proposal", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
-    await rib.onAction?.(
-      { type: "cast-propose", payload: { project: "keelson" } },
-      {} as RibContext,
-    );
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
@@ -155,7 +173,7 @@ describe("approve-cast / discard-cast actions", () => {
       // Two members scaffolded under their themed (cast) slugs, not the proposed ones.
       expect(data.created).toHaveLength(2);
     }
-    const members = await readMembers(membersDir());
+    const members = await readMembers(scopeMembersDir(home, "p1"));
     // The proposed names became originalName; casting routes the tags through.
     const atlas = members.find((m) => m.originalName === "Atlas");
     expect(atlas?.tools).toEqual(["code", "read"]);
@@ -165,7 +183,7 @@ describe("approve-cast / discard-cast actions", () => {
     // The whole roster is cast from ONE ensemble (a coherent squad).
     expect(new Set(members.map((m) => m.themeId)).size).toBe(1);
     // The proposal was consumed; the roster + cast panels refreshed.
-    expect(await readProposal(home)).toBeUndefined();
+    expect(await readProposal(scopeDataHome(home, "p1"))).toBeUndefined();
     expect(refreshed).toContain("squad-roster");
   });
 
@@ -178,16 +196,11 @@ describe("approve-cast / discard-cast actions", () => {
 
   test("approve is collision-safe — re-approving the same cast skips existing members", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
-    await rib.onAction?.(
-      { type: "cast-propose", payload: { project: "keelson" } },
-      {} as RibContext,
-    );
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     // Cast + approve again — the authored members must not be clobbered.
-    await rib.onAction?.(
-      { type: "cast-propose", payload: { project: "keelson" } },
-      {} as RibContext,
-    );
+    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
@@ -197,18 +210,16 @@ describe("approve-cast / discard-cast actions", () => {
       expect(data.created).toEqual([]);
       expect(data.skipped).toHaveLength(2);
     }
-    expect(await readMembers(membersDir())).toHaveLength(2);
+    expect(await readMembers(scopeMembersDir(home, "p1"))).toHaveLength(2);
   });
 
   test("discard clears the pending proposal", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
-    await rib.onAction?.(
-      { type: "cast-propose", payload: { project: "keelson" } },
-      {} as RibContext,
-    );
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     const res = await rib.onAction?.({ type: "discard-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
-    expect(await readProposal(home)).toBeUndefined();
+    expect(await readProposal(scopeDataHome(home, "p1"))).toBeUndefined();
     expect(refreshed).toContain("squad-cast");
   });
 
