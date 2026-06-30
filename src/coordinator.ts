@@ -30,6 +30,7 @@ import {
   decideOrchestratorStep,
   executeStep,
   type OrchestratorLimits,
+  type OrchestratorStep,
   overlayLimits,
   type ProgressLedger,
   type WorkflowStepOutcome,
@@ -90,8 +91,19 @@ export interface CoordinatorLedger {
   // The latest round where the project-bound adversarial review was clean (no BLOCK verdict).
   lastCleanReviewRound?: number;
   summary?: string;
+  // The turn currently executing — set just before the execute arm runs and cleared the moment
+  // it returns, so a streamed Run-loop board can show "work being assigned" in real time. A
+  // terminal/replanning run carries none. Optional so old ledgers and existing callers are intact.
+  inFlight?: InFlightTurn;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface InFlightTurn {
+  round: number;
+  speaker?: string;
+  action: string;
+  instruction?: string;
 }
 
 export interface CoordinatorEntry {
@@ -444,6 +456,9 @@ export interface RunCoordinatorOptions {
   reflectAtClose?: (contributions: readonly MemberContribution[]) => Promise<readonly string[]>;
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
+  // Best-effort progress publisher invoked after each ledger persist so the host can push a
+  // fresh Run-loop board per round. Undefined leaves persistence byte-for-byte as today.
+  publish?: () => void | Promise<void>;
 }
 
 export interface RunCoordinatorResult {
@@ -816,6 +831,20 @@ function collectContributions(
     .map((m) => ({ member: m, contribution: (byMember.get(m.slug) ?? []).join("\n\n") }));
 }
 
+// The short verb the in-flight card shows for an execute step's mode; anything unrecognized
+// reads as the neutral "working" rather than leaking a raw mode token.
+export function actionLabel(step: OrchestratorStep): string {
+  if (step.kind !== "execute") return "working";
+  switch (step.mode) {
+    case "code":
+      return "coding";
+    case "workflow":
+      return "authoring a workflow";
+    default:
+      return "working";
+  }
+}
+
 export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCoordinatorResult> {
   const now = opts.now ?? (() => new Date().toISOString());
   const limits = overlayLimits(opts.limits);
@@ -945,6 +974,19 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       }));
 
+  const persist = async (next: CoordinatorLedger): Promise<void> => {
+    await saveLedger(opts.dataHome, next);
+    // Fire-and-forget: the live board refresh is best-effort and must never block or stall the
+    // run loop (a try/catch can't rescue a hung refresh — only not awaiting it can).
+    void (async () => {
+      try {
+        await opts.publish?.();
+      } catch {
+        // best-effort
+      }
+    })();
+  };
+
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
   const exec = opts.getExec;
   const runStartTree =
@@ -954,7 +996,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           const captured = await captureWorkingTreeTree(exec, project.rootPath);
           if (captured.ok) {
             ledger = { ...ledger, baselineTree: captured.tree, updatedAt: now() };
-            await saveLedger(opts.dataHome, ledger);
+            await persist(ledger);
           }
           return captured;
         })()
@@ -995,10 +1037,11 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       ledger = {
         ...ledger,
         status: RUN_STATUS_MAX_ROUNDS,
+        inFlight: undefined,
         ...(ceilingSummary ? { summary: ceilingSummary } : {}),
         updatedAt: now(),
       };
-      await saveLedger(opts.dataHome, ledger);
+      await persist(ledger);
       break;
     }
 
@@ -1083,7 +1126,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             round: ledger.round + 1,
             updatedAt: now(),
           };
-          await saveLedger(opts.dataHome, ledger);
+          await persist(ledger);
           continue;
         }
         const review = await dispatch(
@@ -1112,7 +1155,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         };
         if (blocked || !hadUsableOutput) {
           ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
-          await saveLedger(opts.dataHome, ledger);
+          await persist(ledger);
           continue;
         }
       }
@@ -1156,15 +1199,16 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
               ...ledger,
               status: RUN_STATUS_VERIFICATION_FAILED,
               summary: `verification failed after ${failures} attempts: ${v.command} (exit ${v.exitCode})`,
+              inFlight: undefined,
               updatedAt: now(),
             };
-            await saveLedger(opts.dataHome, ledger);
+            await persist(ledger);
             break;
           }
           // Veto the manager's done: advance the round and hand the failure back so the next
           // manager turn must fix the red build rather than re-declare done on it.
           ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
-          await saveLedger(opts.dataHome, ledger);
+          await persist(ledger);
           continue;
         }
         // Green: clear the failure counter, then fall through to accept done.
@@ -1230,13 +1274,14 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
               ...ledger,
               status: RUN_STATUS_CHANGE_QUALITY_FAILED,
               summary: `change-quality failed after ${failures} attempts: ${summary}`,
+              inFlight: undefined,
               updatedAt: now(),
             };
-            await saveLedger(opts.dataHome, ledger);
+            await persist(ledger);
             break;
           }
           ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
-          await saveLedger(opts.dataHome, ledger);
+          await persist(ledger);
           continue;
         }
         ledger = { ...ledger, changeQualityFailures: 0, updatedAt: now() };
@@ -1246,6 +1291,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...ledger,
         status: givingUp ? RUN_STATUS_GAVE_UP : RUN_STATUS_DONE,
         ...(ledger.summary ? {} : { summary: directive.summary ?? decided.step.reason }),
+        inFlight: undefined,
         updatedAt: now(),
       };
       // Grow memory at loop close, on a genuine completion only (not give-up). The SHARED governed
@@ -1329,7 +1375,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           }
         }
       }
-      await saveLedger(opts.dataHome, ledger);
+      await persist(ledger);
       break;
     }
 
@@ -1363,13 +1409,26 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         plan: [],
         ...(failedSteps?.length ? { failedSteps } : {}),
         transcript,
+        inFlight: undefined,
         updatedAt: now(),
       };
-      await saveLedger(opts.dataHome, ledger);
+      await persist(ledger);
       continue;
     }
 
-    // execute: the dispatch, code, or workflow-authoring arm
+    // execute: the dispatch, code, or workflow-authoring arm. Mark the turn in flight and persist
+    // BEFORE running it so a streamed board shows the work being assigned the instant it starts.
+    ledger = {
+      ...ledger,
+      inFlight: {
+        round: ledger.round,
+        ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
+        action: actionLabel(decided.step),
+        ...(decided.step.instruction ? { instruction: decided.step.instruction } : {}),
+      },
+      updatedAt: now(),
+    };
+    await persist(ledger);
     const result = await executeStep(decided.step, {
       dispatch,
       ...(code ? { code } : {}),
@@ -1378,11 +1437,13 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     });
     // An abort during the execute arm returns aborted member results that would otherwise
     // fold a junk "(no synthesis)" fact and advance the round. Break before that fold/advance
-    // and without persisting — like the manager-turn abort above, which likewise only bumps
-    // updatedAt in memory (no saveLedger) — so abort+resume can't erode the round budget.
+    // — clearing only the pre-execute in-flight marker (at the UNCHANGED round) so a connected
+    // client stops seeing a "now executing" card for the cancelled turn, while no junk fact or
+    // round increment lands, keeping the round budget intact across an abort+resume.
     if (opts.abortSignal?.aborted) {
       status = "aborted";
-      ledger = { ...ledger, updatedAt: now() };
+      ledger = { ...ledger, inFlight: undefined, updatedAt: now() };
+      await persist(ledger);
       break;
     }
     if (result.dispatch) {
@@ -1465,8 +1526,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     if (decided.state.stallCount === 0 && ledger.failedSteps?.length) {
       ledger = { ...ledger, failedSteps: [] };
     }
-    ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
-    await saveLedger(opts.dataHome, ledger);
+    ledger = { ...ledger, round: ledger.round + 1, inFlight: undefined, updatedAt: now() };
+    await persist(ledger);
   }
 
   const provenance = summarizeProvenance(ledger.transcript);

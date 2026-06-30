@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { type CanvasTone, canvasViewSchema } from "@keelson/shared";
-import { buildRosterBoard, type RosterPulse } from "../../src/boards/roster.ts";
+import {
+  buildRosterBoard,
+  projectPickerSection,
+  type RosterPulse,
+  SELECT_PROJECT_ACTION,
+} from "../../src/boards/roster.ts";
 import { GENESIS_STARTERS } from "../../src/starters.ts";
 import type { Member } from "../../src/types.ts";
 
@@ -215,6 +220,100 @@ describe("buildRosterBoard pulse", () => {
   test("the pulse leads even the cold-start board and stays valid", () => {
     const board = buildRosterBoard([], pulse({ members: 0, active: 0, inactive: 0 }));
     expect(board.sections[0]?.kind).toBe("stats");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+  });
+});
+
+describe("project picker", () => {
+  const projects = [
+    { id: "alpha", name: "Alpha" },
+    { id: "beta", name: "Beta" },
+  ];
+  const member = (): Member => ({
+    slug: "lead",
+    name: "Lead",
+    role: "Tech Lead",
+    charter: "You are the Lead.",
+    status: "active",
+  });
+
+  function pickerItems(section: ReturnType<typeof projectPickerSection>) {
+    if (section.kind !== "actions") throw new Error("picker is not an actions section");
+    return section.items;
+  }
+
+  test("projectPickerSection leads with default, then one button per project", () => {
+    const section = projectPickerSection(projects, "default");
+    expect(section.kind).toBe("actions");
+    if (section.kind === "actions") expect(section.title).toBe("Project");
+    const items = pickerItems(section);
+    expect(items.map((i) => i.type)).toEqual([
+      SELECT_PROJECT_ACTION,
+      SELECT_PROJECT_ACTION,
+      SELECT_PROJECT_ACTION,
+    ]);
+    expect(items.map((i) => (i.payload as { scopeId: string }).scopeId)).toEqual([
+      "default",
+      "alpha",
+      "beta",
+    ]);
+  });
+
+  test("the active scope is marked with a ✓ label prefix and a brand tone", () => {
+    const items = pickerItems(projectPickerSection(projects, "alpha"));
+    const alpha = items.find((i) => (i.payload as { scopeId: string }).scopeId === "alpha");
+    expect(alpha?.label).toBe("✓ Alpha");
+    expect(alpha?.tone).toBe("brand");
+    // The inactive buttons carry the bare name and no tone (no `current` field exists).
+    const beta = items.find((i) => (i.payload as { scopeId: string }).scopeId === "beta");
+    expect(beta?.label).toBe("Beta");
+    expect(beta?.tone).toBeUndefined();
+    const dflt = items.find((i) => (i.payload as { scopeId: string }).scopeId === "default");
+    expect(dflt?.label).toBe("default");
+    expect(dflt?.tone).toBeUndefined();
+  });
+
+  test("the default scope active marks the default button", () => {
+    const items = pickerItems(projectPickerSection(projects, "default"));
+    const dflt = items[0];
+    expect(dflt?.label).toBe("✓ default");
+    expect(dflt?.tone).toBe("brand");
+  });
+
+  test("with a picker, the Project section leads the board and validates", () => {
+    const board = buildRosterBoard([member()], undefined, { projects, activeScopeId: "alpha" });
+    const first = board.sections[0];
+    expect(first?.kind).toBe("actions");
+    if (first?.kind === "actions") expect(first.title).toBe("Project");
+    // The picker sits above even the pulse when both are present.
+    const withPulse = buildRosterBoard(
+      [member()],
+      { members: 1, active: 1, inactive: 0 },
+      {
+        projects,
+        activeScopeId: "alpha",
+      },
+    );
+    expect(withPulse.sections[0]?.kind).toBe("actions");
+    expect(withPulse.sections[1]?.kind).toBe("stats");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(canvasViewSchema.safeParse(withPulse).success).toBe(true);
+  });
+
+  test("omitting the picker is byte-identical to today (no Project section)", () => {
+    const without = buildRosterBoard([member()]);
+    expect(without).toEqual(buildRosterBoard([member()], undefined, undefined));
+    expect(without.sections.some((s) => s.kind === "actions" && s.title === "Project")).toBe(false);
+  });
+
+  test("an empty project name still yields a valid board (label falls back, not min(1)-invalid)", () => {
+    const blank = [{ id: "p7", name: "" }];
+    const button = pickerItems(projectPickerSection(blank, "default")).find(
+      (i) => (i.payload as { scopeId: string }).scopeId === "p7",
+    );
+    // Canvas label is min(1): an empty name must fall back to the id, not blank the board.
+    expect(button?.label).toBe("p7");
+    const board = buildRosterBoard([member()], undefined, { projects: blank, activeScopeId: "p7" });
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 });
