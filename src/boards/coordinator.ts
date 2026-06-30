@@ -137,6 +137,8 @@ function statusPill(status: CoordinatorLedger["status"]): { label: string; tone:
       return { label: "max rounds", tone: "caution" };
     case "verification-failed":
       return { label: "verification failed", tone: "warn" };
+    case "change-quality-failed":
+      return { label: "change quality failed", tone: "warn" };
   }
 }
 
@@ -162,7 +164,12 @@ function activitySection(transcript: readonly CoordinatorEntry[]): Section | und
     kind: "rows",
     title: "Recent activity",
     items: recent.map((e) => {
-      const line = `${e.speaker ? `${e.speaker}: ` : ""}${e.text}`.trim() || "(no detail)";
+      const touched =
+        e.kind === "code" && e.touched
+          ? ` (touched ${e.touched.files} file${e.touched.files === 1 ? "" : "s"}, +${e.touched.insertions} -${e.touched.deletions})`
+          : "";
+      const line =
+        `${e.speaker ? `${e.speaker}: ` : ""}${e.text}${touched}`.trim() || "(no detail)";
       return {
         glyph: ACTIVITY_TONE[e.kind],
         text: truncate(line, STEP_CAP),

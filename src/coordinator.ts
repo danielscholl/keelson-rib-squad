@@ -1,6 +1,14 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryTools, RibContext, RibExec } from "@keelson/shared";
+import {
+  type ChangeQualityDiffNumstat,
+  type DiffNameStatusEntry,
+  type DiffNumstatEntry,
+  type DiffTokenNetCounts,
+  detectChangeQualityViolations,
+} from "./change-quality.ts";
 import { runCodeTurn } from "./code.ts";
 import { parseTrailingDirective } from "./control-json.ts";
 import {
@@ -46,6 +54,9 @@ import { authorWorkflow, screenWorkflowForRun } from "./workflow-authoring.ts";
 export interface CoordinatorLedger {
   task: string;
   projectId?: string;
+  // Durable run-delta baseline tree for change-quality checks. Captured once per active
+  // ledger and reused across resumed invocations so prior-pass edits cannot evade the gate.
+  baselineTree?: string;
   // Accumulated findings (folded from each dispatch synthesis + the coordinator).
   facts: string[];
   // The coordinator's current plan as prose steps.
@@ -56,7 +67,7 @@ export interface CoordinatorLedger {
   // "active" resumes on a same-task re-run; the terminal states (done / gave-up /
   // max-rounds) do not, so a finished task starts fresh rather than re-tripping its
   // own ceiling and returning a stale summary having run zero turns.
-  status: "active" | "done" | "gave-up" | "max-rounds" | "verification-failed";
+  status: CoordinatorLedgerStatus;
   transcript: CoordinatorEntry[];
   // Steps attempted on a now-abandoned plan, swept on a re-plan so the rebuild is told not
   // to resume them; cleared once a non-stalled round shows the new plan is working again.
@@ -71,6 +82,9 @@ export interface CoordinatorLedger {
   // Consecutive done-gate verify failures; bounds the fix-and-recheck loop so a run that can't
   // go green terminates `verification-failed` rather than burning the whole round budget.
   verifyFailures?: number;
+  // Consecutive done-gate change-quality failures; bounds quality refinement the same way
+  // verification failures are bounded.
+  changeQualityFailures?: number;
   // The latest round that executed a code step (our concrete "code changed/ran" marker).
   lastCodeRound?: number;
   // The latest round where the project-bound adversarial review was clean (no BLOCK verdict).
@@ -89,6 +103,8 @@ export interface CoordinatorEntry {
   // The provider id that produced this step's work (code / dispatch arms) — the served-provider
   // provenance the standup and Run-loop board surface for a mixed-provider team.
   provider?: string;
+  // Per-code-step repo footprint (including untracked files) surfaced for manager visibility.
+  touched?: { files: number; insertions: number; deletions: number };
 }
 
 // A deterministic verification result: the operator-configured check that gates `done`.
@@ -102,6 +118,22 @@ export interface VerificationRecord {
   atRound: number;
 }
 
+export const LEDGER_STATUS_ACTIVE = "active" as const;
+export const RUN_STATUS_DONE = "done" as const;
+export const RUN_STATUS_GAVE_UP = "gave-up" as const;
+export const RUN_STATUS_MAX_ROUNDS = "max-rounds" as const;
+export const RUN_STATUS_VERIFICATION_FAILED = "verification-failed" as const;
+export const RUN_STATUS_CHANGE_QUALITY_FAILED = "change-quality-failed" as const;
+
+export type CoordinatorTerminalStatus =
+  | typeof RUN_STATUS_DONE
+  | typeof RUN_STATUS_GAVE_UP
+  | typeof RUN_STATUS_MAX_ROUNDS
+  | typeof RUN_STATUS_VERIFICATION_FAILED
+  | typeof RUN_STATUS_CHANGE_QUALITY_FAILED;
+export type CoordinatorLedgerStatus = typeof LEDGER_STATUS_ACTIVE | CoordinatorTerminalStatus;
+export type RunCoordinatorStatus = CoordinatorTerminalStatus | "error" | "aborted";
+
 // The directive a coordinator turn must end with: `progress` carries the five Progress
 // Ledger answers + the next step, `done` carries the final summary.
 const COORDINATOR_ACTIONS: ReadonlySet<string> = new Set(["progress", "done"]);
@@ -114,7 +146,8 @@ const MAX_FAILED = 20; // bounded list of recently-abandoned steps surfaced on a
 const STEP_DESC_CAP = 200; // per-swept-step char cap so the re-plan prompt stays compact
 const MAX_GAPS = 6; // bounded list of "the roster lacks X" recommendations
 const GAP_CAP = 160; // per-gap char cap so a recommendation stays a short headline
-const MAX_VERIFY_FAILURES = 3; // consecutive done-gate verify failures before terminating verification-failed
+export const MAX_VERIFY_FAILURES = 3; // consecutive done-gate failures before terminating
+export const MAX_CHANGE_QUALITY_FAILURES = 3; // consecutive done-gate quality failures before terminating
 const VERIFY_TIMEOUT_MS = 300_000; // per verify command — test suites can be slow
 const VERIFY_SUMMARY_CAP = 800; // capped tail of a failing command's output folded as a fact
 const LEDGER_FILE = "coordinator-ledger.json";
@@ -241,7 +274,7 @@ function freshLedger(task: string, projectId: string | undefined, at: string): C
     round: 0,
     stallCount: 0,
     resetCount: 0,
-    status: "active",
+    status: LEDGER_STATUS_ACTIVE,
     transcript: [],
     createdAt: at,
     updatedAt: at,
@@ -260,7 +293,7 @@ async function loadOrInit(
   if (
     existing &&
     existing.task === task &&
-    existing.status === "active" &&
+    existing.status === LEDGER_STATUS_ACTIVE &&
     // Resume only within the SAME project — a generic task ("fix the failing tests")
     // run against repo A then repo B must not resume A's facts/plan while the code arm
     // confines edits to B.
@@ -289,13 +322,22 @@ function renderRoster(roster: readonly Member[]): string {
 function renderTranscript(transcript: readonly CoordinatorEntry[]): string {
   const recent = transcript.slice(-8);
   if (recent.length === 0) return "(nothing yet)";
-  return recent
-    .map((e) =>
-      e.kind === "dispatch"
-        ? `Round ${e.round} — ${e.speaker ?? "team"} did: ${e.text}`
-        : `Round ${e.round} — coordinator: ${e.text}`,
-    )
-    .join("\n");
+  return recent.map((e) => `Round ${e.round} — ${renderTranscriptEntry(e)}`).join("\n");
+}
+
+function renderTranscriptEntry(e: CoordinatorEntry): string {
+  if (e.kind === "dispatch") return `${e.speaker ?? "team"} did: ${e.text}`;
+  if (e.kind === "code") {
+    const touched = e.touched
+      ? ` [touched ${e.touched.files} file${e.touched.files === 1 ? "" : "s"}, +${e.touched.insertions} -${e.touched.deletions}]`
+      : "";
+    return `${e.speaker ?? "member"} coded: ${e.text}${touched}`;
+  }
+  if (e.kind === "workflow") return `${e.speaker ?? "member"} workflow: ${e.text}`;
+  if (e.kind === "verify") return `verify: ${e.text}`;
+  if (e.kind === "replan") return `replan: ${e.text}`;
+  if (e.kind === "failed") return `failed: ${e.text}`;
+  return `coordinator: ${e.text}`;
 }
 
 function coordinatorPrompt(
@@ -407,7 +449,7 @@ export interface RunCoordinatorOptions {
 export interface RunCoordinatorResult {
   ledger: CoordinatorLedger;
   rounds: number;
-  status: "done" | "gave-up" | "max-rounds" | "error" | "aborted" | "verification-failed";
+  status: RunCoordinatorStatus;
   summary: string;
   // Served-provider provenance compiled from the run's code/dispatch steps, e.g.
   // "atlas (claude) coded · vera (copilot) contributed". Absent when no step resolved a provider.
@@ -424,6 +466,180 @@ function cap(text: string, n: number): string {
 function tailCap(text: string, n: number): string {
   const t = text.trimEnd();
   return t.length > n ? `…${t.slice(-n)}` : t;
+}
+
+function parseNum(value: string): number {
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function parseNumstat(text: string): DiffNumstatEntry[] {
+  const files: DiffNumstatEntry[] = [];
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const [addedRaw, removedRaw, ...pathParts] = line.split("\t");
+    if (!addedRaw || !removedRaw || pathParts.length === 0) continue;
+    files.push({
+      path: pathParts.join("\t"),
+      added: parseNum(addedRaw),
+      removed: parseNum(removedRaw),
+    });
+  }
+  return files;
+}
+
+function parseNameStatus(text: string): DiffNameStatusEntry[] {
+  const files: DiffNameStatusEntry[] = [];
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const [statusRaw, fromPath, toPath] = line.split("\t");
+    const status = statusRaw?.[0];
+    if (!status) continue;
+    if (status === "R") {
+      if (!fromPath || !toPath) continue;
+      files.push({ status, previousPath: fromPath, path: toPath });
+      continue;
+    }
+    if (!fromPath) continue;
+    files.push({ status, path: fromPath });
+  }
+  return files;
+}
+
+function countOccurrences(line: string, token: "test" | "it" | "expect"): number {
+  const re = new RegExp(`\\b${token}\\s*\\(`, "g");
+  let total = 0;
+  for (const _ of line.matchAll(re)) total += 1;
+  return total;
+}
+
+function parsePatchSignals(text: string): { addedLines: string[]; tokenNet: DiffTokenNetCounts } {
+  const addedLines: string[] = [];
+  const tokenNet: DiffTokenNetCounts = { testCall: 0, itCall: 0, expectCall: 0 };
+  for (const rawLine of text.split("\n")) {
+    if (!rawLine) continue;
+    if (rawLine.startsWith("+++ ") || rawLine.startsWith("--- ")) continue;
+    if (rawLine.startsWith("+")) {
+      const line = rawLine.slice(1);
+      addedLines.push(line);
+      tokenNet.testCall += countOccurrences(line, "test");
+      tokenNet.itCall += countOccurrences(line, "it");
+      tokenNet.expectCall += countOccurrences(line, "expect");
+      continue;
+    }
+    if (rawLine.startsWith("-")) {
+      const line = rawLine.slice(1);
+      tokenNet.testCall -= countOccurrences(line, "test");
+      tokenNet.itCall -= countOccurrences(line, "it");
+      tokenNet.expectCall -= countOccurrences(line, "expect");
+    }
+  }
+  return { addedLines, tokenNet };
+}
+
+function parseDiffStatTotals(text: string): { insertions: number; deletions: number } {
+  const insertionMatch = /(\d+)\s+insertion(?:s)?\(\+\)/.exec(text);
+  const deletionMatch = /(\d+)\s+deletion(?:s)?\(-\)/.exec(text);
+  return {
+    insertions: insertionMatch ? parseNum(insertionMatch[1] ?? "0") : 0,
+    deletions: deletionMatch ? parseNum(deletionMatch[1] ?? "0") : 0,
+  };
+}
+
+async function captureWorkingTreeTree(
+  exec: RibExec,
+  cwd: string,
+): Promise<{ ok: true; tree: string } | { ok: false; error: string }> {
+  const scratchDir = await mkdtemp(join(tmpdir(), "squad-run-delta-"));
+  const indexPath = join(scratchDir, "index");
+  const env = { GIT_INDEX_FILE: indexPath };
+  try {
+    const staged = await exec.runText("git", ["add", "-A", "--", "."], {
+      cwd,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+      env,
+    });
+    if (!staged.ok) return { ok: false, error: staged.error };
+    const tree = await exec.runText("git", ["write-tree"], {
+      cwd,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+      env,
+    });
+    if (!tree.ok) return { ok: false, error: tree.error };
+    const oid = tree.data.trim();
+    if (!oid) return { ok: false, error: "git write-tree returned an empty tree id" };
+    return { ok: true, tree: oid };
+  } finally {
+    await rm(scratchDir, { recursive: true, force: true });
+  }
+}
+
+async function collectTouchedSummary(
+  exec: RibExec,
+  cwd: string,
+): Promise<{ files: number; insertions: number; deletions: number } | undefined> {
+  const status = await exec.runText("git", ["status", "--porcelain", "--untracked-files=all"], {
+    cwd,
+    timeoutMs: VERIFY_TIMEOUT_MS,
+  });
+  if (!status.ok) return undefined;
+  const files = status.data
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0).length;
+  const [unstaged, staged] = await Promise.all([
+    exec.runText("git", ["diff", "--stat", "--", "."], { cwd, timeoutMs: VERIFY_TIMEOUT_MS }),
+    exec.runText("git", ["diff", "--stat", "--cached", "--", "."], {
+      cwd,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+    }),
+  ]);
+  const un = unstaged.ok ? parseDiffStatTotals(unstaged.data) : { insertions: 0, deletions: 0 };
+  const st = staged.ok ? parseDiffStatTotals(staged.data) : { insertions: 0, deletions: 0 };
+  return {
+    files,
+    insertions: un.insertions + st.insertions,
+    deletions: un.deletions + st.deletions,
+  };
+}
+
+async function collectRunDiffSignals(
+  exec: RibExec,
+  cwd: string,
+  baselineTree: string,
+): Promise<
+  | { ok: true; diffNumstat: ChangeQualityDiffNumstat; addedLines: string[] }
+  | { ok: false; error: string }
+> {
+  const current = await captureWorkingTreeTree(exec, cwd);
+  if (!current.ok) return current;
+  const [numstat, patch, nameStatus] = await Promise.all([
+    exec.runText("git", ["diff", "--numstat", "--find-renames", baselineTree, current.tree], {
+      cwd,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+    }),
+    exec.runText(
+      "git",
+      ["diff", "--unified=0", "--no-color", "--find-renames", baselineTree, current.tree],
+      {
+        cwd,
+        timeoutMs: VERIFY_TIMEOUT_MS,
+      },
+    ),
+    exec.runText("git", ["diff", "--name-status", "--find-renames", baselineTree, current.tree], {
+      cwd,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+    }),
+  ]);
+  if (!numstat.ok) return { ok: false, error: numstat.error };
+  if (!patch.ok) return { ok: false, error: patch.error };
+  if (!nameStatus.ok) return { ok: false, error: nameStatus.error };
+  const files = parseNumstat(numstat.data);
+  const fileStatus = parseNameStatus(nameStatus.data);
+  const { addedLines, tokenNet } = parsePatchSignals(patch.data);
+  return { ok: true, diffNumstat: { files, tokenNet, nameStatus: fileStatus }, addedLines };
 }
 
 // Run the operator-configured verify commands against the project root via the exec seam.
@@ -730,8 +946,21 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       }));
 
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
+  const exec = opts.getExec;
+  const runStartTree =
+    project && exec
+      ? await (async () => {
+          if (ledger.baselineTree) return { ok: true as const, tree: ledger.baselineTree };
+          const captured = await captureWorkingTreeTree(exec, project.rootPath);
+          if (captured.ok) {
+            ledger = { ...ledger, baselineTree: captured.tree, updatedAt: now() };
+            await saveLedger(opts.dataHome, ledger);
+          }
+          return captured;
+        })()
+      : undefined;
   let replanRequested = false;
-  let status: RunCoordinatorResult["status"] = "max-rounds";
+  let status: RunCoordinatorResult["status"] = RUN_STATUS_MAX_ROUNDS;
 
   while (true) {
     if (opts.abortSignal?.aborted) {
@@ -739,10 +968,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       break;
     }
     if (ledger.round >= limits.maxRounds) {
-      status = "max-rounds";
+      status = RUN_STATUS_MAX_ROUNDS;
       // Persist a TERMINAL status so a same-task re-run starts fresh instead of
       // resuming this ceiling-hit ledger and short-circuiting straight back here.
-      ledger = { ...ledger, status: "max-rounds", updatedAt: now() };
+      ledger = { ...ledger, status: RUN_STATUS_MAX_ROUNDS, updatedAt: now() };
       await saveLedger(opts.dataHome, ledger);
       break;
     }
@@ -896,10 +1125,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             updatedAt: now(),
           };
           if (failures >= MAX_VERIFY_FAILURES) {
-            status = "verification-failed";
+            status = RUN_STATUS_VERIFICATION_FAILED;
             ledger = {
               ...ledger,
-              status: "verification-failed",
+              status: RUN_STATUS_VERIFICATION_FAILED,
               summary: `verification failed after ${failures} attempts: ${v.command} (exit ${v.exitCode})`,
               updatedAt: now(),
             };
@@ -933,10 +1162,63 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           updatedAt: now(),
         };
       }
-      status = givingUp ? "gave-up" : "done";
+      if (
+        !givingUp &&
+        opts.getExec &&
+        project &&
+        effectiveLastCodeRound(ledger) !== undefined &&
+        !opts.abortSignal?.aborted
+      ) {
+        const quality = runStartTree?.ok
+          ? await collectRunDiffSignals(opts.getExec, project.rootPath, runStartTree.tree)
+          : {
+              ok: false as const,
+              error: runStartTree?.error ?? "run-start baseline tree unavailable",
+            };
+        const violations = quality.ok
+          ? detectChangeQualityViolations(quality.diffNumstat, quality.addedLines)
+          : [
+              {
+                code: "change-quality-check-error",
+                message: `unable to inspect run diff: ${quality.error}`,
+              },
+            ];
+        if (violations.length > 0) {
+          const failures = (ledger.changeQualityFailures ?? 0) + 1;
+          const summary = violations.map((v) => `[${v.code}] ${v.message}`).join("; ");
+          const text = `change-quality FAILED: ${summary}`;
+          ledger = {
+            ...ledger,
+            changeQualityFailures: failures,
+            facts: foldFacts(ledger.facts, [cap(text, FACT_CAP)]),
+            transcript: appendEntry(ledger.transcript, {
+              round: ledger.round,
+              kind: "verify",
+              text,
+            }),
+            updatedAt: now(),
+          };
+          if (failures >= MAX_CHANGE_QUALITY_FAILURES) {
+            status = RUN_STATUS_CHANGE_QUALITY_FAILED;
+            ledger = {
+              ...ledger,
+              status: RUN_STATUS_CHANGE_QUALITY_FAILED,
+              summary: `change-quality failed after ${failures} attempts: ${summary}`,
+              updatedAt: now(),
+            };
+            await saveLedger(opts.dataHome, ledger);
+            break;
+          }
+          ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
+          await saveLedger(opts.dataHome, ledger);
+          continue;
+        }
+        ledger = { ...ledger, changeQualityFailures: 0, updatedAt: now() };
+      }
+      status = givingUp ? RUN_STATUS_GAVE_UP : RUN_STATUS_DONE;
       ledger = {
         ...ledger,
-        status: givingUp ? "gave-up" : "done",
+        status: givingUp ? RUN_STATUS_GAVE_UP : RUN_STATUS_DONE,
         ...(ledger.summary ? {} : { summary: directive.summary ?? decided.step.reason }),
         updatedAt: now(),
       };
@@ -944,7 +1226,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       // decision is distilled and written first, THEN each participant's PRIVATE memory.md — kept
       // sequential so the member half's abort check (after the distill turn) still suppresses it
       // when an abort lands mid-distill. Both halves are fail-soft and skipped on abort.
-      if (status === "done") {
+      if (status === RUN_STATUS_DONE) {
         const summary = ledger.summary ?? "";
         let memoryNote: string | undefined;
         // Distill the run into ONE durable governed decision, or abstain (a confused run must not
@@ -1113,6 +1395,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         result.code.status === "ok"
           ? result.code.text.trim() || "(no output)"
           : (result.code.error ?? result.code.status);
+      const touched =
+        opts.getExec && project
+          ? await collectTouchedSummary(opts.getExec, project.rootPath)
+          : undefined;
       ledger = {
         ...ledger,
         facts: foldFacts(ledger.facts, [
@@ -1125,6 +1411,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           instruction: decided.step.instruction,
           text,
           ...(result.code.providerId ? { provider: result.code.providerId } : {}),
+          ...(touched ? { touched } : {}),
         }),
         lastCodeRound: ledger.round,
         updatedAt: now(),
