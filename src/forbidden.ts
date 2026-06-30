@@ -18,12 +18,22 @@ export function isMergeToolName(tool: string): boolean {
 // Split a command line into command segments (on the operators that begin a new
 // command) and each segment into argv tokens (stripping simple quoting). Not a full
 // shell parser — deliberately conservative for a security denylist, so `a && git push
-// --force` is seen as two commands and the second is gated.
+// --force` is seen as two commands and the second is gated. Parens are NOT split here:
+// splitting on them mid-`$(…)` tore a real `git push … $(…) … --force` apart and let it
+// pass, so a spaced subshell `( git push --force )` is handled by skipping the standalone
+// `(`/`)` grouping tokens instead (see isGroupingToken).
 export function splitShellCommands(cmd: string): string[][] {
   return cmd
     .split(/\n|;|\|\||&&|\||&/)
     .map(tokenizeArgv)
     .filter((argv) => argv.length > 0);
+}
+
+// Leading shell grouping / negation tokens that wrap a command without changing which
+// command runs: a subshell `( … )`, a brace group `{ …; }`, or a `!` negation. Skipped so
+// the real command (`( git push --force )`, `{ git push --force; }`) isn't masked behind them.
+function isGroupingToken(t: string): boolean {
+  return t === "{" || t === "}" || t === "(" || t === ")" || t === "!";
 }
 
 function tokenizeArgv(segment: string): string[] {
@@ -40,9 +50,18 @@ function tokenizeArgv(segment: string): string[] {
 // True when ANY command in the line is a forbidden git/gh integration op.
 export function isForbiddenGitCommand(raw: string): boolean {
   for (const argv of splitShellCommands(raw)) {
-    // Drop leading `VAR=value` env assignments (e.g. `GIT_DIR=… git push`).
+    // Skip any leading run of shell grouping/negation tokens (`( … )`, `{ …; }`, `! …`) and
+    // `VAR=value` env assignments, in ANY order, so an interleaving like `GIT_DIR=/x ! git push`
+    // can't mask the real command behind whichever wrapper happens to come second.
     let i = 0;
-    while (i < argv.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i] ?? "")) i++;
+    while (i < argv.length) {
+      const t = argv[i] ?? "";
+      if (isGroupingToken(t) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+        i++;
+        continue;
+      }
+      break;
+    }
     const cmd = argv[i];
     const rest = argv.slice(i + 1);
     if (cmd === "git" && isForbiddenGitArgs(rest)) return true;
@@ -93,7 +112,10 @@ function isForbiddenPush(pushArgs: string[]): boolean {
 }
 
 // `gh pr merge …` and its REST equivalent `gh api … pulls/<n>/merge` with a write
-// method (an explicit PUT/POST/PATCH, or a field flag that implies POST).
+// method (an explicit PUT/POST/PATCH, or a field flag that implies POST), plus the GraphQL
+// `mergePullRequest` / `enablePullRequestAutoMerge` mutations. Gated at the SEGMENT level (the
+// resolved command really is `gh api`), not by token presence on the raw line, so a `git commit`
+// or `gh pr create` whose message/body merely mentions the mutation is not falsely blocked.
 function isForbiddenGhArgs(args: string[]): boolean {
   if (args[0] === "pr" && args[1] === "merge") return true;
   if (args[0] === "api") {
@@ -103,6 +125,14 @@ function isForbiddenGhArgs(args: string[]): boolean {
       if (args.some((a) => a === "-f" || a === "--field" || a === "-F" || a === "--raw-field")) {
         return true;
       }
+    }
+    // A graphql call (`gh api graphql …`) carrying a merge/auto-merge mutation — the inline
+    // query value tokenizes so `mergePullRequest(...` lands among the args.
+    if (
+      args.includes("graphql") &&
+      /\b(?:mergePullRequest|enablePullRequestAutoMerge)\b/i.test(joined)
+    ) {
+      return true;
     }
   }
   return false;
