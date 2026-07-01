@@ -46,6 +46,7 @@ import {
   setMemberModel,
   writeMemory,
 } from "./member-store.ts";
+import { openChangeRequest } from "./open-change-request.ts";
 import { DEFAULT_LIMITS } from "./orchestrator.ts";
 import {
   DEFAULT_SCOPE_ID,
@@ -613,6 +614,71 @@ function summarizeCode(member: Member, projectName: string, outcome: TurnOutcome
       ? outcome.text.trim() || "(no output)"
       : (outcome.error ?? outcome.status);
   return `${head}\n\n${body}`;
+}
+
+const openPrSchema = z.object({
+  title: z.string().min(1),
+  body: z.string().min(1),
+  project: z.string().optional(),
+});
+
+function makeOpenPrTool(
+  projectsSeam: RibContext["getProjects"],
+  execSeam: RibContext["getExec"],
+): ToolDefinition {
+  return {
+    name: "squad_open_pr",
+    description:
+      "Open an operator-requested DRAFT change request for the selected project: creates a feature branch at HEAD from `title`, pushes it without force to the selected/upstream remote, then uses the detected forge CLI (GitHub `gh` or GitLab `glab`) to open a draft PR/MR with `body`. `project` (optional id/name) overrides the selected project. Never merges, rebases, resets, force-pushes, or runs automatically at the done-gate.",
+    inputSchema: openPrSchema,
+    state_changing: true,
+    requires_confirmation: true,
+    async execute(input, ctx) {
+      const parsed = openPrSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_open_pr: ${parsed.error.message}`, true);
+        return;
+      }
+      if (!execSeam) {
+        emitResult(ctx, "squad_open_pr: exec seam unavailable on this harness", true);
+        return;
+      }
+      try {
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_open_pr: ${resolution.error}`, true);
+          return;
+        }
+        if (!resolution.project) {
+          emitResult(
+            ctx,
+            "squad_open_pr: no project bound to open a change request for — select a project first",
+            true,
+          );
+          return;
+        }
+        const result = await openChangeRequest({
+          exec: execSeam(),
+          cwd: resolution.project.rootPath,
+          title: parsed.data.title,
+          body: parsed.data.body,
+        });
+        if (!result.ok) {
+          emitResult(ctx, `squad_open_pr: ${result.error}`, true);
+          return;
+        }
+        emitResult(ctx, result.url, false);
+      } catch (e) {
+        emitResult(ctx, `squad_open_pr failed: ${errText(e)}`, true);
+      }
+    },
+  };
 }
 
 // The standing Magentic coordinator as a tool: run the plan→delegate→observe→re-plan
@@ -1322,6 +1388,7 @@ const rib: Rib = {
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
+      makeOpenPrTool(ctx.getProjects, ctx.getExec),
       makeProposeCastTool(),
       makeRunsTool(ctx.getProjects),
       makeCoordinateTool(
