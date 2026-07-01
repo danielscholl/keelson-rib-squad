@@ -79,7 +79,7 @@ describe("rib-squad", () => {
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
 
-  it("registers the write/read/remember/dispatch/code/coordinate tools without any seams", () => {
+  it("registers the write/read/remember/dispatch/code/runs/coordinate tools without any seams", () => {
     expect((rib.registerTools?.(bareCtx) ?? []).map((t) => t.name).sort()).toEqual([
       "squad_code",
       "squad_coordinate",
@@ -88,6 +88,7 @@ describe("rib-squad", () => {
       "squad_list_members",
       "squad_remember",
       "squad_retire_member",
+      "squad_runs",
     ]);
   });
 
