@@ -368,6 +368,33 @@ describe("runCoordinator loop", () => {
     expect(seen[0]?.model).toBeUndefined();
   });
 
+  test("grounds the coordinator prompt when a project is bound", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo-one", rootPath: "/workspace/repo-one" },
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.prompt).toContain('Bound project: "repo-one"');
+    expect(seen[0]?.prompt).toContain("repository root: /workspace/repo-one");
+    expect(seen[0]?.prompt).toMatch(/do NOT .*search .*for any other repository/i);
+  });
+
+  test("omits the project grounding block when no project is bound", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.prompt).not.toContain("GROUNDING:");
+    expect(seen[0]?.prompt).not.toContain("Bound project:");
+    expect(seen[0]?.prompt).not.toMatch(/do NOT .*search .*for any other repository/i);
+  });
+
   test("dispatches the next step then ends, folding the synthesis into facts", async () => {
     const d = fakeDispatch("built it");
     const res = await runCoordinator({
