@@ -16,9 +16,11 @@ import {
   actionLabel,
   type CoordinatorEntry,
   type CoordinatorLedger,
+  collectIncompleteCommitPaths,
   failStuckTasks,
   loadLedger,
   MAX_CHANGE_QUALITY_FAILURES,
+  MAX_VERIFY_FAILURES,
   parseCoordinatorDirective,
   provenanceLines,
   runCoordinator,
@@ -1966,5 +1968,138 @@ describe("runCoordinator loop", () => {
     });
     expect(res.rounds).toBe(0);
     expect(res.ledger.facts).not.toContain("stale");
+  });
+
+  test("incomplete-commit gate: a committed run that leaves a run edit uncommitted vetoes done and terminates verification-failed", async () => {
+    let revParse = 0;
+    const z = (p: string[]) => p.join("\0") + (p.length ? "\0" : "");
+    const exec: RibExec = {
+      runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+      runText: async (cmd, args) => {
+        if (cmd === "git" && args[0] === "rev-parse") {
+          revParse += 1;
+          // First rev-parse = run-start HEAD; every later one = advanced (a commit was created).
+          return {
+            ok: true as const,
+            data: `${revParse === 1 ? "base-sha" : "new-sha"}\n`,
+            exitCode: 0,
+          };
+        }
+        if (cmd === "git" && args[0] === "write-tree") {
+          return { ok: true as const, data: "curtree", exitCode: 0 };
+        }
+        if (cmd === "git" && args[0] === "diff" && args.includes("--name-only")) {
+          const ref = args[args.indexOf("--find-renames") + 1];
+          // HEAD..tree = uncommitted; baselineTree..tree = the run's full delta.
+          return {
+            ok: true as const,
+            data: ref === "HEAD" ? z(["src/b.ts"]) : z(["src/a.ts", "src/b.ts"]),
+            exitCode: 0,
+          };
+        }
+        return { ok: true as const, data: "all good", exitCode: 0 };
+      },
+    };
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited and committed" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: exec,
+      verify: ["bun run test"],
+      limits: { maxRounds: 20 },
+    });
+    expect(res.status).toBe("verification-failed");
+    const vetoes = res.ledger.transcript.filter(
+      (e) => e.kind === "verify" && e.text.includes("these run edits are uncommitted"),
+    );
+    expect(vetoes.length).toBe(MAX_VERIFY_FAILURES);
+    // src/b.ts is run-touched AND uncommitted → named; src/a.ts was committed → not named.
+    expect(vetoes[0]?.text).toContain("- src/b.ts");
+    expect(vetoes[0]?.text).not.toContain("src/a.ts");
+  });
+});
+
+describe("collectIncompleteCommitPaths", () => {
+  const z = (p: string[]) => p.join("\0") + (p.length ? "\0" : "");
+  const exec = (opts: {
+    head?: string;
+    runDelta?: string[];
+    uncommitted?: string[];
+    fail?: "rev-parse" | "write-tree" | "diff";
+  }): RibExec => ({
+    runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+    runText: async (cmd, args) => {
+      if (cmd === "git" && args[0] === "rev-parse") {
+        return opts.fail === "rev-parse"
+          ? { ok: false as const, error: "no HEAD", code: 128 }
+          : { ok: true as const, data: `${opts.head ?? "new-sha"}\n`, exitCode: 0 };
+      }
+      if (cmd === "git" && args[0] === "write-tree") {
+        return opts.fail === "write-tree"
+          ? { ok: false as const, error: "write-tree failed", code: 128 }
+          : { ok: true as const, data: "curtree", exitCode: 0 };
+      }
+      if (cmd === "git" && args[0] === "diff") {
+        if (opts.fail === "diff") return { ok: false as const, error: "diff failed", code: 128 };
+        const ref = args[args.indexOf("--find-renames") + 1];
+        return {
+          ok: true as const,
+          data: ref === "HEAD" ? z(opts.uncommitted ?? []) : z(opts.runDelta ?? []),
+          exitCode: 0,
+        };
+      }
+      return { ok: true as const, data: "", exitCode: 0 };
+    },
+  });
+
+  test("no commit this run (HEAD unchanged): committed=false, no paths", async () => {
+    const r = await collectIncompleteCommitPaths(
+      exec({ head: "base-sha" }),
+      "/repo",
+      "btree",
+      "base-sha",
+    );
+    expect(r).toEqual({ ok: true, committed: false, paths: [] });
+  });
+
+  test("committed with an uncommitted run edit: names the run-touched uncommitted path only", async () => {
+    const r = await collectIncompleteCommitPaths(
+      exec({
+        head: "new-sha",
+        runDelta: ["src/a.ts", "src/b.ts"],
+        uncommitted: ["src/b.ts", "vendor/inherited.txt"],
+      }),
+      "/repo",
+      "btree",
+      "base-sha",
+    );
+    // src/b.ts: run-touched AND uncommitted → reported. src/a.ts: committed (not uncommitted).
+    // vendor/inherited.txt: uncommitted but NOT run-touched (inherited dirt) → ignored.
+    expect(r).toEqual({ ok: true, committed: true, paths: ["src/b.ts"] });
+  });
+
+  test("committed with everything committed (only inherited dirt remains): committed=true, no paths", async () => {
+    const r = await collectIncompleteCommitPaths(
+      exec({ head: "new-sha", runDelta: ["src/a.ts"], uncommitted: ["vendor/inherited.txt"] }),
+      "/repo",
+      "btree",
+      "base-sha",
+    );
+    expect(r).toEqual({ ok: true, committed: true, paths: [] });
+  });
+
+  test("fails closed when git inspection errors after HEAD advanced", async () => {
+    for (const fail of ["rev-parse", "write-tree", "diff"] as const) {
+      const r = await collectIncompleteCommitPaths(
+        exec({ head: "new-sha", fail }),
+        "/repo",
+        "btree",
+        "base-sha",
+      );
+      expect(r.ok).toBe(false);
+    }
   });
 });
