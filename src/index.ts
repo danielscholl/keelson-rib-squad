@@ -792,7 +792,7 @@ function makeRunsTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
   return {
     name: "squad_runs",
     description:
-      "List archived coordinator runs for the resolved squad scope. `project` (optional id/name) resolves scope like squad_coordinate; without a resolvable project scope, this falls back to the default scope. Read-only.",
+      "List archived coordinator runs for the resolved squad scope. `project` (optional id/name) resolves scope like squad_coordinate — an unknown project errors; with no project and no selection it lists the default scope. Read-only.",
     inputSchema: runsSchema,
     async execute(input, ctx) {
       const parsed = runsSchema.safeParse(input);
@@ -808,9 +808,14 @@ function makeRunsTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
           asNonEmptyString(parsed.data.project),
           selection,
         );
-        const scopeId = resolution.ok ? resolution.scopeId : DEFAULT_SCOPE_ID;
-        const runs = await listRuns(scopeDataHome(home, scopeId));
-        emitResult(ctx, summarizeRuns(runs, scopeId));
+        // Mirror squad_code / squad_coordinate: a bad EXPLICIT project errors rather than
+        // silently listing the default scope, which would mask a typo and ignore the selection.
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_runs: ${resolution.error}`, true);
+          return;
+        }
+        const runs = await listRuns(scopeDataHome(home, resolution.scopeId));
+        emitResult(ctx, summarizeRuns(runs, resolution.scopeId));
       } catch (e) {
         emitResult(ctx, `squad_runs failed: ${errText(e)}`, true);
       }
