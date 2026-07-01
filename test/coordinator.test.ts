@@ -20,6 +20,7 @@ import {
   loadLedger,
   MAX_CHANGE_QUALITY_FAILURES,
   parseCoordinatorDirective,
+  provenanceLines,
   runCoordinator,
   saveLedger,
 } from "../src/coordinator.ts";
@@ -968,6 +969,59 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.lastCleanReviewRound).toBe(1);
   });
 
+  test("review gate: a PASS review attributes the verifying reviewer and provider", async () => {
+    const reviewer = "vera";
+    const reviewProvider = "reviewProvider";
+    const res = await runCoordinator({
+      ...base(),
+      roster: [
+        {
+          slug: "atlas",
+          name: "atlas",
+          role: "Engineer",
+          charter: "x",
+          status: "active",
+          tools: ["code"],
+        },
+        {
+          slug: reviewer,
+          name: reviewer,
+          role: "Reviewer",
+          charter: "x",
+          status: "active",
+          tools: ["read"],
+        },
+      ],
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: async (members, instruction): Promise<DispatchOutcome> => ({
+        task: instruction,
+        perMember: members.map((m) => ({
+          slug: m.slug,
+          name: m.name,
+          status: "ok" as const,
+          text: "RAI VERDICT: PASS\nno blocking defect found",
+          providerId: reviewProvider,
+        })),
+        notes: [],
+      }),
+    });
+
+    const verify = res.ledger.transcript.find((e) => e.kind === "verify");
+    expect(verify).toMatchObject({
+      kind: "verify",
+      speaker: reviewer,
+      provider: reviewProvider,
+      verdict: "pass",
+    });
+    expect(provenanceLines(res.ledger.transcript)).toContainEqual({
+      who: reviewer,
+      provider: reviewProvider,
+      verb: "reviewed",
+    });
+  });
+
   test("review gate: a BLOCK verdict vetoes done", async () => {
     const d = fakeDispatch("RAI VERDICT: BLOCK\nsrc/x.ts:12 unsafe default");
     const res = await runCoordinator({
@@ -983,6 +1037,65 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.transcript.some((e) => e.kind === "verify" && e.text.includes("BLOCK"))).toBe(
       true,
     );
+  });
+
+  test("review gate: a BLOCK review attributes the blocking reviewer", async () => {
+    const reviewProvider = "reviewProvider";
+    const res = await runCoordinator({
+      ...base(),
+      roster: [
+        {
+          slug: "atlas",
+          name: "atlas",
+          role: "Engineer",
+          charter: "x",
+          status: "active",
+          tools: ["code"],
+        },
+        {
+          slug: "vera",
+          name: "vera",
+          role: "Reviewer",
+          charter: "x",
+          status: "active",
+          tools: ["read"],
+        },
+        {
+          slug: "noah",
+          name: "noah",
+          role: "Reviewer",
+          charter: "x",
+          status: "active",
+          tools: ["read"],
+        },
+      ],
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: async (members, instruction): Promise<DispatchOutcome> => ({
+        task: instruction,
+        perMember: members.map((m) => ({
+          slug: m.slug,
+          name: m.name,
+          status: "ok" as const,
+          text:
+            m.slug === "noah"
+              ? "RAI VERDICT: BLOCK\nsrc/x.ts:12 unsafe default"
+              : "RAI VERDICT: PASS\nno blocking defect found",
+          providerId: reviewProvider,
+        })),
+        notes: [],
+      }),
+      limits: { maxRounds: 4 },
+    });
+
+    const block = res.ledger.transcript.find((e) => e.kind === "verify" && e.verdict === "block");
+    expect(block).toMatchObject({
+      kind: "verify",
+      speaker: "noah",
+      provider: reviewProvider,
+      verdict: "block",
+    });
   });
 
   test("#63: review prompt requires a reproducible defect and a PASS-by-default when unsubstantiated", async () => {

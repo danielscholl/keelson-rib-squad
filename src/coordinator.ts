@@ -120,6 +120,7 @@ export interface CoordinatorEntry {
   // The provider id that produced this step's work (code / dispatch arms) — the served-provider
   // provenance the standup and Run-loop board surface for a mixed-provider team.
   provider?: string;
+  verdict?: "pass" | "block";
   // Per-code-step repo footprint (including untracked files) surfaced for manager visibility.
   touched?: { files: number; insertions: number; deletions: number };
 }
@@ -781,6 +782,21 @@ function summarizeReview(outcome: DispatchOutcome): { summary: string; hadUsable
   return { summary, hadUsableOutput: true };
 }
 
+function reviewVerdictSpeaker(
+  members: readonly Member[],
+  results: readonly DispatchResult[],
+  blocked: boolean,
+): string | undefined {
+  const bySlug = new Map(results.map((r) => [r.slug, r]));
+  const matching = members
+    .map((m) => bySlug.get(m.slug))
+    .filter((r): r is DispatchResult => {
+      if (!r || r.status !== "ok" || r.text.trim().length === 0) return false;
+      return blocked ? hasBlockVerdict(r.text) : true;
+    });
+  return matching.length ? matching.map((r) => r.name).join(", ") : undefined;
+}
+
 // The distinct provider ids among a wave's successful members, joined for one entry's
 // provenance ("copilot" or "claude, copilot"); undefined when none resolved a provider.
 function distinctProviders(oks: readonly DispatchResult[]): string | undefined {
@@ -793,6 +809,7 @@ function distinctProviders(oks: readonly DispatchResult[]): string | undefined {
 const PROVENANCE_VERB: Partial<Record<CoordinatorEntry["kind"], string>> = {
   code: "coded",
   dispatch: "contributed",
+  verify: "reviewed",
 };
 
 export interface ProvenanceLine {
@@ -809,6 +826,7 @@ export function provenanceLines(transcript: readonly CoordinatorEntry[]): Proven
   for (const e of transcript) {
     const verb = PROVENANCE_VERB[e.kind];
     if (!verb || !e.provider) continue;
+    if (e.kind === "verify" && !e.verdict) continue;
     const who = e.speaker ?? "team";
     const key = `${who}|${e.provider}|${verb}`;
     if (seen.has(key)) continue;
@@ -1213,6 +1231,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         );
         const { summary, hadUsableOutput } = summarizeReview(review);
         const blocked = hasBlockVerdict(summary);
+        const reviewSpeaker = reviewVerdictSpeaker(reviewers, review.perMember, blocked);
         ledger = {
           ...ledger,
           transcript: appendEntry(ledger.transcript, {
@@ -1221,7 +1240,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             text: blocked
               ? `RAI VERDICT: BLOCK\n${summary}`
               : `review passed (no BLOCK verdict)\n${summary}`,
+            ...(reviewSpeaker ? { speaker: reviewSpeaker } : {}),
             ...(reviewProvider ? { provider: reviewProvider } : {}),
+            verdict: blocked ? "block" : "pass",
           }),
           ...(blocked || !hadUsableOutput
             ? { facts: foldFacts(ledger.facts, [cap(`RAI VERDICT: BLOCK\n${summary}`, FACT_CAP)]) }
