@@ -59,6 +59,10 @@ export interface CoordinatorLedger {
   // Durable run-delta baseline tree for change-quality checks. Captured once per active
   // ledger and reused across resumed invocations so prior-pass edits cannot evade the gate.
   baselineTree?: string;
+  // The commit HEAD pointed at when the run started, captured atomically with baselineTree so the
+  // incomplete-commit gate can tell whether the run created a commit. Absent for ledgers started
+  // before this field existed (the gate then degrades to its prior working-tree-only behavior).
+  baselineHeadSha?: string;
   // Accumulated findings (folded from each dispatch synthesis + the coordinator).
   facts: string[];
   // The coordinator's current plan as prose steps.
@@ -92,6 +96,9 @@ export interface CoordinatorLedger {
   // Consecutive done-gate change-quality failures; bounds quality refinement the same way
   // verification failures are bounded.
   changeQualityFailures?: number;
+  // Consecutive done-gate incomplete-commit failures; bounded like the counters above so a run
+  // that keeps leaving edits uncommitted terminates rather than burning the whole round budget.
+  incompleteCommitFailures?: number;
   // The latest round that executed a code step (our concrete "code changed/ran" marker).
   lastCodeRound?: number;
   // The latest round where the project-bound adversarial review was clean (no BLOCK verdict).
@@ -718,6 +725,61 @@ async function collectRunDiffSignals(
   return { ok: true, diffNumstat: { files, tokenNet, nameStatus: fileStatus }, addedLines };
 }
 
+function splitNulPaths(out: string): string[] {
+  return out.split("\0").filter((p) => p.length > 0);
+}
+
+// Incomplete-commit inspection (issue #97). Once a run has created a commit, the artifact that
+// ships is that commit — not the working tree. A run edit left uncommitted (unstaged, staged but
+// not committed, or an untracked new file) still passes the working-tree verify gate yet won't
+// ship, so CI builds a different tree than the gate blessed: local green, CI red.
+//
+// The check is a single intersection over two full-tree diffs. Both the baseline and the current
+// tree are `git add -A` scratch-index trees (see captureWorkingTreeTree), so staged, unstaged, and
+// untracked content all compare uniformly through ONE mechanism — no per-git-state special-casing.
+//   runDelta      = paths the run changed        (baselineTree .. current working tree)
+//   uncommitted   = paths not in the commit yet  (HEAD .. current working tree)
+//   incomplete    = runDelta ∩ uncommitted       (a run edit that will not ship)
+// Scoping to runDelta means pre-existing dirt the run never touched is ignored (it is in neither
+// set), so the gate does not punish an operator's inherited working-tree state. Read-only: the
+// scratch index lives in a temp dir; the operator's working tree is never mutated.
+export async function collectIncompleteCommitPaths(
+  exec: RibExec,
+  cwd: string,
+  baselineTree: string,
+  baselineHeadSha: string,
+): Promise<{ ok: true; committed: boolean; paths: string[] } | { ok: false; error: string }> {
+  const head = await exec.runText("git", ["rev-parse", "HEAD"], {
+    cwd,
+    timeoutMs: VERIFY_TIMEOUT_MS,
+  });
+  if (!head.ok) return { ok: false, error: head.error };
+  // No commit this run: the working tree IS the deliverable, so commit-completeness does not apply
+  // (the plain working-tree verify already covered it). Leave that path's behavior unchanged.
+  if (head.data.trim() === baselineHeadSha) return { ok: true, committed: false, paths: [] };
+  const current = await captureWorkingTreeTree(exec, cwd);
+  if (!current.ok) return { ok: false, error: current.error };
+  const [runDelta, uncommitted] = await Promise.all([
+    exec.runText(
+      "git",
+      ["diff", "--name-only", "-z", "--find-renames", baselineTree, current.tree],
+      {
+        cwd,
+        timeoutMs: VERIFY_TIMEOUT_MS,
+      },
+    ),
+    exec.runText("git", ["diff", "--name-only", "-z", "--find-renames", "HEAD", current.tree], {
+      cwd,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+    }),
+  ]);
+  if (!runDelta.ok) return { ok: false, error: runDelta.error };
+  if (!uncommitted.ok) return { ok: false, error: uncommitted.error };
+  const runPaths = new Set(splitNulPaths(runDelta.data));
+  const paths = [...new Set(splitNulPaths(uncommitted.data).filter((p) => runPaths.has(p)))].sort();
+  return { ok: true, committed: true, paths };
+}
+
 // Run the operator-configured verify commands against the project root via the exec seam.
 // Non-paid (processes, not LLM turns). Each command runs through `bash -c` so an operator string
 // like "bun run check" or "bun --filter '*' test" works verbatim. acceptNonZeroExit makes a
@@ -1089,7 +1151,19 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           if (ledger.baselineTree) return { ok: true as const, tree: ledger.baselineTree };
           const captured = await captureWorkingTreeTree(exec, project.rootPath);
           if (captured.ok) {
-            ledger = { ...ledger, baselineTree: captured.tree, updatedAt: now() };
+            // Co-capture HEAD at the SAME boundary as the baseline tree (one atomic ledger write),
+            // so the incomplete-commit gate compares against the run's true start commit. A missing
+            // HEAD (detached/empty repo) simply leaves baselineHeadSha unset — the gate skips.
+            const head = await exec.runText("git", ["rev-parse", "HEAD"], {
+              cwd: project.rootPath,
+              timeoutMs: VERIFY_TIMEOUT_MS,
+            });
+            ledger = {
+              ...ledger,
+              baselineTree: captured.tree,
+              ...(head.ok && head.data.trim() ? { baselineHeadSha: head.data.trim() } : {}),
+              updatedAt: now(),
+            };
             await persist(ledger);
           }
           return captured;
@@ -1335,6 +1409,62 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           }),
           updatedAt: now(),
         };
+      }
+      // Incomplete-commit gate (issue #97): once the run has created a commit, refuse `done` if any
+      // path the run touched is still uncommitted — it passed the working-tree verify above but will
+      // not ship. Non-destructive (read-only git) and fail-closed: if the inspection cannot complete
+      // on a run that advanced HEAD, veto rather than assume the commit is complete. Bounded by its
+      // own counter so it cannot loop forever.
+      if (
+        !givingUp &&
+        opts.getExec &&
+        project &&
+        ledger.baselineHeadSha &&
+        runStartTree?.ok &&
+        effectiveLastCodeRound(ledger) !== undefined &&
+        !opts.abortSignal?.aborted
+      ) {
+        const incomplete = await collectIncompleteCommitPaths(
+          opts.getExec,
+          project.rootPath,
+          runStartTree.tree,
+          ledger.baselineHeadSha,
+        );
+        if (!incomplete.ok || (incomplete.committed && incomplete.paths.length > 0)) {
+          const failures = (ledger.incompleteCommitFailures ?? 0) + 1;
+          const text = incomplete.ok
+            ? `incomplete commit: these run edits are uncommitted and will not ship — commit or discard them before done:\n${incomplete.paths.map((p) => `- ${p}`).join("\n")}`
+            : `incomplete-commit check could not be completed — failing closed: ${incomplete.error}`;
+          ledger = {
+            ...ledger,
+            incompleteCommitFailures: failures,
+            facts: foldFacts(ledger.facts, [cap(text, FACT_CAP)]),
+            transcript: appendEntry(ledger.transcript, {
+              round: ledger.round,
+              kind: "verify",
+              text,
+            }),
+            updatedAt: now(),
+          };
+          if (failures >= MAX_VERIFY_FAILURES) {
+            status = RUN_STATUS_VERIFICATION_FAILED;
+            ledger = {
+              ...ledger,
+              status: RUN_STATUS_VERIFICATION_FAILED,
+              summary: incomplete.ok
+                ? `verification failed after ${failures} attempts: incomplete commit (${incomplete.paths.length} uncommitted run edit(s))`
+                : `verification failed after ${failures} attempts: incomplete-commit check error (${incomplete.error})`,
+              inFlight: undefined,
+              updatedAt: now(),
+            };
+            await persist(ledger);
+            break;
+          }
+          ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
+          await persist(ledger);
+          continue;
+        }
+        ledger = { ...ledger, incompleteCommitFailures: 0, updatedAt: now() };
       }
       if (
         !givingUp &&
