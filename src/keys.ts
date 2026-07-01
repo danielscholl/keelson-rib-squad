@@ -16,3 +16,7 @@ export const CAST_KEY = "rib:squad:cast";
 // persisted coordinator-ledger.json) and rendered on the Squad surface; the ledger is produced
 // by the squad_coordinate tool's Magentic loop, refreshed when a run completes.
 export const COORDINATOR_KEY = "rib:squad:coordinator";
+// The run history panel. Bound to the squad-runs collector (it renders the archived
+// coordinator run ledgers under the selected scope) and rendered on the Squad surface;
+// the archive is written by the coordinator on each completed run.
+export const SQUAD_RUNS_KEY = "rib:squad:runs";

@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type CanvasTone, canvasViewSchema } from "@keelson/shared";
-import {
-  buildRosterBoard,
-  projectPickerSection,
-  type RosterPulse,
-  SELECT_PROJECT_ACTION,
-} from "../../src/boards/roster.ts";
+import { buildRosterBoard, type RosterPulse } from "../../src/boards/roster.ts";
 import { GENESIS_STARTERS } from "../../src/starters.ts";
 import type { Member } from "../../src/types.ts";
 
@@ -149,6 +144,8 @@ describe("buildRosterBoard populated", () => {
     const retire = actions.find((a) => a.type === "retire");
     expect(retire).toMatchObject({ type: "retire", destructive: true, payload: { slug: "lead" } });
     expect(retire?.confirm?.confirmLabel).toBe("Retire");
+    // Surfaced inline (a visible confirm-guarded button), not tucked in the ⋯ overflow.
+    expect(retire?.inline).toBe(true);
     expect(actions.findIndex((a) => a.type === "retire")).toBe(actions.length - 1);
   });
 
@@ -186,6 +183,7 @@ describe("buildRosterBoard pulse", () => {
     members: 2,
     active: 2,
     inactive: 0,
+    codeCapable: 0,
     ...over,
   });
 
@@ -201,14 +199,20 @@ describe("buildRosterBoard pulse", () => {
     expect(board.sections.some((s) => s.kind === "stats")).toBe(false);
   });
 
-  test("with pulse, sections[0] is a stats section carrying the three labels", () => {
-    const board = buildRosterBoard(two, pulse({ active: 1, inactive: 1 }));
+  test("with pulse, sections[0] is a stats section carrying the four labels", () => {
+    const board = buildRosterBoard(two, pulse({ active: 1, inactive: 1, codeCapable: 1 }));
     expect(board.sections[0]?.kind).toBe("stats");
-    expect(statsItems(board).map((i) => i.label)).toEqual(["Members", "Active", "Inactive"]);
+    expect(statsItems(board).map((i) => i.label)).toEqual([
+      "Members",
+      "Active",
+      "Inactive",
+      "Code-capable",
+    ]);
     const byLabel = new Map(statsItems(board).map((i) => [i.label, i.value]));
     expect(byLabel.get("Members")).toBe(2);
     expect(byLabel.get("Active")).toBe(1);
     expect(byLabel.get("Inactive")).toBe(1);
+    expect(byLabel.get("Code-capable")).toBe(1);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 
@@ -225,96 +229,56 @@ describe("buildRosterBoard pulse", () => {
   });
 });
 
-describe("project picker", () => {
-  const projects = [
-    { id: "alpha", name: "Alpha" },
-    { id: "beta", name: "Beta" },
-  ];
-  const member = (): Member => ({
-    slug: "lead",
-    name: "Lead",
-    role: "Tech Lead",
-    charter: "You are the Lead.",
-    status: "active",
-  });
-
-  function pickerItems(section: ReturnType<typeof projectPickerSection>) {
-    if (section.kind !== "actions") throw new Error("picker is not an actions section");
-    return section.items;
-  }
-
-  test("projectPickerSection leads with default, then one button per project", () => {
-    const section = projectPickerSection(projects, "default");
-    expect(section.kind).toBe("actions");
-    if (section.kind === "actions") expect(section.title).toBe("Project");
-    const items = pickerItems(section);
-    expect(items.map((i) => i.type)).toEqual([
-      SELECT_PROJECT_ACTION,
-      SELECT_PROJECT_ACTION,
-      SELECT_PROJECT_ACTION,
-    ]);
-    expect(items.map((i) => (i.payload as { scopeId: string }).scopeId)).toEqual([
-      "default",
-      "alpha",
-      "beta",
-    ]);
-  });
-
-  test("the active scope is marked with a ✓ label prefix and a brand tone", () => {
-    const items = pickerItems(projectPickerSection(projects, "alpha"));
-    const alpha = items.find((i) => (i.payload as { scopeId: string }).scopeId === "alpha");
-    expect(alpha?.label).toBe("✓ Alpha");
-    expect(alpha?.tone).toBe("brand");
-    // The inactive buttons carry the bare name and no tone (no `current` field exists).
-    const beta = items.find((i) => (i.payload as { scopeId: string }).scopeId === "beta");
-    expect(beta?.label).toBe("Beta");
-    expect(beta?.tone).toBeUndefined();
-    const dflt = items.find((i) => (i.payload as { scopeId: string }).scopeId === "default");
-    expect(dflt?.label).toBe("default");
-    expect(dflt?.tone).toBeUndefined();
-  });
-
-  test("the default scope active marks the default button", () => {
-    const items = pickerItems(projectPickerSection(projects, "default"));
-    const dflt = items[0];
-    expect(dflt?.label).toBe("✓ default");
-    expect(dflt?.tone).toBe("brand");
-  });
-
-  test("with a picker, the Project section leads the board and validates", () => {
-    const board = buildRosterBoard([member()], undefined, { projects, activeScopeId: "alpha" });
-    const first = board.sections[0];
-    expect(first?.kind).toBe("actions");
-    if (first?.kind === "actions") expect(first.title).toBe("Project");
-    // The picker sits above even the pulse when both are present.
-    const withPulse = buildRosterBoard(
-      [member()],
-      { members: 1, active: 1, inactive: 0 },
-      {
-        projects,
-        activeScopeId: "alpha",
-      },
-    );
-    expect(withPulse.sections[0]?.kind).toBe("actions");
-    expect(withPulse.sections[1]?.kind).toBe("stats");
+describe("buildRosterBoard persistent verbs", () => {
+  test("a populated roster shows a single Add-a-member + Manage — Cast and archetypes are cold-start only", () => {
+    const board = buildRosterBoard([member()]);
+    const titles = board.sections
+      .filter((s) => s.kind === "actions")
+      .map((s) => (s.kind === "actions" ? s.title : undefined));
+    expect(titles).toContain("Add a member");
+    expect(titles).toContain("Manage");
+    // Cast + the archetype quick-picks are cold-start scaffolding, not steady state.
+    expect(titles).not.toContain("Cast a squad");
+    expect(titles).not.toContain("Author a member");
+    const items = actionItems(board);
+    expect(items.some((i) => i.type === "cast-propose")).toBe(false);
+    expect(items.filter((i) => i.type === "author-archetype")).toHaveLength(0);
+    // Adding a member is still reachable — one describe-your-own genesis launch.
+    const add = items.find((i) => i.type === "describe-own");
+    expect(add?.fields?.[0]?.name).toBe("brief");
+    expect(board.sections.some((s) => s.kind === "cards")).toBe(true);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(canvasViewSchema.safeParse(withPulse).success).toBe(true);
   });
 
-  test("omitting the picker is byte-identical to today (no Project section)", () => {
-    const without = buildRosterBoard([member()]);
-    expect(without).toEqual(buildRosterBoard([member()], undefined, undefined));
-    expect(without.sections.some((s) => s.kind === "actions" && s.title === "Project")).toBe(false);
-  });
-
-  test("an empty project name still yields a valid board (label falls back, not min(1)-invalid)", () => {
-    const blank = [{ id: "p7", name: "" }];
-    const button = pickerItems(projectPickerSection(blank, "default")).find(
-      (i) => (i.payload as { scopeId: string }).scopeId === "p7",
+  test("cold start keeps the full launchpad — Cast + archetype quick-picks + describe", () => {
+    const items = actionItems(buildRosterBoard([]));
+    expect(items.some((i) => i.type === "cast-propose")).toBe(true);
+    expect(items.filter((i) => i.type === "author-archetype")).toHaveLength(
+      GENESIS_STARTERS.length,
     );
-    // Canvas label is min(1): an empty name must fall back to the id, not blank the board.
-    expect(button?.label).toBe("p7");
-    const board = buildRosterBoard([member()], undefined, { projects: blank, activeScopeId: "p7" });
-    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(items.some((i) => i.type === "describe-own")).toBe(true);
+  });
+
+  test("a Manage section offers retire-all only when there are members, with a count in the confirm", () => {
+    const cold = buildRosterBoard([]);
+    expect(cold.sections.some((s) => s.kind === "actions" && s.title === "Manage")).toBe(false);
+    const board = buildRosterBoard([member({ slug: "a" }), member({ slug: "b", name: "Bo" })]);
+    const manage = board.sections.find((s) => s.kind === "actions" && s.title === "Manage");
+    expect(manage?.kind).toBe("actions");
+    const retireAll = manage?.kind === "actions" ? manage.items[0] : undefined;
+    expect(retireAll?.type).toBe("retire-all");
+    expect(retireAll?.destructive).toBe(true);
+    expect(retireAll?.confirm?.body).toContain("2 members");
+  });
+
+  test("a code-capable member's card carries an Assign-a-code-task action; a text-only member does not", () => {
+    const coder = cards(buildRosterBoard([member({ slug: "mc", tools: ["code"] })]))[0];
+    const assign = coder?.actions?.find((a) => a.type === "assign-code");
+    expect(assign).toBeDefined();
+    expect(assign?.payload).toEqual({ slug: "mc" });
+    expect(assign?.fields?.[0]?.name).toBe("task");
+    expect(assign?.fields?.[0]?.multiline).toBe(true);
+    const textOnly = cards(buildRosterBoard([member({ slug: "verbal" })]))[0];
+    expect(textOnly?.actions?.some((a) => a.type === "assign-code")).toBe(false);
   });
 });
