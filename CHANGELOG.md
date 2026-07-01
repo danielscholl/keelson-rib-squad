@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.6.0...v0.7.0) (2026-07-01)
+
+
+### Added
+
+* add operator-triggered draft change-request pipeline (GitHub PR / GitLab MR) ([#96](https://github.com/danielscholl/keelson-rib-squad/issues/96)) ([a8c109a](https://github.com/danielscholl/keelson-rib-squad/commit/a8c109aa1647334c3af41a33276df1cbb152a0bc))
+* add read-only squad_view_diff tool ([#99](https://github.com/danielscholl/keelson-rib-squad/issues/99)) ([32898b2](https://github.com/danielscholl/keelson-rib-squad/commit/32898b26f3d838d55bc77abd9b3c1f917d598625))
+* add round-budget indicator to coordinator run-loop board ([#93](https://github.com/danielscholl/keelson-rib-squad/issues/93)) ([a98e2f7](https://github.com/danielscholl/keelson-rib-squad/commit/a98e2f7e3d0176aa6caf9c7bc6daedc9f699138b))
+* attribute reviewer verdicts with a 'reviewed' provenance verb ([#91](https://github.com/danielscholl/keelson-rib-squad/issues/91)) ([e5e5190](https://github.com/danielscholl/keelson-rib-squad/commit/e5e5190d1ceaabd4eac8c248deb86f80e459286f))
+* capture per-check verification breakdown at done-gate ([#90](https://github.com/danielscholl/keelson-rib-squad/issues/90)) ([5ebc99c](https://github.com/danielscholl/keelson-rib-squad/commit/5ebc99c9332b358d7deb7498bfacd56d571a08bf))
+* **coordinator:** ground prompt with bound project details ([#103](https://github.com/danielscholl/keelson-rib-squad/issues/103)) ([582b229](https://github.com/danielscholl/keelson-rib-squad/commit/582b2293814e9cf847dcc04dc41014079588e056))
+* **coordinator:** incomplete-commit gate at the done-gate ([#102](https://github.com/danielscholl/keelson-rib-squad/issues/102)) ([c8a58a4](https://github.com/danielscholl/keelson-rib-squad/commit/c8a58a482d50f43b4347e35f4c7b776982664d71))
+* **review:** add repo-agnostic consistency + test-adequacy lenses to the adversarial review ([#94](https://github.com/danielscholl/keelson-rib-squad/issues/94)) ([b297292](https://github.com/danielscholl/keelson-rib-squad/commit/b2972929bf11be78e3fa5d67480949f88ab2bb28))
+* **surface:** redesign the Squad surface into a workflows-shaped console ([#87](https://github.com/danielscholl/keelson-rib-squad/issues/87)) ([b5e80d3](https://github.com/danielscholl/keelson-rib-squad/commit/b5e80d3a9a7de75da4f43d4d772555e60968c3dc))
+
 ## [0.6.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.5.0...v0.6.0) (2026-07-01)
 
 
