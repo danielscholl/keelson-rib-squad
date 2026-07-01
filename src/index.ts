@@ -643,6 +643,10 @@ function makeOpenPrTool(
         emitResult(ctx, "squad_open_pr: exec seam unavailable on this harness", true);
         return;
       }
+      if (!projectsSeam) {
+        emitResult(ctx, "squad_open_pr: projects seam unavailable on this harness", true);
+        return;
+      }
       try {
         const home = squadDataHome();
         const selection = await readSelectedProject(home);

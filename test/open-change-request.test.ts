@@ -266,6 +266,31 @@ describe("openChangeRequest", () => {
     expectNoMerge(calls);
   });
 
+  test("does not misdetect a look-alike host (notgithub.com) as a supported forge", async () => {
+    const { exec, calls } = makeExec((cmd, args) => {
+      if (cmd === "git" && argsEqual(args, ["remote"])) return ok("origin\n");
+      if (cmd === "git" && argsEqual(args, ["remote", "get-url", "--push", "origin"])) {
+        return ok("git@notgithub.com:org/repo.git\n");
+      }
+      if (cmd === "git" && argsEqual(args, ["branch", "--show-current"])) return ok("main\n");
+      if (cmd === "git" && argsEqual(args, ["config", "--get", "branch.main.remote"])) {
+        return ok("origin\n");
+      }
+      return fail(`unexpected command: ${cmd} ${args.join(" ")}`);
+    });
+
+    const result = await openChangeRequest({ ...request, exec });
+
+    expect(result).toEqual({
+      ok: false,
+      error:
+        'unsupported forge host "notgithub.com" for remote "origin"; use a GitHub/GitHub Enterprise or GitLab remote',
+    });
+    expect(commandCalls(calls, "gh")).toHaveLength(0);
+    expect(commandCalls(calls, "glab")).toHaveLength(0);
+    expectNoMerge(calls);
+  });
+
   const cliFailureCases = [
     {
       cli: "gh" as const,

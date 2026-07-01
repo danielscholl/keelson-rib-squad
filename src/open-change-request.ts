@@ -72,11 +72,11 @@ function hostFromRemoteUrl(remoteUrl: string): string | undefined {
 }
 
 function detectForge(host: string): Forge | undefined {
-  const h = host.toLowerCase();
-  if (h === "github.com" || h.includes("github") || h === "ghe.com" || h.includes(".ghe.")) {
-    return GITHUB_FORGE;
-  }
-  if (h === "gitlab.com" || h.includes("gitlab")) return GITLAB_FORGE;
+  // Match on dot-delimited hostname segments, not substrings, so a self-hosted
+  // `github.corp.example` is detected while an unrelated `notgithub.com` is not.
+  const segments = host.toLowerCase().split(".");
+  if (segments.includes("github") || segments.includes("ghe")) return GITHUB_FORGE;
+  if (segments.includes("gitlab")) return GITLAB_FORGE;
   return undefined;
 }
 
