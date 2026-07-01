@@ -147,8 +147,11 @@ async function selectRemote(exec: RibExec, cwd: string): Promise<Remote | OpenCh
 
   const upstream = await configuredUpstreamRemote(exec, cwd);
   const upstreamRemote = upstream ? all.find((r) => r.name === upstream) : undefined;
+  // Prefer the branch's upstream only when it resolves to a supported forge; a non-forge
+  // upstream (e.g. a fork remote) must not mask a forge-bearing remote like origin.
   const selected =
-    upstreamRemote ?? (all.length === 1 ? all[0] : (all.find((r) => r.forge) ?? all[0]));
+    (upstreamRemote?.forge ? upstreamRemote : undefined) ??
+    (all.length === 1 ? all[0] : (all.find((r) => r.forge) ?? all[0]));
   if (!selected) {
     return {
       ok: false,
@@ -191,26 +194,39 @@ async function hasHead(exec: RibExec, cwd: string): Promise<OpenChangeRequestRes
   return { ok: false, error: "no commits to submit; the repository has no HEAD commit yet" };
 }
 
-async function hasCommitsBeyondRemoteHead(
-  exec: RibExec,
-  cwd: string,
-  remote: string,
-): Promise<OpenChangeRequestResult | undefined> {
+// The base to count commits against: the remote's default branch when that symbolic ref is
+// present, else the branch's upstream tracking ref. Many clones don't set `refs/remotes/<r>/HEAD`,
+// so the `@{u}` fallback lets the "nothing to submit" preflight short-circuit before mutating.
+async function baseRef(exec: RibExec, cwd: string, remote: string): Promise<string | undefined> {
   const remoteHead = await runText(exec, cwd, "git", [
     "symbolic-ref",
     "--quiet",
     "--short",
     `refs/remotes/${remote}/HEAD`,
   ]);
-  if (!remoteHead.ok) return undefined;
-  const base = remoteHead.data.trim();
+  if (remoteHead.ok && remoteHead.data.trim()) return remoteHead.data.trim();
+  const upstream = await runText(exec, cwd, "git", [
+    "rev-parse",
+    "--abbrev-ref",
+    "--symbolic-full-name",
+    "@{u}",
+  ]);
+  return upstream.ok && upstream.data.trim() ? upstream.data.trim() : undefined;
+}
+
+async function hasCommitsBeyondRemoteHead(
+  exec: RibExec,
+  cwd: string,
+  remote: string,
+): Promise<OpenChangeRequestResult | undefined> {
+  const base = await baseRef(exec, cwd, remote);
   if (!base) return undefined;
   const count = await runText(exec, cwd, "git", ["rev-list", "--count", `${base}..HEAD`]);
   if (!count.ok) return undefined;
   if (Number(count.data.trim()) === 0) {
     return {
       ok: false,
-      error: "no commits to submit; HEAD has no commits beyond the remote default branch",
+      error: "no commits to submit; HEAD has no commits beyond the base branch",
     };
   }
   return undefined;

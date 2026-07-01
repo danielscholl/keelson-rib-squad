@@ -291,6 +291,48 @@ describe("openChangeRequest", () => {
     expectNoMerge(calls);
   });
 
+  test("falls back to a forge remote when the branch upstream is a non-forge remote", async () => {
+    const { exec, calls } = makeExec((cmd, args) => {
+      if (cmd === "git" && argsEqual(args, ["remote"])) return ok("origin\nupstream\n");
+      if (cmd === "git" && argsEqual(args, ["remote", "get-url", "--push", "origin"])) {
+        return ok("git@github.com:org/repo.git\n");
+      }
+      if (cmd === "git" && argsEqual(args, ["remote", "get-url", "--push", "upstream"])) {
+        return ok("git@example.com:org/repo.git\n");
+      }
+      if (cmd === "git" && argsEqual(args, ["branch", "--show-current"])) return ok("main\n");
+      if (cmd === "git" && argsEqual(args, ["config", "--get", "branch.main.remote"])) {
+        return ok("upstream\n");
+      }
+      if (cmd === "git" && argsEqual(args, ["rev-parse", "--verify", "HEAD"])) return ok("abc\n");
+      if (
+        cmd === "git" &&
+        argsEqual(args, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+      ) {
+        return ok("origin/main\n");
+      }
+      if (cmd === "git" && argsEqual(args, ["rev-list", "--count", "origin/main..HEAD"])) {
+        return ok("1\n");
+      }
+      if (cmd === "git" && argsEqual(args, ["checkout", "-b", "ship-the-feature"])) return ok();
+      if (
+        cmd === "git" &&
+        argsEqual(args, ["push", "--set-upstream", "origin", "ship-the-feature"])
+      ) {
+        return ok();
+      }
+      if (cmd === "gh") return ok("https://github.com/org/repo/pull/7\n");
+      return fail(`unexpected command: ${cmd} ${args.join(" ")}`);
+    });
+
+    const result = await openChangeRequest({ ...request, exec });
+
+    expect(result).toEqual({ ok: true, url: "https://github.com/org/repo/pull/7" });
+    expectNonForcePush(calls, "origin", "ship-the-feature");
+    expect(commandCalls(calls, "glab")).toHaveLength(0);
+    expectNoMerge(calls);
+  });
+
   const cliFailureCases = [
     {
       cli: "gh" as const,
@@ -360,7 +402,7 @@ describe("openChangeRequest", () => {
 
     expect(result).toEqual({
       ok: false,
-      error: "no commits to submit; HEAD has no commits beyond the remote default branch",
+      error: "no commits to submit; HEAD has no commits beyond the base branch",
     });
     expect(commandCalls(calls, "git", "checkout")).toHaveLength(0);
     expect(commandCalls(calls, "git", "push")).toHaveLength(0);
