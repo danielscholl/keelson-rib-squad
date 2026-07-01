@@ -414,6 +414,7 @@ function coordinatorPrompt(
   replan: boolean,
   canCode: boolean,
   recalled: readonly string[],
+  project?: { name: string; rootPath: string },
 ): string {
   const planBlock = ledger.plan.length
     ? ledger.plan.map((s, i) => `${i + 1}. ${s}`).join("\n")
@@ -441,6 +442,9 @@ function coordinatorPrompt(
     ledger.outcomeRepeat && ledger.outcomeRepeat.count >= REPEAT_STALL_AT
       ? `\n⚠ The last step produced an IDENTICAL outcome ${ledger.outcomeRepeat.count} rounds running. Re-dispatching it will not help — change approach: a different member, a different step, or investigate the blocker. Do NOT repeat the same instruction to the same member.\n`
       : "";
+  const groundingBlock = project
+    ? `\nGROUNDING:\nBound project: "${project.name}" — repository root: ${project.rootPath}. Every code step is CONFINED to this repository (the member is dropped into it). Refer to files by their path within this project; do NOT name, guess, or search the filesystem for any other repository or path.\n`
+    : "";
   // The code arm is only offered when a project is bound (the turn is confined to it);
   // a code-tagged member then EDITS the repo instead of just reasoning.
   const codeNote = canCode
@@ -451,7 +455,7 @@ function coordinatorPrompt(
   const needsNote =
     '\n- if the members above lack a capability this goal needs, add "needs":["<the missing specialist, e.g. a security reviewer>"] so the operator can cast them. This is a non-blocking recommendation — keep going with the best available member; do NOT wait.';
   return `Goal:\n${ledger.task}
-${replanNote}${repeatNote}
+${replanNote}${repeatNote}${groundingBlock}
 Members you may assign (use the slug as next_speaker):
 ${renderRoster(roster)}
 
@@ -1220,7 +1224,14 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       opts.runAgentTurn,
       {
         system: COORDINATOR_SYSTEM,
-        prompt: coordinatorPrompt(ledger, opts.roster, replanRequested, Boolean(code), recalled),
+        prompt: coordinatorPrompt(
+          ledger,
+          opts.roster,
+          replanRequested,
+          Boolean(code),
+          recalled,
+          opts.project,
+        ),
         ...(normalizedManagerProvider ? { provider: normalizedManagerProvider } : {}),
         ...(normalizedManagerModel ? { model: normalizedManagerModel } : {}),
       },
