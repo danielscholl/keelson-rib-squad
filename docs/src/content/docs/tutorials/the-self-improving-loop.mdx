@@ -1,0 +1,200 @@
+---
+title: The self-improving loop
+description: Run the coordinator across two related passes on the same project and watch a decision the first pass recorded get recalled into, and actually shape, the second.
+sidebar:
+  order: 4
+---
+
+Every coordinator run already recalls whatever the project's governed ledger
+holds before it does anything else, and writes at most one new entry back when
+it genuinely finishes. You do not have to opt into that. The only way to
+actually see it working, rather than take it on faith, is to run the loop
+twice on related work in the same project and watch what the second pass
+carries over from the first. That is this tutorial: two passes, one project,
+and a close look at the exact mechanism that connects them.
+
+:::note[Before you start]
+A running Keelson server with a provider signed in, the Squad rib installed,
+and a cast roster on a real project, the state you should already have from
+[Your first squad run](../your-first-squad-run/) and
+[A mixed-provider review](../a-mixed-provider-review/). You do not need a
+mixed-provider roster for this one; a single member is enough, since the
+point here is memory across runs, not independent judgment within one. Each
+pass below is one coordinator run, which is one or more paid agent turns, so
+expect to spend real tokens on both passes.
+:::
+
+## Why two passes, not one
+
+A single coordinator run recalls before it plans and reflects only once, at
+its own close. Watching one run do that tells you almost nothing, because
+there is nothing yet in the ledger for it to recall; the interesting behavior
+is entirely in what a *second*, later run does differently because the first
+one happened. The full design reasoning for why recall happens once at the
+start and reflection happens once at the end lives in
+[Memory that compounds](../../design/memory-that-compounds/). This tutorial
+does not re-argue that case; it puts you in front of the two runs so you can
+watch the case be true.
+
+## Pick two tasks that are actually related
+
+The two passes need to share a project and a throughline, or there is nothing
+for the second one to inherit. A pair that works well: an analysis task in
+the first pass that produces a real, stated opinion, and a follow-up task in
+the second pass that a specialist would answer differently if it already knew
+that opinion. For example, on a project with more than one place that talks
+to an external service:
+
+- **Pass 1:** "Look at how this project handles a failed call to an external
+  service in its main data path, and tell me the one change you would make
+  first."
+- **Pass 2:** "Now look at the next place in the codebase that talks to an
+  external service, and say whether the same fix applies there."
+
+Neither task asks anyone to edit anything, on purpose. Recall and reflection
+do not depend on a project being edited: they depend on the run finishing
+project-bound and genuinely done. Keeping both passes as read-only review
+keeps this walkthrough cheap and fast, and keeps the mechanism you are
+watching the same one that would fire on a coding task. If your own task pair
+does touch code, an adversarial review, command verification, and a
+change-quality check all run before a coding pass is allowed to finish; that
+machinery is real and worth knowing about, but it is not what this tutorial
+is showing you, and [The coordinator loop](../../design/the-coordinator-loop/)
+covers it in full.
+
+## Run the first pass
+
+Open the Squad surface with the project selected, and use the **Coordinate on
+a task** composer on the Run loop panel. Type pass 1's task and confirm. This
+launches `squad-coordinate-run`, a workflow bounded to six rounds for a
+surface-launched run, plenty for a single-focus review task, and it keeps you
+on the Squad surface to watch it rather than sending you to the Workflows
+tab. You can launch the same run from the CLI instead:
+
+```bash
+keelson workflow run squad-coordinate-run --arguments "look at how this project handles a failed call to an external service in its main data path, and tell me the one change you would make first"
+```
+
+Watch the Run loop panel while it runs. The status pill moves from active to
+done, the round counter climbs, and you will see a Plan section once the
+manager states one, a Findings section as facts accumulate, an In flight card
+naming whoever is actively working each round, and a Worked by line crediting
+the member (and its provider) once real work has happened. When the manager
+reports the goal satisfied, the run reaches `RUN_STATUS_DONE`, the Transcript
+section shows the closing entries, and the panel settles.
+
+## What happens the instant it finishes
+
+A run that reaches a genuine `done`, not a give-up and not a change-quality
+failure, triggers one more turn before anything is shown as finished: a
+dedicated scribe turn reads the task, the run's final summary, its most
+recent findings, and whatever the project's ledger already held going in, and
+decides one of two things: record one decontextualized decision, or skip.
+Skip is a legitimate outcome, not a failure. A pass that stayed shallow or
+did not land on anything worth generalizing is expected to skip, and an
+honest skip protects the next run from being grounded in noise. If the
+scribe turn itself cannot run (it errors, times out, or comes back
+unparseable), the coordinator falls back to writing the run's own raw summary
+as the decision instead, so a completed run still leaves something behind
+even without a working distillation pass.
+
+If your pass 1 skips and you want to see the recall step deterministically on
+your first try, you do not need to depend on the scribe's judgment call: open
+the Decisions panel and use its **Record a decision** action to write the
+same idea by hand, a one-line summary and the fuller reasoning behind it.
+Both paths, the coordinator's own reflection and a human typing it into the
+panel, write to the exact same governed ledger with the same evidence-default
+status, so pass 2 recalls either one identically.
+
+## Read the row the ledger now holds
+
+Open the Decisions panel (it carries no refresh cadence, so give it a moment
+or reopen it if you do not see the new row right away). You should see one
+new card: a one-line title taken from the decision's summary, a `decision`
+pill, a `generated` provenance label if the coordinator's own reflection
+wrote it, and a context field holding the fuller reasoning. That card is the
+entire interface to what pass 2 is about to inherit, nothing else is stored
+about it that the panel does not show you.
+
+## Run the second pass
+
+Launch pass 2 the same way, from the same composer or the same CLI command,
+with pass 2's task text. Before its first round even starts, the coordinator
+resolves recall for the project: up to eight of the ledger's most recent
+decisions and lessons, each with a real excerpt of its content, not just its
+summary line. That recalled set lands in two places at once, deterministically,
+before the manager's own reasoning begins: folded into the manager's own
+plan-and-decide prompt, framed as prior decisions and lessons to honor, and
+prefixed onto every instruction the manager hands to a member, framed as the
+team's own memory to honor and build on rather than re-derive or contradict.
+
+It is worth being precise about what actually carries this pass 2 forward,
+because it is not what it might look like at first. Pass 2's task text is
+different from pass 1's, so the coordinator starts a brand new run ledger,
+not a resumed one; the per-run ledger that tracks rounds, stalls, and plan
+state is scoped to one task and does not itself bridge two different tasks.
+What bridges them is the separate, persistent governed ledger the project
+keeps regardless of which run is currently active. Recall reads from that
+store, not from pass 1's own run history, which is why the mechanism works
+even though pass 2 has no memory of pass 1's run as a run.
+
+## What to look for
+
+Watch pass 2's Transcript section as the run progresses. Sometimes the
+manager's own reasoning entry names the prior decision directly, since it was
+told plainly to honor it; other times it does not narrate that it is doing
+so, it simply already reflects it. Only the first is visible proof in the
+transcript; the second is not a gap in the mechanism, because the injection
+into the manager's prompt and into every dispatched instruction happens
+unconditionally, whether or not the manager chooses to say so out loud in its
+own words. If you want to compare directly, read pass 2's plan or findings
+against the decision card from pass 1: a substantive echo there, applying the
+same standard to a new spot without re-deriving it from nothing, is the loop
+actually compounding, whether or not a transcript line spells it out.
+
+If pass 2 also reaches a genuine `done`, it goes through the same scribe turn
+as pass 1, shown pass 1's decision as part of what the ledger already holds,
+and is explicitly asked not to restate it. A pass 2 decision, if one gets
+written, should read as a delta on pass 1's, not a repeat of it. That delta
+discipline is what keeps a ledger that compounds from turning into a ledger
+that just piles up saying the same thing in more rows.
+
+## Two memories, kept deliberately separate
+
+Everything above happens on one specific store: the project's shared,
+governed decision ledger. It is not the only memory this loop touches.
+Once the shared write settles, every member that did real work in the run
+also gets its own private reflection turn over its own memory document,
+entirely separate from the ledger, never shown on the Decisions panel, and
+with no review status or ledger schema attached to it at all. A member
+learning something about how it personally does its job is a different kind
+of fact than a decision the whole project should be able to recall, and
+Squad keeps the two apart on purpose rather than folding a member's private
+notes into shared memory or the other way around. See
+[Governed memory](../../concepts/governed-memory/) for the full shape of
+both stores side by side.
+
+## Where this rail ends
+
+This is the last tutorial in the rail, and it does not hand off to another
+one. What you just watched, recall once at the top, one write at most at the
+close, is the entire mechanism; there is no larger trick behind it left to
+demonstrate with a fourth pass. What is left is depth, not more surface: the
+why behind the ordering and the caps you saw in passing (why a round ceiling
+exists at all, why an abstain is treated as correct rather than a shortfall,
+why reflection is worth exactly one paid turn and not a running commentary)
+lives in the concept, design, and reference pages linked below.
+
+## Related
+
+- [Governed memory](../../concepts/governed-memory/): the shared decision
+  ledger and each member's private memory, the two stores this tutorial's
+  recall and reflection read from and write to.
+- [The coordinator loop](../../concepts/the-coordinator-loop/): the full
+  recall, plan, delegate, and observe cycle this tutorial only ran twice.
+- [Memory that compounds](../../design/memory-that-compounds/): the design
+  record for why recall runs once at the top and reflection runs once at the
+  close, instead of continuously.
+- [Tools and commands](../../reference/tools-and-commands/): the exact
+  `squad_coordinate` contract, including the round and reset limits you can
+  set beyond the six-round surface default this tutorial used.

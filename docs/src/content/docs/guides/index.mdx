@@ -6,13 +6,29 @@ sidebar:
   order: 1
 ---
 
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
+
 Task recipes for working with Squad. Each guide is a short, goal-first how-to.
 
-:::note[Stub]
-Scaffolded, not yet written. Planned guides:
-
-- **Install the rib** — `keelson rib add` and activating Squad.
-- **Cast a team** — composing a roster for a project.
-- **Run a coordinator loop** — kicking off an issue-driven dev pass.
-- **Mix providers** — pinning a Claude reviewer, a Codex coder, and a Copilot triager.
-:::
+<CardGrid>
+  <LinkCard
+    title="Install the rib"
+    href="install-the-rib/"
+    description="`keelson rib add` and activating Squad."
+  />
+  <LinkCard
+    title="Cast a team"
+    href="cast-a-team/"
+    description="Composing a roster for a project."
+  />
+  <LinkCard
+    title="Run a coordinator loop"
+    href="run-a-coordinator-loop/"
+    description="Kicking off an issue-driven dev pass."
+  />
+  <LinkCard
+    title="Mix providers"
+    href="mix-providers/"
+    description="Pinning a Claude reviewer, a Codex coder, and a Copilot triager."
+  />
+</CardGrid>

@@ -1,0 +1,177 @@
+---
+title: A mixed-provider review
+description: Pin an implementer and a reviewer to two different providers, assign a real coding task, then dispatch the diff to the reviewer for a second, genuinely independent read.
+sidebar:
+  order: 3
+---
+
+In [Your first squad run](../your-first-squad-run/) you cast a team and gave it one
+task to finish end to end. That proved the roster works. It did not prove much about
+*review*, because everyone on the team was reasoning on the same underlying model.
+This tutorial fixes that: you will pin one member to one provider and another to a
+different one, hand the first a real, bounded change to make, and get the second's
+opinion on exactly that change, grounded in nothing but the diff you give it. The
+point is not process theater. A reviewer on a genuinely different vendor is a second,
+independently trained judgment landing on the same evidence, not the same model
+checking its own work under a different name.
+
+:::note[Before you start]
+A running Keelson server with Squad installed and a roster already on a real project,
+either the one you cast in the first tutorial or a fresh one. The one thing this
+tutorial specifically needs that a single-provider walkthrough does not: at least two
+different coding-agent providers actually signed in to the harness, not just
+installed. Every step below (the coding task and the dispatch) is a paid agent turn,
+and you are paying two vendors instead of one, so expect to spend a bit more than
+usual.
+:::
+
+## Confirm your roster has an implementer and a reviewer
+
+You need exactly two roles here: one member that carries the `code` capability tag,
+so you can hand it a real edit, and one member that does not need to, since a
+dispatched turn never gets write access regardless of what a member is tagged with.
+
+If you cast your team from a repository scan in the first tutorial, check the roster
+now: a card offering **"Assign a code task…"** carries the `code` tag, and that
+member is your implementer. Any other active member can be your reviewer.
+
+If nobody on your roster carries `code`, authoring one from a brief will not fix it.
+Genesis writes a name, a role, and a charter, but its own instructions never ask the
+model for a capability list, so a member it authors is always a plain, text-only
+chat member, regardless of what its charter promises. Only a repository scan assigns
+`code`, and only when the scan itself judges an implementer role needs it. Casting is
+also a cold-start move: it is offered on an empty roster and drops away the moment a
+roster has members, so an already-populated squad cannot be rescanned in place. If
+your existing roster is genesis-only, the fastest way to get a code-capable pair is a
+fresh, still-empty project scope, cast from there instead of authoring by hand. See
+[Cast a team](../../guides/cast-a-team/) for exactly what a scan proposes and when
+casting is offered at all.
+
+For the rest of this page, `atlas` stands in for the implementer and `vera` for the
+reviewer. Swap in whichever two slugs you actually have.
+
+## Pin them to two different vendors
+
+On the roster, open **"Set model…"** on atlas's card. Set `provider` to `claude` and
+leave `model` blank, so atlas runs on Claude's own default model rather than one you
+have to keep current by hand. Do the same on vera's card with `provider` set to
+`copilot`.
+
+One rule worth keeping in mind while you do this: a provider is a complete pin on its
+own, but a model is only meaningful alongside its provider, so if you want an exact
+model rather than whichever one a vendor resolves as its default, set both fields
+together. Squad does not check a pin against what is actually signed in when you set
+it; that only gets resolved once a turn tries to run on it, which is the harness's
+concern, not the roster's. [Mix providers](../../guides/mix-providers/) has the full
+mechanics, including the separate pin a coordinator run's manager can carry.
+
+## Give the implementer something real to build
+
+Now hand atlas something small enough that you could describe the whole diff in a
+sentence: a small utility with a test, a validation check on one input, a config
+option wired through one path. For this walkthrough, imagine:
+
+> Add a `--json` flag to the roster export script so its output can be piped into
+> another tool, and cover it with a test.
+
+Use **"Assign a code task…"** on atlas's card and describe it. That launches
+`squad-code-run`, which calls `squad_code` once against atlas, confined to your
+selected project's root. atlas gets real `Read`, `Glob`, `Grep`, `Edit`, `Write`, and
+`Bash` for that one turn, edits the files the task needs, and, per its own task
+framing, runs whatever build or test command tells it the change actually works.
+
+The turn is deliberately quiet about integration: it is told to make the change and
+verify it locally rather than push or open anything itself, though the only thing
+Squad's own policy floor actually blocks outright is a merge or a force-push, so do
+not be surprised either way. Either way, once it settles, `git diff` in the project's
+own working tree is your ground truth for what changed, whether that diff is still
+sitting locally or has already gone out on a branch.
+
+## Hand the diff to the reviewer, not the whole roster
+
+This is the part worth being precise about. Dispatch never gets write access, and
+without a project bound it has no filesystem access at all: the member reasons
+purely from the instruction text. Your roster is bound to a project, so vera's
+dispatch turn does get read-only inspection of that project's root (`Read`,
+`Glob`, `Grep`), but that is not the same as a diff: she has no shell access, so
+she cannot run `git diff` herself to see exactly what atlas changed, only browse
+files as they currently sit. If you want her opinion on the actual change, not a
+guess reconstructed from the current file state, you hand her the diff directly.
+
+Grab what atlas actually did:
+
+```bash
+git diff
+```
+
+in the project's working tree (or copy the diff off the branch, if atlas pushed one).
+Then dispatch it to vera specifically, not the whole roster. The Run loop panel's
+**"Ask the team"** action always fans a question out to every active member, and
+Squad ships no slash-command shortcut either, so to reach just vera, call the tool
+directly from chat, naming her in `members`:
+
+```ts
+squad_dispatch({
+  task: "Review this diff for correctness and risk. Say plainly if you would block it and why:\n\n<paste the diff here>",
+  members: ["vera"],
+})
+```
+
+With one member named, `squad_dispatch` also skips its usual closing synthesis turn,
+since that only runs when more than one member answers. What comes back is vera's own
+reply and nothing else: one billed turn, not two.
+
+## Read what a different vendor actually catches
+
+Read vera's reply for what it actually is: a first look at this exact diff, reasoned
+about on a model that never saw atlas write a line of it. That is the whole point of
+pinning them apart. Two members on the same provider, however differently their
+charters are written, are two prompts layered over one model's judgment; disagreement
+between them is really that one model disagreeing with itself under two framings.
+vera on a different vendor is a second, independently trained judgment landing on the
+same evidence, which is a meaningfully different thing, whether or not it finds
+anything.
+
+Either outcome is informative. If vera raises something atlas's own local
+verification did not catch, a missed edge case, a mismatched default, a test that
+does not actually exercise the change, that is exactly the kind of gap a same-model
+self-check tends to miss, because a review from the same weights rarely doubts the
+reasoning that produced the change in the first place. If vera comes back clean
+having actually engaged with the diff rather than rubber-stamped it, that is a
+genuinely independent second opinion agreeing with the first, not an echo of it.
+
+This same pattern runs automatically, at larger scale, inside a project-bound
+coordinator run: once code has changed, the loop dispatches an adversarial review to
+the roster's read-capable members before it will accept a `done`, framed to refute
+the change rather than approve it by default. What you just did by hand, pin two
+members apart and hand one the other's work, is the manual version of the exact check
+the standing loop leans on so it is never a single vendor grading its own homework.
+See [Method agency](../../concepts/method-agency/) for how the coordinator decides
+when to reach for that review on its own.
+
+## What you proved
+
+You pinned two roster members to two different vendors on purpose, gave one of them a
+real, bounded edit to make in your project, and got the other's independent read on
+exactly that change, grounded in nothing but the diff you handed it. Not a paraphrase
+of the same model, not a second prompt fighting the first one's own priors, an actual
+second vendor's judgment. That is the mechanical heart of what "review" can mean
+inside a squad you build yourself.
+
+## Where to go next
+
+Next, [the self-improving loop](../the-self-improving-loop/) takes the standing
+coordinator you have only glimpsed here and runs it for real: recalling what the team
+decided last time, reflecting on what a round actually accomplished, and growing a
+member's memory across passes instead of starting every task from a blank slate.
+
+## Related
+
+- [Your first squad run](../your-first-squad-run/): the roster this tutorial extends.
+- [The self-improving loop](../the-self-improving-loop/): what a standing coordinator
+  run does with the same roster.
+- [Mix providers](../../guides/mix-providers/): the full pinning mechanics, including
+  the manager pin a coordinator run adds.
+- [Method agency](../../concepts/method-agency/): why dispatch, code, and workflow
+  authoring are separate methods, and how the coordinator's own review gate reaches
+  for dispatch.

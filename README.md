@@ -14,19 +14,34 @@ first-class Keelson chat agent you can talk to directly. The roster renders as a
 canvas board on a **Squad** surface, with no hand-coded UI; the harness stays
 domain-free, and the rib ships **zero React** into the trusted SPA.
 
-> Status: **experimental.** This is the Phase-0 thin slice: genesis (author a
-> member from a brief), the roster board, and entering a member as a seeded chat.
-> The `Rib` contract it builds on is still pre-1.0.
+> Status: **experimental.** The `Rib` contract it builds on is still pre-1.0.
 
-## What it adds (Phase 0)
+## What it adds
 
-- **Genesis** — author a persistent member on demand from a freeform brief (the
-  `squad-genesis` workflow). Each member is a directory under the data home with a
-  `charter.md`, `memory.md`, `rules.md`, and `log.md`.
+- **Genesis and casting** — author a persistent member on demand from a freeform
+  brief (the `squad-genesis` workflow), or auto-cast a whole team from a confined,
+  read-only scan of a project's repository (propose, review, approve or discard).
+  Each member is a directory under the data home with a `charter.md`, `memory.md`,
+  `rules.md`, and `log.md`.
 - **Roster** — a deterministic canvas board (the `squad-roster` workflow) with one
-  card per member: a hashed identity dot, the role pill, the charter, and the
+  card per member: a themed identity, the role pill, the charter, and the
   Enter / Set model / Retire controls. Zero members renders a cold-start launchpad
   with role archetypes.
+- **The standing coordinator** — hand the squad a task and it plans, delegates one
+  step at a time to the best-suited member, verifies its own claims of progress
+  against real check/typecheck/test output, and replans until the goal is met or it
+  gives up. Each step can dispatch a text-only conversation, run a confined coding
+  turn that edits the repository, or author a reusable workflow for the operator to
+  run later.
+- **Mixed providers** — pin a member's provider and model independently (a
+  reviewer on one vendor, a coder on another), and optionally pin the coordinator's
+  own manager turn, so the squad's judgment is not all one model's opinion.
+- **Governed memory** — a shared, evidence-default decision ledger the coordinator
+  recalls from and writes back to at the end of a run, distinct from each member's
+  own private memory.
+- **A non-overridable policy floor** — the squad can open a pull request but can
+  never merge or force-push its own change, and a BLOCKing review verdict stops a
+  run cold.
 - **Talk to a member** — every member is enterable as a Keelson chat agent: Enter
   on the roster card (or `resolveAgent`) opens a fresh chat seeded with the
   member's composed charter.

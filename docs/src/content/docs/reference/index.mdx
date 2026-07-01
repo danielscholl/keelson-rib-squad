@@ -6,15 +6,35 @@ sidebar:
   order: 1
 ---
 
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
+
 The contract tier: the exact surfaces, keys, and schemas the rib exposes. Precise and
-terse — look here when you need the contract, not the rationale.
+terse: look here when you need the contract, not the rationale.
 
-:::note[Stub]
-Scaffolded, not yet written. Planned reference pages:
-
-- **Surface** — the Squad nav surface and its run-loop board.
-- **Snapshot keys** — the `rib:squad:*` keys the rib publishes.
-- **Workflows** — the bundled squad workflows.
-- **Tools and commands** — the chat tools and slash commands the rib registers.
-- **Data on disk** — what the rib stores under `rib-squad/` in the keelson home.
-:::
+<CardGrid>
+  <LinkCard
+    title="Surface"
+    href="surface/"
+    description="The Squad nav surface and its run-loop board."
+  />
+  <LinkCard
+    title="Snapshot keys"
+    href="snapshot-keys/"
+    description="The `rib:squad:*` keys the rib publishes."
+  />
+  <LinkCard
+    title="Workflows"
+    href="workflows/"
+    description="The bundled squad workflows."
+  />
+  <LinkCard
+    title="Tools and commands"
+    href="tools-and-commands/"
+    description="The chat tools and board action verbs the rib registers."
+  />
+  <LinkCard
+    title="Data on disk"
+    href="data-on-disk/"
+    description="What the rib stores under `rib-squad/` in the keelson home."
+  />
+</CardGrid>
