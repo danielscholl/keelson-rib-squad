@@ -36,6 +36,7 @@ import {
   type WorkflowStepOutcome,
 } from "./orchestrator.ts";
 import { hasBlockVerdict } from "./policies.ts";
+import { archiveRun } from "./runs-store.ts";
 import { runConfinedTurn } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
 import { authorWorkflow, screenWorkflowForRun } from "./workflow-authoring.ts";
@@ -149,6 +150,16 @@ export type CoordinatorTerminalStatus =
   | typeof RUN_STATUS_CHANGE_QUALITY_FAILED;
 export type CoordinatorLedgerStatus = typeof LEDGER_STATUS_ACTIVE | CoordinatorTerminalStatus;
 export type RunCoordinatorStatus = CoordinatorTerminalStatus | "error" | "aborted";
+
+function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTerminalStatus {
+  return (
+    status === RUN_STATUS_DONE ||
+    status === RUN_STATUS_GAVE_UP ||
+    status === RUN_STATUS_MAX_ROUNDS ||
+    status === RUN_STATUS_VERIFICATION_FAILED ||
+    status === RUN_STATUS_CHANGE_QUALITY_FAILED
+  );
+}
 
 // The directive a coordinator turn must end with: `progress` carries the five Progress
 // Ledger answers + the next step, `done` carries the final summary.
@@ -1576,12 +1587,22 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     await persist(ledger);
   }
 
-  const provenance = summarizeProvenance(ledger.transcript);
+  const finalLedger = ledger;
+  if (isTerminalStatus(status)) {
+    // Fail-soft archival: persistence of run history must never fail the live run result.
+    try {
+      await archiveRun(opts.dataHome, finalLedger);
+    } catch {
+      // best-effort
+    }
+  }
+
+  const provenance = summarizeProvenance(finalLedger.transcript);
   return {
-    ledger,
-    rounds: ledger.round,
+    ledger: finalLedger,
+    rounds: finalLedger.round,
     status,
-    summary: ledger.summary ?? `coordinator ended: ${status}`,
+    summary: finalLedger.summary ?? `coordinator ended: ${status}`,
     ...(provenance ? { provenance } : {}),
   };
 }

@@ -48,6 +48,7 @@ import {
   squadDataHome,
 } from "./paths.ts";
 import { squadPolicies } from "./policies.ts";
+import { listRuns, type RunSummary } from "./runs-store.ts";
 import {
   readSelectedProject,
   type SelectedProject,
@@ -785,6 +786,57 @@ function summarizeCoordinator(result: RunCoordinatorResult): string {
   return lines.join("\n");
 }
 
+const runsSchema = z.object({ project: z.string().optional() });
+
+function makeRunsTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
+  return {
+    name: "squad_runs",
+    description:
+      "List archived coordinator runs for the resolved squad scope. `project` (optional id/name) resolves scope like squad_coordinate — an unknown project errors; with no project and no selection it lists the default scope. Read-only.",
+    inputSchema: runsSchema,
+    async execute(input, ctx) {
+      const parsed = runsSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_runs: ${parsed.error.message}`, true);
+        return;
+      }
+      try {
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        // Mirror squad_code / squad_coordinate: a bad EXPLICIT project errors rather than
+        // silently listing the default scope, which would mask a typo and ignore the selection.
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_runs: ${resolution.error}`, true);
+          return;
+        }
+        const runs = await listRuns(scopeDataHome(home, resolution.scopeId));
+        emitResult(ctx, summarizeRuns(runs, resolution.scopeId));
+      } catch (e) {
+        emitResult(ctx, `squad_runs failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+function summarizeRuns(runs: readonly RunSummary[], scopeId: string): string {
+  const lines = [
+    `Runs — scope "${scopeId}" — ${runs.length} archived run${runs.length === 1 ? "" : "s"}`,
+  ];
+  if (runs.length === 0) return lines.join("\n");
+  lines.push(
+    "",
+    ...runs.map(
+      (run) => `${run.id} | ${run.status} | r${run.round} | ${run.updatedAt} | ${run.task}`,
+    ),
+  );
+  return lines.join("\n");
+}
+
 const rib: Rib = {
   id: "squad",
   displayName: "Squad",
@@ -1045,6 +1097,7 @@ const rib: Rib = {
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
+      makeRunsTool(ctx.getProjects),
       makeCoordinateTool(
         ctx.runAgentTurn,
         ctx.getProjects,
