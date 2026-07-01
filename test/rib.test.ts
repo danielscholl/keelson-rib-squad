@@ -369,7 +369,7 @@ describe("rib-squad", () => {
     }
   });
 
-  it("coordinate/dispatch/assign-code actions launch their run-workflow (coordinate stays on the surface)", async () => {
+  it("coordinate/dispatch actions launch their run-workflow (coordinate stays on the surface)", async () => {
     const coord = await rib.onAction?.(
       { type: "coordinate", payload: { task: "ship it" } },
       bareCtx,
@@ -389,17 +389,17 @@ describe("rib-squad", () => {
       expect(data.workflow).toBe("squad-dispatch-run");
       expect(data.stay).toBeUndefined();
     }
-    const code = await rib.onAction?.(
-      { type: "assign-code", payload: { slug: "mc", task: "add a flag" } },
+  });
+
+  it("assign-code fails closed for an unknown member before launching a billed run", async () => {
+    // Preflight: a stale card button naming a member absent from the selected scope
+    // must not kick off a doomed squad-code-run.
+    const res = await rib.onAction?.(
+      { type: "assign-code", payload: { slug: "nonexistent-member-xyz", task: "do it" } },
       bareCtx,
     );
-    if (code?.ok) {
-      expect(code.data).toEqual({
-        effect: "run-workflow",
-        workflow: "squad-code-run",
-        args: { member: "mc", task: "add a flag" },
-      });
-    }
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("unknown member");
   });
 
   it("coordinate/dispatch/assign-code fail closed without their input fields", async () => {

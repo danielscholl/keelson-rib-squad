@@ -14,7 +14,7 @@ import { DEFAULT_PROJECT_NAME } from "@keelson/shared";
 import { readProposal } from "../src/cast.ts";
 import { loadRegistry, saveRegistry } from "../src/casting/registry.ts";
 import rib from "../src/index.ts";
-import { readMembers } from "../src/member-store.ts";
+import { readMembers, scaffoldMember } from "../src/member-store.ts";
 import { membersDir, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import { writeSelectedProject } from "../src/scope.ts";
 
@@ -334,6 +334,54 @@ describe("approve-cast / discard-cast actions", () => {
     // tree — so a no-arg squad_coordinate/squad_code with X selected reads this team.
     expect(await readMembers(scopeMembersDir(home, "px"))).toHaveLength(2);
     expect(await readMembers(membersDir())).toHaveLength(0);
+  });
+});
+
+describe("assign-code action", () => {
+  const now = "2026-07-01T00:00:00.000Z";
+
+  test("launches squad-code-run for an active, code-capable member in the selected scope", async () => {
+    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    // No project selected → the flat default scope; scaffold a code-capable member there.
+    await scaffoldMember(scopeMembersDir(home, "default"), {
+      slug: "coder",
+      name: "Coder",
+      role: "Engineer",
+      charter: "# Coder",
+      status: "active",
+      createdAt: now,
+      tools: ["code"],
+    });
+    const res = await rib.onAction?.(
+      { type: "assign-code", payload: { slug: "coder", task: "add a --json flag" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(true);
+    if (res?.ok) {
+      expect(res.data).toEqual({
+        effect: "run-workflow",
+        workflow: "squad-code-run",
+        args: { member: "coder", task: "add a --json flag" },
+      });
+    }
+  });
+
+  test("rejects a member that lacks the code capability, before launching", async () => {
+    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await scaffoldMember(scopeMembersDir(home, "default"), {
+      slug: "talker",
+      name: "Talker",
+      role: "Reviewer",
+      charter: "# Talker",
+      status: "active",
+      createdAt: now,
+    });
+    const res = await rib.onAction?.(
+      { type: "assign-code", payload: { slug: "talker", task: "x" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain('lacks the "code" capability');
   });
 });
 

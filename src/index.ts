@@ -1647,7 +1647,7 @@ function dispatchAction(action: RibAction): RibActionResult {
 // Assign a code task: one code-capable member edits the selected project. The card
 // carries the member slug; squad_code resolves the repo from the selection. Focuses
 // Workflows — the code summary is the run's output.
-function assignCodeAction(action: RibAction): RibActionResult {
+async function assignCodeAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const slug = asNonEmptyString(payload.slug);
   const task = asNonEmptyString(payload.task);
@@ -1657,6 +1657,24 @@ function assignCodeAction(action: RibAction): RibActionResult {
       ok: false,
       error: "Describe the code task first — what should this member implement?",
     };
+  }
+  // Preflight the member in the selected scope BEFORE launching a billed run — a stale
+  // card button (or a direct dispatch) would otherwise kick off a squad-code-run that
+  // is guaranteed to fail. These checks mirror squad_code's own so the two can't drift.
+  try {
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    const member = (await readMembers(scopeMembersDir(home, scopeId))).find((m) => m.slug === slug);
+    if (!member) return { ok: false, error: `unknown member "${slug}"` };
+    if (member.status !== "active") return { ok: false, error: `member "${slug}" is not active` };
+    if (!memberCanCode(member)) {
+      return {
+        ok: false,
+        error: `member "${slug}" lacks the "code" capability — only code-tagged members may modify the repo`,
+      };
+    }
+  } catch (e) {
+    return { ok: false, error: errText(e) };
   }
   return {
     ok: true,
@@ -1685,8 +1703,15 @@ async function retireAllAction(): Promise<RibActionResult> {
       try {
         await retireMember(membersRoot, m.slug);
         retired++;
-      } catch {
-        // A member dir already gone is fine — still free its cast name below.
+      } catch (e) {
+        // Only the already-gone case is expected (a concurrent retire between the read
+        // above and here); any OTHER error is real — free the cast name, then fail the
+        // action so a partial retire is reported, not silently under-counted.
+        if (!errText(e).includes("not found")) {
+          await retireCastingName(scopedHome, m.slug);
+          await refreshWorkflow?.("squad-roster")?.catch(() => {});
+          return { ok: false, error: `retire-all failed on "${m.slug}": ${errText(e)}` };
+        }
       }
       await retireCastingName(scopedHome, m.slug);
     }
