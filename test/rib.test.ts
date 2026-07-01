@@ -86,13 +86,14 @@ describe("rib-squad", () => {
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
 
-  it("registers the write/read/remember/dispatch/code/cast/runs/coordinate tools without any seams", () => {
+  it("registers the write/read/remember/dispatch/code/open-pr/cast/runs/coordinate tools without any seams", () => {
     expect((rib.registerTools?.(bareCtx) ?? []).map((t) => t.name).sort()).toEqual([
       "squad_code",
       "squad_coordinate",
       "squad_dispatch",
       "squad_emit_member",
       "squad_list_members",
+      "squad_open_pr",
       "squad_propose_cast",
       "squad_remember",
       "squad_retire_member",
