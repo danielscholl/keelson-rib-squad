@@ -5,6 +5,7 @@ import type {
   RibAgentTurnRequest,
   RibAgentTurnResult,
   RibContext,
+  RibExec,
 } from "@keelson/shared";
 import { errText } from "@keelson/shared";
 import { composeMemberSystemPrompt } from "./compose.ts";
@@ -383,10 +384,11 @@ function isProjectReviewTask(task: string): boolean {
   return /\breview\b|\badversarial\b|\baudit\b|\binspect\b/.test(t);
 }
 
-async function captureDiffUnderReview(
+export async function captureDiffUnderReview(
   task: string,
   project?: { name: string; rootPath: string },
   isReview?: boolean,
+  exec?: RibExec,
 ): Promise<string | undefined> {
   const root = project?.rootPath.trim();
   if (!root) return undefined;
@@ -395,14 +397,14 @@ async function captureDiffUnderReview(
   // back to sniffing the task text when the caller didn't say (an ad-hoc dispatch step).
   const review = isReview ?? isProjectReviewTask(task);
   if (!review) return undefined;
-  return await collectGitDiff(root);
+  return await collectGitDiff(root, exec);
 }
 
-async function collectGitDiff(rootPath: string): Promise<string> {
+async function collectGitDiff(rootPath: string, exec?: RibExec): Promise<string> {
   const [unstaged, staged, untracked] = await Promise.all([
-    readGitDiff(rootPath, []),
-    readGitDiff(rootPath, ["--staged"]),
-    readUntrackedDiff(rootPath),
+    readGitDiff(rootPath, [], exec),
+    readGitDiff(rootPath, ["--staged"], exec),
+    readUntrackedDiff(rootPath, exec),
   ]);
   // A brand-new file never appears in `git diff` (tracked) — exactly the change a review most
   // needs to see, so the untracked section gets its own reserved budget below.
@@ -451,7 +453,14 @@ function capDiffSection(diff: string, budget: number, label: string): string {
 async function readGitDiff(
   rootPath: string,
   args: readonly string[],
+  exec?: RibExec,
 ): Promise<{ kind: "ok"; output: string } | { kind: "error"; error: string }> {
+  if (exec) {
+    const result = await exec.runText("git", ["diff", "--no-color", ...args], {
+      cwd: rootPath,
+    });
+    return result.ok ? { kind: "ok", output: result.data } : { kind: "error", error: result.error };
+  }
   try {
     const { stdout } = await execFileAsync(
       "git",
@@ -468,17 +477,25 @@ async function readGitDiff(
 // `git diff --no-index` against /dev/null rather than `git add -N`: both make a new file show
 // up in a diff, but --no-index is READ-ONLY and never mutates the operator's index. Returns
 // undefined outside a git repo (the tracked-diff error already names that case).
-async function readUntrackedDiff(rootPath: string): Promise<string | undefined> {
+async function readUntrackedDiff(rootPath: string, exec?: RibExec): Promise<string | undefined> {
   let files: string[];
-  try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["-C", rootPath, "ls-files", "--others", "--exclude-standard", "-z"],
-      { maxBuffer: GIT_DIFF_MAX_BUFFER },
-    );
-    files = stdout.split("\0").filter((f) => f.length > 0);
-  } catch {
-    return undefined;
+  if (exec) {
+    const result = await exec.runText("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
+      cwd: rootPath,
+    });
+    if (!result.ok) return undefined;
+    files = result.data.split("\0").filter((f) => f.length > 0);
+  } else {
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["-C", rootPath, "ls-files", "--others", "--exclude-standard", "-z"],
+        { maxBuffer: GIT_DIFF_MAX_BUFFER },
+      );
+      files = stdout.split("\0").filter((f) => f.length > 0);
+    } catch {
+      return undefined;
+    }
   }
   if (files.length === 0) return undefined;
   const shown = files.slice(0, MAX_UNTRACKED_FILES);
@@ -487,7 +504,7 @@ async function readUntrackedDiff(rootPath: string): Promise<string | undefined> 
   const overflowNote = overflow > 0 ? `\n- _…and ${overflow} more new file(s) not shown_` : "";
   const diffs: string[] = [];
   for (const f of shown) {
-    const body = await readNewFileDiff(rootPath, f);
+    const body = await readNewFileDiff(rootPath, f, exec);
     if (body && body.trim().length > 0) {
       diffs.push(`#### \`${f}\`\n\`\`\`diff\n${body.trimEnd()}\n\`\`\``);
     }
@@ -496,7 +513,22 @@ async function readUntrackedDiff(rootPath: string): Promise<string | undefined> 
   return `### Untracked (new) files\nNew files not yet tracked by git — they never appear in the tracked diffs above:\n${names}${overflowNote}${diffBlock}`;
 }
 
-async function readNewFileDiff(rootPath: string, relPath: string): Promise<string | undefined> {
+async function readNewFileDiff(
+  rootPath: string,
+  relPath: string,
+  exec?: RibExec,
+): Promise<string | undefined> {
+  if (exec) {
+    const result = await exec.runText(
+      "git",
+      ["diff", "--no-color", "--no-index", "--", "/dev/null", relPath],
+      {
+        cwd: rootPath,
+        acceptNonZeroExit: true,
+      },
+    );
+    return result.ok ? result.data : undefined;
+  }
   try {
     const { stdout } = await execFileAsync(
       "git",
