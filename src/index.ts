@@ -27,7 +27,7 @@ import {
 import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
 import { type RunCoordinatorResult, runCoordinator } from "./coordinator.ts";
-import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
+import { captureDiffUnderReview, type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import {
   CAST_KEY,
   COORDINATOR_KEY,
@@ -680,6 +680,75 @@ function makeOpenPrTool(
         emitResult(ctx, result.url, false);
       } catch (e) {
         emitResult(ctx, `squad_open_pr failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+const viewDiffSchema = z.object({ project: z.string().optional() });
+
+function makeViewDiffTool(
+  projectsSeam: RibContext["getProjects"],
+  execSeam: RibContext["getExec"],
+): ToolDefinition {
+  return {
+    name: "squad_view_diff",
+    description:
+      "Show the selected project's staged, unstaged, and untracked git diff using the same bounded capture as the review gate. `project` (optional id/name) overrides the selected project. Read-only: runs only git diff/status-style commands and never mutates the working tree.",
+    inputSchema: viewDiffSchema,
+    async execute(input, ctx) {
+      const parsed = viewDiffSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_view_diff: ${parsed.error.message}`, true);
+        return;
+      }
+      try {
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_view_diff: ${resolution.error}`, true);
+          return;
+        }
+        if (!resolution.project) {
+          emitResult(
+            ctx,
+            "squad_view_diff: no project bound to view a diff for — select a project first",
+            true,
+          );
+          return;
+        }
+        if (!execSeam) {
+          emitResult(ctx, "squad_view_diff: exec seam unavailable on this harness", true);
+          return;
+        }
+        const diff = (
+          await captureDiffUnderReview(
+            "view the project diff",
+            { name: resolution.project.name, rootPath: resolution.project.rootPath },
+            true,
+            execSeam(),
+          )
+        )?.trim();
+        if (
+          !diff ||
+          diff ===
+            "_No staged, unstaged, or untracked changes detected in the project working tree._"
+        ) {
+          emitResult(ctx, `no changes in ${resolution.project.name}`);
+          return;
+        }
+        if (diff.startsWith("_Diff capture unavailable:")) {
+          emitResult(ctx, `squad_view_diff: ${diff}`, true);
+          return;
+        }
+        emitResult(ctx, `Diff — ${resolution.project.name}\n\n${diff}`);
+      } catch (e) {
+        emitResult(ctx, `squad_view_diff: ${errText(e)}`, true);
       }
     },
   };
@@ -1393,6 +1462,7 @@ const rib: Rib = {
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
       makeOpenPrTool(ctx.getProjects, ctx.getExec),
+      makeViewDiffTool(ctx.getProjects, ctx.getExec),
       makeProposeCastTool(),
       makeRunsTool(ctx.getProjects),
       makeCoordinateTool(
