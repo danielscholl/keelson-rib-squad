@@ -335,6 +335,29 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(section?.kind === "rows" && section.boxed).toBe(true);
   });
 
+  test("an old-shape VerificationRecord without checks renders the fallback row", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "done",
+        summary: "done",
+        verification: {
+          command: "bun test",
+          exitCode: 1,
+          passed: false,
+          summary: "1 failing",
+          atRound: 4,
+        },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const verify = rowsTitled(board, "Verification");
+    expect(verify).toHaveLength(1);
+    expect(verify[0]?.icon).toBe("✕");
+    expect(verify[0]?.glyph).toBe("error");
+    expect(verify[0]?.text).toBe("bun test");
+    expect(verify[0]?.trailing).toContain("exit 1");
+  });
+
   test("max-rounds shows an Advisory + green Verification, led by the task composer", () => {
     const board = buildCoordinatorBoard(
       ledger({

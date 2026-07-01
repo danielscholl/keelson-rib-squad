@@ -334,20 +334,31 @@ function provenanceSection(transcript: readonly CoordinatorEntry[]): Section | u
 }
 
 function verificationSection(v: VerificationRecord): Section {
+  const checks = v.checks;
   return {
     kind: "rows",
     boxed: true,
     title: "Verification",
-    items: [
-      {
-        glyph: v.passed ? "ok" : "error",
-        icon: v.passed ? "✓" : "✕",
-        text: truncate(v.command, STEP_CAP) || "verification",
-        trailing: v.passed
-          ? `passed · exit ${v.exitCode}`
-          : `exit ${v.exitCode} · ${truncate(v.summary, VERIFY_SUMMARY_CAP)}`,
-      },
-    ],
+    items:
+      checks && checks.length > 0
+        ? checks.map((check) => ({
+            glyph: check.passed ? "ok" : "error",
+            icon: check.passed ? "✓" : "✕",
+            text: truncate(check.command, STEP_CAP) || "verification",
+            trailing: check.passed
+              ? `passed · exit ${check.exitCode}`
+              : `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
+          }))
+        : [
+            {
+              glyph: v.passed ? "ok" : "error",
+              icon: v.passed ? "✓" : "✕",
+              text: truncate(v.command, STEP_CAP) || "verification",
+              trailing: v.passed
+                ? `passed · exit ${v.exitCode}`
+                : `exit ${v.exitCode} · ${truncate(v.summary, VERIFY_SUMMARY_CAP)}`,
+            },
+          ],
   };
 }
 
@@ -412,4 +423,9 @@ function idleBoard(): CanvasBoardView {
 function truncate(text: string, max: number): string {
   const t = text.trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+function tailTruncate(text: string, max: number): string {
+  const t = text.trim();
+  return t.length > max ? `…${t.slice(-(max - 1))}` : t;
 }
