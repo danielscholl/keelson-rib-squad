@@ -64,6 +64,7 @@ export interface CoordinatorLedger {
   // The coordinator's current plan as prose steps.
   plan: string[];
   round: number;
+  roundBudget?: number;
   stallCount: number;
   resetCount: number;
   // Deterministic repeated-outcome tracker: the fingerprint of the last execute outcome
@@ -318,13 +319,19 @@ export async function loadLedger(dataHome: string): Promise<CoordinatorLedger | 
   }
 }
 
-function freshLedger(task: string, projectId: string | undefined, at: string): CoordinatorLedger {
+function freshLedger(
+  task: string,
+  projectId: string | undefined,
+  at: string,
+  roundBudget: number,
+): CoordinatorLedger {
   return {
     task,
     ...(projectId ? { projectId } : {}),
     facts: [],
     plan: [],
     round: 0,
+    roundBudget,
     stallCount: 0,
     resetCount: 0,
     status: LEDGER_STATUS_ACTIVE,
@@ -341,6 +348,7 @@ async function loadOrInit(
   task: string,
   projectId: string | undefined,
   at: string,
+  roundBudget: number,
 ): Promise<CoordinatorLedger> {
   const existing = await loadLedger(dataHome);
   if (
@@ -354,7 +362,7 @@ async function loadOrInit(
   ) {
     return existing;
   }
-  return freshLedger(task, projectId, at);
+  return freshLedger(task, projectId, at, roundBudget);
 }
 
 // --- the coordinator turn ------------------------------------------------------
@@ -1073,7 +1081,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     })();
   };
 
-  let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now());
+  let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now(), limits.maxRounds);
   const exec = opts.getExec;
   const runStartTree =
     project && exec
