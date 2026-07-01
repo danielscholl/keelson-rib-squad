@@ -1147,6 +1147,24 @@ describe("runCoordinator loop", () => {
     expect(d.calls[0]?.instruction).toMatch(/cannot identify or substantiate/i);
   });
 
+  test("#92: review prompt carries the consistency + test-adequacy lenses without weakening the grounding", async () => {
+    const d = fakeDispatch("RAI VERDICT: PASS\nno blocking defect found");
+    await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+    });
+    const instruction = d.calls[0]?.instruction ?? "";
+    expect(instruction).toMatch(/consistency/i);
+    expect(instruction).toMatch(/convention the surrounding code already follows/i);
+    expect(instruction).toMatch(/test adequacy/i);
+    // The lenses must not reopen the #63 over-blocking hole: each still requires a concrete citation.
+    expect(instruction).toMatch(/each still requiring a concrete citation/i);
+  });
+
   test("#63: max-rounds with an unresolved BLOCK and a GREEN floor flags an unsubstantiated review", async () => {
     const d = fakeDispatch("RAI VERDICT: BLOCK\nsrc/x.ts:12 unsafe default");
     const res = await runCoordinator({
