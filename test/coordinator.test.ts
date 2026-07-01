@@ -278,6 +278,41 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.transcript.filter((e) => e.kind === "dispatch")).toHaveLength(0);
   });
 
+  test("a fresh run persists the configured maxRounds as its round budget", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+      dispatch: fakeDispatch().fn,
+      limits: { maxRounds: 7 },
+    });
+    expect(res.ledger.roundBudget).toBe(7);
+    expect((await loadLedger(home))?.roundBudget).toBe(7);
+  });
+
+  test("preserves a resumed ledger's existing round budget", async () => {
+    await saveLedger(home, {
+      task: "ship the feature",
+      facts: ["already known"],
+      plan: [],
+      round: 1,
+      roundBudget: 4,
+      stallCount: 0,
+      resetCount: 0,
+      status: "active",
+      transcript: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+      dispatch: fakeDispatch().fn,
+      limits: { maxRounds: 9 },
+    });
+    expect(res.ledger.roundBudget).toBe(4);
+  });
+
   test("pins manager provider/model on the coordinator turn when both are set", async () => {
     const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
     const res = await runCoordinator({

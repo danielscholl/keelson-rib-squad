@@ -37,6 +37,11 @@ type RowItem = {
   text: string;
   trailing?: string;
 };
+type StatItem = {
+  label: string;
+  value: string | number | boolean | null;
+  tone?: string;
+};
 
 function rowsTitled(board: Board, title: string): RowItem[] {
   const section = board.sections.find((s) => s.kind === "rows" && s.title === title);
@@ -45,6 +50,12 @@ function rowsTitled(board: Board, title: string): RowItem[] {
 
 function sectionTitles(board: Board): (string | undefined)[] {
   return board.sections.map((s) => ("title" in s ? s.title : undefined));
+}
+
+function statsItems(board: Board): StatItem[] {
+  const section = board.sections.find((s) => s.kind === "stats");
+  if (section?.kind !== "stats") throw new Error("no stats section");
+  return section.items as StatItem[];
 }
 
 describe("buildCoordinatorBoard idle", () => {
@@ -119,6 +130,42 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status?.label).toBe("active");
     expect(board.header?.chip).toBe("round 3");
+  });
+
+  test("renders an old-shape ledger without a round budget as just the round", () => {
+    const oldShapeLedger = ledger({ round: 3 });
+
+    expect(() => buildCoordinatorBoard(oldShapeLedger)).not.toThrow();
+
+    const board = buildCoordinatorBoard(oldShapeLedger);
+    const round = statsItems(board).find((i) => i.label === "Round");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(round?.value).toBe(3);
+    expect(String(round?.value)).not.toContain("/");
+  });
+
+  test("renders the round budget as n / budget when the ledger carries one", () => {
+    const budgetedBoard = buildCoordinatorBoard(ledger({ round: 3, roundBudget: 6 }));
+    const round = statsItems(budgetedBoard).find((i) => i.label === "Round");
+    expect(canvasViewSchema.safeParse(budgetedBoard).success).toBe(true);
+    expect(round?.value).toBe("3 / 6");
+    expect(round?.tone).toBe("info");
+  });
+
+  test("tones the round budget stat calm early and caution at the 80% cap", () => {
+    const startRound = statsItems(buildCoordinatorBoard(ledger({ round: 0, roundBudget: 6 }))).find(
+      (i) => i.label === "Round",
+    );
+    const beforeCap = statsItems(buildCoordinatorBoard(ledger({ round: 3, roundBudget: 5 }))).find(
+      (i) => i.label === "Round",
+    );
+    const atCap = statsItems(buildCoordinatorBoard(ledger({ round: 4, roundBudget: 5 }))).find(
+      (i) => i.label === "Round",
+    );
+
+    expect(startRound?.tone).toBe("neutral");
+    expect(beforeCap?.tone).toBe("info");
+    expect(atCap?.tone).toBe("caution");
   });
 
   test("renders the goal, plan, findings, and abandoned steps", () => {

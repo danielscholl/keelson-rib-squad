@@ -241,12 +241,25 @@ function pulseSection(ledger: CoordinatorLedger): Section {
   return {
     kind: "stats",
     items: [
-      { label: "Round", value: ledger.round, tone: toned(ledger.round, "info") },
+      { label: "Round", value: roundStatValue(ledger), tone: roundStatTone(ledger) },
       { label: "Findings", value: ledger.facts.length, tone: toned(ledger.facts.length, "brand") },
       { label: "Stalls", value: ledger.stallCount, tone: toned(ledger.stallCount, "caution") },
       { label: "Re-plans", value: ledger.resetCount, tone: toned(ledger.resetCount, "caution") },
     ],
   };
+}
+
+function roundStatValue(ledger: CoordinatorLedger): number | string {
+  return ledger.roundBudget === undefined
+    ? ledger.round
+    : `${ledger.round} / ${ledger.roundBudget}`;
+}
+
+function roundStatTone(ledger: CoordinatorLedger): CanvasTone {
+  if (ledger.round <= 0) return "neutral";
+  const budget = ledger.roundBudget;
+  if (budget === undefined || budget <= 0) return "info";
+  return ledger.round / budget >= 0.8 ? "caution" : "info";
 }
 
 function goalSection(task: string): Section {
