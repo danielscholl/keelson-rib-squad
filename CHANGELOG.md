@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.5.0...v0.6.0) (2026-07-01)
+
+
+### Added
+
+* **cast:** refine no-selection error for cast action ([#85](https://github.com/danielscholl/keelson-rib-squad/issues/85)) ([1e81c92](https://github.com/danielscholl/keelson-rib-squad/commit/1e81c92acfc94d05b28bb318b28a3f8e5a55f62a))
+* **dispatch:** reserve diff budgets to keep untracked new-file diffs visible ([#82](https://github.com/danielscholl/keelson-rib-squad/issues/82)) ([416e00c](https://github.com/danielscholl/keelson-rib-squad/commit/416e00cf80909f405e304841f15fbc4b2a3d296e))
+* **runs:** archive closed run ledgers and add a squad_runs tool ([#86](https://github.com/danielscholl/keelson-rib-squad/issues/86)) ([8bf081f](https://github.com/danielscholl/keelson-rib-squad/commit/8bf081fc10723da4ec94eb1963b8efdbe46cd4fb))
+
+
+### Fixed
+
+* **forbidden:** refine isForbiddenGitCommand subshell/grouping handling ([#83](https://github.com/danielscholl/keelson-rib-squad/issues/83)) ([63291d5](https://github.com/danielscholl/keelson-rib-squad/commit/63291d5e49b3f0310c82ed1e199ae958aa854d29))
+
 ## [0.5.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.4.0...v0.5.0) (2026-06-30)
 
 
