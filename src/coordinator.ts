@@ -133,6 +133,14 @@ export interface VerificationRecord {
   passed: boolean;
   summary: string;
   atRound: number;
+  checks?: readonly VerificationCheck[];
+}
+
+export interface VerificationCheck {
+  command: string;
+  passed: boolean;
+  exitCode: number;
+  summary: string;
 }
 
 export const LEDGER_STATUS_ACTIVE = "active" as const;
@@ -702,16 +710,16 @@ async function collectRunDiffSignals(
 }
 
 // Run the operator-configured verify commands against the project root via the exec seam.
-// Non-paid (processes, not LLM turns). Fail-fast: stop at the first non-zero exit and return it;
-// an all-green pass returns a count summary. Each command runs through `bash -c` so an operator
-// string like "bun run check" or "bun --filter '*' test" works verbatim. acceptNonZeroExit makes
-// a non-zero exit a returned result, not an error, so a failing suite is data, not a throw.
+// Non-paid (processes, not LLM turns). Each command runs through `bash -c` so an operator string
+// like "bun run check" or "bun --filter '*' test" works verbatim. acceptNonZeroExit makes a
+// non-zero exit a returned result, not an error, so a failing suite is data, not a throw.
 async function runVerification(
   exec: RibExec,
   commands: readonly string[],
   cwd: string,
   atRound: number,
 ): Promise<VerificationRecord> {
+  const checks: VerificationCheck[] = [];
   for (const command of commands) {
     const res = await exec.runText("bash", ["-c", command], {
       cwd,
@@ -719,20 +727,35 @@ async function runVerification(
       timeoutMs: VERIFY_TIMEOUT_MS,
     });
     const exitCode = res.ok ? (res.exitCode ?? 0) : (res.code ?? 1);
-    if (!res.ok || exitCode !== 0) {
-      const out = res.ok ? res.data : res.error;
-      return {
-        command,
-        exitCode,
-        passed: false,
-        summary: tailCap(out, VERIFY_SUMMARY_CAP),
-        atRound,
-      };
-    }
+    const out = res.ok ? res.data : res.error;
+    checks.push({
+      command,
+      passed: res.ok && exitCode === 0,
+      exitCode,
+      summary: tailCap(out, VERIFY_SUMMARY_CAP),
+    });
+  }
+  const firstFailure = checks.find((check) => !check.passed);
+  if (firstFailure) {
+    return {
+      command: firstFailure.command,
+      exitCode: firstFailure.exitCode,
+      passed: false,
+      summary: firstFailure.summary,
+      atRound,
+      checks,
+    };
   }
   const n = commands.length;
   const label = `${n} check${n === 1 ? "" : "s"}`;
-  return { command: label, exitCode: 0, passed: true, summary: `${label} passed`, atRound };
+  return {
+    command: label,
+    exitCode: 0,
+    passed: true,
+    summary: `${label} passed`,
+    atRound,
+    checks,
+  };
 }
 
 function effectiveLastCodeRound(ledger: CoordinatorLedger): number | undefined {
@@ -1064,6 +1087,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       const ceilCodeRound = effectiveLastCodeRound(ledger);
       const unresolvedReview =
         ceilCodeRound !== undefined && ceilCodeRound > (ledger.lastCleanReviewRound ?? -1);
+      let ceilingVerification: VerificationRecord | undefined;
       let ceilingSummary: string | undefined;
       if (
         unresolvedReview &&
@@ -1073,6 +1097,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         !opts.abortSignal?.aborted
       ) {
         const v = await runVerification(opts.getExec, verify, project.rootPath, ledger.round);
+        ceilingVerification = v;
         ceilingSummary = v.passed
           ? `Round ceiling reached with an unresolved review BLOCK, but the deterministic floor is GREEN (${v.command}) — the artifact passes on its own; the blocker is an unsubstantiated or unverified review, not a broken build. Human review recommended.`
           : `Round ceiling reached with an unresolved review BLOCK and a RED deterministic check (${v.command}, exit ${v.exitCode}) — the artifact does not pass on its own.`;
@@ -1083,6 +1108,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...ledger,
         status: RUN_STATUS_MAX_ROUNDS,
         inFlight: undefined,
+        ...(ceilingVerification ? { verification: ceilingVerification } : {}),
         ...(ceilingSummary ? { summary: ceilingSummary } : {}),
         updatedAt: now(),
       };

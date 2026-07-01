@@ -863,6 +863,19 @@ describe("runCoordinator loop", () => {
       return { ok: true as const, data: out, exitCode };
     },
   });
+  const fakeExecByCommand = (
+    results: Record<string, { exitCode: number; out: string }>,
+  ): RibExec => ({
+    runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+    runText: async (cmd, args) => {
+      if (args[0] === "write-tree") return { ok: true as const, data: "deadbeef", exitCode: 0 };
+      if (cmd === "bash" && args[0] === "-c") {
+        const result = results[String(args[1])];
+        if (result) return { ok: true as const, data: result.out, exitCode: result.exitCode };
+      }
+      return { ok: true as const, data: "", exitCode: 0 };
+    },
+  });
   const codeThenDone = () =>
     queuedRun([
       'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
@@ -882,6 +895,61 @@ describe("runCoordinator loop", () => {
     expect(res.status).toBe("done");
     expect(res.ledger.verification?.passed).toBe(true);
     expect(res.ledger.transcript.some((e) => e.kind === "verify")).toBe(true);
+  });
+
+  test("verification gate: multi-command verify records mixed per-check results and fails aggregate", async () => {
+    const testCommand = "bun test";
+    const typecheckCommand = "bun run typecheck";
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: fakeExecByCommand({
+        [testCommand]: { exitCode: 0, out: "tests green" },
+        [typecheckCommand]: { exitCode: 2, out: "ts error" },
+      }),
+      verify: [testCommand, typecheckCommand],
+      limits: { maxRounds: 20 },
+    });
+    expect(res.status).toBe("verification-failed");
+    expect(res.ledger.verification?.passed).toBe(false);
+    expect(res.ledger.verification?.command).toBe(typecheckCommand);
+    expect(res.ledger.verification?.exitCode).toBe(2);
+    expect(res.ledger.verification?.summary).toBe("ts error");
+    expect(res.ledger.verification?.checks).toEqual([
+      { command: testCommand, passed: true, exitCode: 0, summary: "tests green" },
+      { command: typecheckCommand, passed: false, exitCode: 2, summary: "ts error" },
+    ]);
+  });
+
+  test("verification gate: multi-command verify records all-green checks and passes aggregate", async () => {
+    const testCommand = "bun test";
+    const typecheckCommand = "bun run typecheck";
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: fakeExecByCommand({
+        [testCommand]: { exitCode: 0, out: "tests green" },
+        [typecheckCommand]: { exitCode: 0, out: "types green" },
+      }),
+      verify: [testCommand, typecheckCommand],
+    });
+    expect(res.status).toBe("done");
+    expect(res.ledger.verification?.passed).toBe(true);
+    expect(res.ledger.verification?.command).toBe("2 checks");
+    expect(res.ledger.verification?.exitCode).toBe(0);
+    expect(res.ledger.verification?.summary).toBe("2 checks passed");
+    expect(res.ledger.verification?.checks).toEqual([
+      { command: testCommand, passed: true, exitCode: 0, summary: "tests green" },
+      { command: typecheckCommand, passed: true, exitCode: 0, summary: "types green" },
+    ]);
   });
 
   test("review gate: code changes require a fresh clean project-bound review before done", async () => {
