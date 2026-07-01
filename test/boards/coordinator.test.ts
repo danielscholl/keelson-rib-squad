@@ -448,6 +448,23 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(worked.some((i) => i.chip?.label === "vera" && i.trailing === "copilot")).toBe(true);
   });
 
+  test("old-shape verify transcript entries do not add reviewed provenance", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "done",
+        transcript: [
+          entry({ kind: "code", speaker: "atlas", text: "edited", provider: "claude" }),
+          entry({ kind: "verify", text: "review passed (no BLOCK verdict)" }),
+        ],
+      }),
+    );
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const worked = rowsTitled(board, "Worked by");
+    expect(worked.some((i) => i.chip?.label === "atlas" && i.trailing === "claude")).toBe(true);
+    expect(worked.some((i) => i.text === "reviewed")).toBe(false);
+  });
+
   test("every terminal status produces a schema-valid board", () => {
     const statuses: CoordinatorLedger["status"][] = [
       "active",
