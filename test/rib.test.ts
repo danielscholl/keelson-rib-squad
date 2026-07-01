@@ -1,7 +1,14 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import type { RibContext } from "@keelson/shared";
 import rib from "../src/index.ts";
-import { CAST_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "../src/keys.ts";
+import {
+  CAST_KEY,
+  COORDINATOR_KEY,
+  DECISIONS_KEY,
+  ROSTER_KEY,
+  SQUAD_RUNS_KEY,
+  SQUAD_SURFACE_ID,
+} from "../src/keys.ts";
 import { setSquadDataHome } from "../src/paths.ts";
 
 // The shapes the host parses out of contributeWorkflows — typed loosely here since
@@ -79,13 +86,14 @@ describe("rib-squad", () => {
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
 
-  it("registers the write/read/remember/dispatch/code/runs/coordinate tools without any seams", () => {
+  it("registers the write/read/remember/dispatch/code/cast/runs/coordinate tools without any seams", () => {
     expect((rib.registerTools?.(bareCtx) ?? []).map((t) => t.name).sort()).toEqual([
       "squad_code",
       "squad_coordinate",
       "squad_dispatch",
       "squad_emit_member",
       "squad_list_members",
+      "squad_propose_cast",
       "squad_remember",
       "squad_retire_member",
       "squad_runs",
@@ -205,9 +213,9 @@ describe("rib-squad", () => {
   it("declares the decisions view and a cadence-less Decisions surface region", () => {
     const view = rib.views?.find((v) => v.key === DECISIONS_KEY);
     expect(view?.canvasKind).toBe("view");
-    const region = rib.surfaces?.[0]?.layout.rows?.[0]?.columns.find(
-      (c) => c.key === DECISIONS_KEY,
-    );
+    const region = rib.surfaces?.[0]?.layout.rows
+      ?.flatMap((r) => r.columns)
+      .find((c) => c.key === DECISIONS_KEY);
     expect(region?.workflow).toBe("squad-decisions");
     // Cost-safety: an agent-turn board must NOT carry a cadence (it would burn
     // paid turns on the heartbeat).
@@ -315,5 +323,93 @@ describe("rib-squad", () => {
       expect(data.workflow).toBe("squad-genesis");
       expect(data.args.brief).toBe("a terse SRE");
     }
+  });
+
+  it("declares projectScoped so the host renders the surface project picker", () => {
+    expect(rib.surfaces?.[0]?.projectScoped).toBe(true);
+  });
+
+  it("promotes the Run loop to a live, cadence-bearing, uncollapsed row region", () => {
+    const region = rib.surfaces?.[0]?.layout.rows
+      ?.flatMap((r) => r.columns)
+      .find((c) => c.key === COORDINATOR_KEY);
+    expect(region?.workflow).toBe("squad-coordinator");
+    expect(region?.live).toBe(true);
+    expect(region?.cadenceMs).toBeGreaterThanOrEqual(30_000);
+    expect(region?.collapsed ?? false).toBe(false);
+  });
+
+  it("declares the Runs history region bound to the squad-runs collector", () => {
+    const view = rib.views?.find((v) => v.key === SQUAD_RUNS_KEY);
+    expect(view?.canvasKind).toBe("view");
+    const region = rib.surfaces?.[0]?.layout.rows
+      ?.flatMap((r) => r.columns)
+      .find((c) => c.key === SQUAD_RUNS_KEY);
+    expect(region?.workflow).toBe("squad-runs");
+    expect(wf("squad-runs")?.bindSnapshotKey).toBe(SQUAD_RUNS_KEY);
+    expect(nodes("squad-runs")[0]?.bash).toContain("collect-runs.ts");
+  });
+
+  it("each surface-launched wrapper workflow is a single prompt node scoped to one tool", () => {
+    const cases = [
+      ["squad-cast-scan", "squad_propose_cast"],
+      ["squad-coordinate-run", "squad_coordinate"],
+      ["squad-dispatch-run", "squad_dispatch"],
+      ["squad-code-run", "squad_code"],
+    ] as const;
+    for (const [name, tool] of cases) {
+      expect(wf(name)?.bindSnapshotKey).toBeUndefined();
+      const node = nodes(name)[0] as RawNode & {
+        allowed_tools?: string[];
+        fail_on_tool_error?: boolean;
+      };
+      expect(typeof node?.prompt).toBe("string");
+      expect(node?.allowed_tools).toEqual([tool]);
+      expect(node?.fail_on_tool_error).toBe(true);
+    }
+  });
+
+  it("coordinate/dispatch actions launch their run-workflow (coordinate stays on the surface)", async () => {
+    const coord = await rib.onAction?.(
+      { type: "coordinate", payload: { task: "ship it" } },
+      bareCtx,
+    );
+    expect(coord?.ok).toBe(true);
+    if (coord?.ok) {
+      expect(coord.data).toEqual({
+        effect: "run-workflow",
+        workflow: "squad-coordinate-run",
+        args: { task: "ship it" },
+        stay: true,
+      });
+    }
+    const ask = await rib.onAction?.({ type: "dispatch", payload: { task: "risks?" } }, bareCtx);
+    if (ask?.ok) {
+      const data = ask.data as { workflow: string; stay?: boolean };
+      expect(data.workflow).toBe("squad-dispatch-run");
+      expect(data.stay).toBeUndefined();
+    }
+  });
+
+  it("assign-code fails closed for an unknown member before launching a billed run", async () => {
+    // Preflight: a stale card button naming a member absent from the selected scope
+    // must not kick off a doomed squad-code-run.
+    const res = await rib.onAction?.(
+      { type: "assign-code", payload: { slug: "nonexistent-member-xyz", task: "do it" } },
+      bareCtx,
+    );
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("unknown member");
+  });
+
+  it("coordinate/dispatch/assign-code fail closed without their input fields", async () => {
+    expect((await rib.onAction?.({ type: "coordinate", payload: {} }, bareCtx))?.ok).toBe(false);
+    expect((await rib.onAction?.({ type: "dispatch", payload: {} }, bareCtx))?.ok).toBe(false);
+    expect(
+      (await rib.onAction?.({ type: "assign-code", payload: { slug: "mc" } }, bareCtx))?.ok,
+    ).toBe(false);
+    expect(
+      (await rib.onAction?.({ type: "assign-code", payload: { task: "x" } }, bareCtx))?.ok,
+    ).toBe(false);
   });
 });

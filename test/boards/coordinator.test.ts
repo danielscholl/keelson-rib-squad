@@ -312,7 +312,9 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status?.label).toBe("done");
-    expect(sectionTitles(board)[0]).toBe("Standup");
+    // A terminal board leads with the task composer (start another run), then the Standup.
+    expect(sectionTitles(board)[0]).toBe("Give the squad a task");
+    expect(sectionTitles(board)[1]).toBe("Standup");
     expect(rowsTitled(board, "Standup").some((i) => i.text.includes("shipped it"))).toBe(true);
 
     const verify = rowsTitled(board, "Verification");
@@ -333,7 +335,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(section?.kind === "rows" && section.boxed).toBe(true);
   });
 
-  test("max-rounds shows an Advisory + green Verification and no action section", () => {
+  test("max-rounds shows an Advisory + green Verification, led by the task composer", () => {
     const board = buildCoordinatorBoard(
       ledger({
         status: "max-rounds",
@@ -351,7 +353,13 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(board.header?.status?.label).toBe("max rounds");
     expect(rowsTitled(board, "Advisory").length).toBe(1);
     expect(rowsTitled(board, "Verification")[0]?.icon).toBe("✓");
-    expect(board.sections.some((s) => s.kind === "actions")).toBe(false);
+    // The only actions section is the task composer (start another run); the run
+    // ledger itself carries no interactive actions.
+    const actions = board.sections.filter((s) => s.kind === "actions");
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.kind === "actions" ? actions[0].title : undefined).toBe(
+      "Give the squad a task",
+    );
   });
 
   test("verification-failed: error pill, a red Verification row, an Advisory, no actions", () => {
@@ -377,7 +385,12 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(verify[0]?.glyph).toBe("error");
     expect(verify[0]?.trailing).toContain("exit 1");
     expect(rowsTitled(board, "Advisory").length).toBe(1);
-    expect(board.sections.some((s) => s.kind === "actions")).toBe(false);
+    // The only actions section is the task composer; the failed run carries none itself.
+    const actions = board.sections.filter((s) => s.kind === "actions");
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.kind === "actions" ? actions[0].title : undefined).toBe(
+      "Give the squad a task",
+    );
   });
 
   test("gave-up surfaces the summary and provenance", () => {

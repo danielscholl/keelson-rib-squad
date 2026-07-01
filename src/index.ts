@@ -14,8 +14,9 @@ import type {
 import { asNonEmptyString, DEFAULT_PROJECT_NAME, errText, expectView, z } from "@keelson/shared";
 import { listAgents, resolveAgent } from "./agents.ts";
 import { APPROVE_CAST_ACTION, CAST_PROPOSE_ACTION, DISCARD_CAST_ACTION } from "./boards/cast.ts";
+import { COORDINATE_ACTION, DISPATCH_ACTION } from "./boards/coordinator.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
-import { SELECT_PROJECT_ACTION } from "./boards/roster.ts";
+import { ASSIGN_CODE_ACTION, RETIRE_ALL_ACTION, SELECT_PROJECT_ACTION } from "./boards/roster.ts";
 import { clearProposal, proposeCast, readProposal, writeProposal } from "./cast.ts";
 import {
   assignThemedIdentity,
@@ -27,7 +28,14 @@ import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
 import { type RunCoordinatorResult, runCoordinator } from "./coordinator.ts";
 import { type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
-import { CAST_KEY, COORDINATOR_KEY, DECISIONS_KEY, ROSTER_KEY, SQUAD_SURFACE_ID } from "./keys.ts";
+import {
+  CAST_KEY,
+  COORDINATOR_KEY,
+  DECISIONS_KEY,
+  ROSTER_KEY,
+  SQUAD_RUNS_KEY,
+  SQUAD_SURFACE_ID,
+} from "./keys.ts";
 import {
   appendLog,
   type MemberRecord,
@@ -85,6 +93,10 @@ const CAST_COLLECTOR = fileURLToPath(new URL("../bin/collect-cast.ts", import.me
 const COORDINATOR_COLLECTOR = fileURLToPath(
   new URL("../bin/collect-coordinator.ts", import.meta.url),
 );
+// The runs collector: renders the archived coordinator run ledgers under the selected
+// scope as the Runs history board. Resolved at module load like the others so the
+// squad-runs bash node runs the right file regardless of cwd; shell-quoted below.
+const RUNS_COLLECTOR = fileURLToPath(new URL("../bin/collect-runs.ts", import.meta.url));
 
 // POSIX single-quote: wrap a value and escape any embedded quote so a path
 // (spaces, `$`, backticks, backslashes) reaches `bash -c` literally — never
@@ -163,6 +175,36 @@ Rules:
 - If the array is empty, return a board whose only content section is one rows item explaining no decisions are recorded yet.
 - ALWAYS include the final "Record a decision" actions section exactly as shown, so the operator can always add one.
 - Set header.status.label to the decision count (e.g. "3 decisions", "1 decision", "0 decisions").`;
+
+// The surface-launched assign-work workflows are thin, deterministic wrappers: one
+// prompt turn whose only job is to call the matching squad tool exactly once, so the
+// verb becomes an inspectable workflow run (and, for coordinate, streams into the
+// promoted Run-loop panel). The tools do the real work; the model must not.
+const COORDINATE_WF_PROMPT = `The operator has handed the squad a task to run its coordinator on:
+
+$inputs.task
+
+Call the squad_coordinate tool EXACTLY ONCE, passing that text as \`task\` and \`maxRounds\`: 6 (a bounded surface run). Do NOT attempt the work yourself — the tool runs the whole plan→delegate→observe loop against the selected project and returns a summary. After it returns, reply with EXACTLY its summary text.`;
+
+const DISPATCH_WF_PROMPT = `The operator wants the whole squad to weigh in on one question:
+
+$inputs.task
+
+Call the squad_dispatch tool EXACTLY ONCE, passing that text as \`task\` (leave \`members\` unset to fan out to every active member; leave \`synthesize\` at its default). Do NOT answer it yourself — the tool fans the question out and synthesizes the replies. After it returns, reply with EXACTLY its synthesized answer.`;
+
+const CODE_WF_PROMPT = `The operator has assigned a coding task to one specific squad member:
+
+Member slug: $inputs.member
+Task:
+$inputs.task
+
+Call the squad_code tool EXACTLY ONCE with \`member\` set to that slug and \`task\` set to the task above. Do NOT write any code yourself — the tool runs a confined coding turn as that member against the selected project. After it returns, reply with EXACTLY its result.`;
+
+const CAST_SCAN_WF_PROMPT = `The operator wants to auto-compose a squad for the selected project by scanning its repository.
+
+Mission (optional focus): $inputs.mission
+
+Call the squad_propose_cast tool EXACTLY ONCE. If the mission above is non-empty, pass it as \`mission\`; otherwise omit it. Do NOT inspect the repository yourself — the tool runs a confined read-only scan and proposes the team into the Proposed squad panel. After it returns, reply with EXACTLY its summary.`;
 
 // Tool results stream to chat as `tool_result` chunks; keep each well under the
 // chat context budget. Truncation is signalled, never silent.
@@ -837,6 +879,86 @@ function summarizeRuns(runs: readonly RunSummary[], scopeId: string): string {
   return lines.join("\n");
 }
 
+// Shared cast-scan seam: run ONE confined read-only scan of the SELECTED project (the
+// read-only rail lives inside proposeCast — cwd + allowedDirectories + read-only tools),
+// persist the proposal under the selection's scope where approve-cast reads it, and
+// refresh the Proposed-squad panel. Backs the squad_propose_cast tool the squad-cast-scan
+// workflow fronts; the roster Cast action only launches that run.
+async function proposeCastForSelection(
+  mission?: string,
+): Promise<{ ok: true; projectName: string; count: number } | { ok: false; error: string }> {
+  if (!runAgentTurn) {
+    return { ok: false, error: "casting needs the agent-turn seam (unavailable on this harness)" };
+  }
+  if (!getProjects) {
+    return { ok: false, error: "casting needs the projects seam (unavailable on this harness)" };
+  }
+  const home = squadDataHome();
+  const selection = await readSelectedProject(home);
+  const projects = getProjects();
+  // Resolve the repo to scan: the selection's project when it carries one, else the
+  // workspace default project (the flat/default scope IS the workspace, and it is
+  // castable). A vanished explicit selection, or no project at all, fails closed.
+  const scanProject = selection?.projectId
+    ? projects.find((p) => p.id === selection.projectId)
+    : projects.find((p) => p.name === DEFAULT_PROJECT_NAME);
+  if (!scanProject) {
+    return {
+      ok: false,
+      error:
+        projects.length > 0
+          ? "select a project in the picker to cast a team for it"
+          : "add a project first (keelson project add), then cast a team for it",
+    };
+  }
+  // A provider-listing hiccup must not block casting — degrade to unpinned members.
+  let providers: ReturnType<NonNullable<RibContext["getProviders"]>> = [];
+  try {
+    providers = getProviders?.() ?? [];
+  } catch {
+    providers = [];
+  }
+  const result = await proposeCast({
+    runAgentTurn,
+    project: { id: scanProject.id, name: scanProject.name, rootPath: scanProject.rootPath },
+    ...(mission ? { mission: mission.slice(0, MAX_MISSION_CHARS) } : {}),
+    providers,
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  const scopeId = selectedScopeId(selection);
+  await writeProposal(scopeDataHome(home, scopeId), result.proposal);
+  await refreshWorkflow?.("squad-cast");
+  return { ok: true, projectName: scanProject.name, count: result.proposal.members.length };
+}
+
+const proposeCastSchema = z.object({ mission: z.string().optional() });
+
+function makeProposeCastTool(): ToolDefinition {
+  return {
+    name: "squad_propose_cast",
+    description:
+      "Internal write-seam for the squad-cast-scan workflow: run ONE confined read-only scan of the SELECTED project's repo and persist a proposed squad (the Proposed squad panel) for the operator to Approve or Discard. `mission` (optional) focuses the team. To cast a squad, run the squad-cast-scan workflow (or the roster's Cast action) rather than calling this directly. Fails closed with no selected project or no agent-turn seam.",
+    inputSchema: proposeCastSchema,
+    state_changing: true,
+    async execute(input, ctx) {
+      const parsed = proposeCastSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_propose_cast: ${parsed.error.message}`, true);
+        return;
+      }
+      const result = await proposeCastForSelection(asNonEmptyString(parsed.data.mission));
+      if (!result.ok) {
+        emitResult(ctx, `squad_propose_cast: ${result.error}`, true);
+        return;
+      }
+      emitResult(
+        ctx,
+        JSON.stringify({ ok: true, project: result.projectName, proposed: result.count }),
+      );
+    },
+  };
+}
+
 const rib: Rib = {
   id: "squad",
   displayName: "Squad",
@@ -848,6 +970,7 @@ const rib: Rib = {
     { key: DECISIONS_KEY, canvasKind: "view", title: "Decisions" },
     { key: CAST_KEY, canvasKind: "view", title: "Proposed squad" },
     { key: COORDINATOR_KEY, canvasKind: "view", title: "Run loop" },
+    { key: SQUAD_RUNS_KEY, canvasKind: "view", title: "Runs" },
   ],
 
   // The Squad nav tab. The roster sits in the header (the members you author); each
@@ -858,7 +981,10 @@ const rib: Rib = {
     {
       id: SQUAD_SURFACE_ID,
       title: "Squad",
-      subtitle: "Author members · talk to your team",
+      subtitle: "Author members · cast a squad · assign work",
+      // Opt into the host's project picker: the surface header renders the shared
+      // ProjectChip and, on select, dispatches this rib's select-project action.
+      projectScoped: true,
       layout: {
         header: {
           key: ROSTER_KEY,
@@ -874,29 +1000,39 @@ const rib: Rib = {
           {
             columns: [
               {
-                key: DECISIONS_KEY,
-                workflow: "squad-decisions",
-                title: "Decisions",
-                // NO cadenceMs by design: squad-decisions runs a paid agent turn to
-                // render the recalled ledger, so a heartbeat would burn turns idle.
-                // Client SWR refreshes it on open/focus (the region has no cadence);
-                // re-open the panel after recording a decision to see it. A self-
-                // gating, cost-bounded refresh (chamber-digest style) is Phase 3.
+                key: COORDINATOR_KEY,
+                workflow: "squad-coordinator",
+                title: "Run loop",
+                // Promoted to lead, uncollapsed: assign a task from its composer and
+                // watch the coordinator stream round by round. cadenceMs so it
+                // auto-loads on open (showing the composer) instead of a "Load"
+                // placeholder; `live` pulses the head while a run pushes frames.
+                cadenceMs: 120_000,
+                live: true,
                 collapsible: true,
-                glyph: { char: "§", tone: "accent" },
+                glyph: { char: "↻", tone: "info" },
               },
             ],
           },
           {
             columns: [
               {
+                key: SQUAD_RUNS_KEY,
+                workflow: "squad-runs",
+                title: "Runs",
+                // The archived coordinator runs. Cheap ledger read; a modest cadence
+                // keeps a freshly-launched run appearing without a manual refresh.
+                cadenceMs: 120_000,
+                collapsible: true,
+                glyph: { char: "≡", tone: "neutral" },
+              },
+              {
                 key: CAST_KEY,
                 workflow: "squad-cast",
                 title: "Proposed squad",
                 // NO cadenceMs: the cast collector only changes on propose/approve/
-                // discard, so a heartbeat would just re-render the idle board. The
-                // propose action publishes it via refreshWorkflow and opens it in the
-                // drawer; collapsed by default so an empty panel doesn't clutter.
+                // discard. squad_propose_cast refreshes it after a scan; collapsed by
+                // default so an empty panel doesn't clutter the row.
                 collapsible: true,
                 collapsed: true,
                 glyph: { char: "✦", tone: "brand" },
@@ -906,15 +1042,15 @@ const rib: Rib = {
           {
             columns: [
               {
-                key: COORDINATOR_KEY,
-                workflow: "squad-coordinator",
-                title: "Run loop",
-                // NO cadenceMs: the collector reads a static ledger file, so a heartbeat
-                // would re-render an unchanged board between runs. squad_coordinate refreshes
-                // it on completion via refreshWorkflow; collapsed by default until a run lands.
+                key: DECISIONS_KEY,
+                workflow: "squad-decisions",
+                title: "Decisions",
+                // NO cadenceMs by design: squad-decisions runs a paid agent turn to
+                // render the recalled ledger, so a heartbeat would burn turns idle.
+                // Client SWR refreshes it on open/focus (the region has no cadence);
+                // re-open the panel after recording a decision to see it.
                 collapsible: true,
-                collapsed: true,
-                glyph: { char: "↻", tone: "info" },
+                glyph: { char: "§", tone: "accent" },
               },
             ],
           },
@@ -985,6 +1121,25 @@ const rib: Rib = {
       validate: expectView(COORDINATOR_KEY, "board"),
     },
     {
+      // The runs producer: a deterministic collector that renders the archived
+      // coordinator run ledgers under the selected scope as the Runs history board.
+      // The coordinator archives each completed run; this refresh reflects them.
+      definition: {
+        name: "squad-runs",
+        description:
+          "Use when: see the squad's past coordinator runs. Triggers: opening the Runs panel. Does: reads the archived run ledgers from the selected scope and publishes a Runs board (one row per run, newest first) to the Squad Runs canvas. NOT for: starting a run (the Run-loop Coordinate action) or watching the current one (the Run loop panel).",
+        nodes: [
+          {
+            id: "collect",
+            bash: `bun ${shQuote(RUNS_COLLECTOR)} ${shQuote(squadDataHome())}`,
+            output_schema: { type: "object", required: ["view", "sections"] },
+          },
+        ],
+      },
+      bindSnapshotKey: SQUAD_RUNS_KEY,
+      validate: expectView(SQUAD_RUNS_KEY, "board"),
+    },
+    {
       // Genesis as a workflow: one prompt turn authors the charter and calls
       // squad_emit_member to persist it. No bindSnapshotKey/validate — genesis
       // writes files (the roster collector reflects them), it does not publish a
@@ -1003,6 +1158,76 @@ const rib: Rib = {
             // instead of reporting SUCCEEDED with no member written.
             fail_on_tool_error: true,
             allowed_tools: ["squad_emit_member"],
+          },
+        ],
+      },
+    },
+    {
+      // Surface-launched: casting a squad as an inspectable workflow run. One prompt
+      // turn calls squad_propose_cast (the confined read-only scan) — the roster Cast
+      // action launches THIS instead of scanning in-process, so "create a squad"
+      // triggers a visible run. No bindSnapshotKey: the tool refreshes the Proposed
+      // squad panel itself; this workflow just fronts the scan.
+      definition: {
+        name: "squad-cast-scan",
+        description:
+          'Use when: auto-compose a squad for the selected project. Triggers: the roster "Cast a squad" action. Does: one agent turn calls squad_propose_cast to run a confined read-only repo scan and publish a Proposed squad to Approve or Discard. NOT for: authoring one member (squad-genesis) or approving a proposal (the Proposed squad board actions).',
+        nodes: [
+          {
+            id: "scan",
+            prompt: CAST_SCAN_WF_PROMPT,
+            fail_on_tool_error: true,
+            allowed_tools: ["squad_propose_cast"],
+          },
+        ],
+      },
+    },
+    {
+      // Surface-launched: run the coordinator on a task as an inspectable run. The tool
+      // publishes the Run-loop panel per round, so progress streams there while the run
+      // is live; maxRounds is clamped low for a surface run (see COORDINATE_WF_PROMPT).
+      definition: {
+        name: "squad-coordinate-run",
+        description:
+          'Use when: hand the squad a task and watch it run the plan→delegate→observe loop. Triggers: the Run-loop "Coordinate on a task" action. Does: one agent turn calls squad_coordinate (bounded rounds) against the selected project; progress streams into the Run loop panel. NOT for: a single one-off question (squad-dispatch-run) or one direct code edit (squad-code-run).',
+        nodes: [
+          {
+            id: "run",
+            prompt: COORDINATE_WF_PROMPT,
+            fail_on_tool_error: true,
+            allowed_tools: ["squad_coordinate"],
+          },
+        ],
+      },
+    },
+    {
+      // Surface-launched: fan one question out to the whole roster and synthesize.
+      definition: {
+        name: "squad-dispatch-run",
+        description:
+          'Use when: ask every squad member one question at once. Triggers: the Run-loop "Ask the team" action. Does: one agent turn calls squad_dispatch to fan the question out to all active members and synthesize their replies. NOT for: a multi-step run (squad-coordinate-run) or editing the repo (squad-code-run).',
+        nodes: [
+          {
+            id: "ask",
+            prompt: DISPATCH_WF_PROMPT,
+            fail_on_tool_error: true,
+            allowed_tools: ["squad_dispatch"],
+          },
+        ],
+      },
+    },
+    {
+      // Surface-launched: one code-capable member edits the selected project's repo.
+      definition: {
+        name: "squad-code-run",
+        description:
+          'Use when: assign a confined coding task to one code-capable member. Triggers: a roster card\'s "Assign a code task" action. Does: one agent turn calls squad_code so the named member edits the selected project directly (Read/Edit/Write/Bash, confined to the repo, no merge/force-push). NOT for: text-only reasoning (squad-dispatch-run) or a whole multi-step run (squad-coordinate-run).',
+        nodes: [
+          {
+            id: "code",
+            prompt: CODE_WF_PROMPT,
+            fail_on_tool_error: true,
+            allowed_tools: ["squad_code"],
           },
         ],
       },
@@ -1097,6 +1322,7 @@ const rib: Rib = {
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
+      makeProposeCastTool(),
       makeRunsTool(ctx.getProjects),
       makeCoordinateTool(
         ctx.runAgentTurn,
@@ -1137,6 +1363,14 @@ const rib: Rib = {
         return setModelAction(action);
       case "retire":
         return retireAction(action);
+      case RETIRE_ALL_ACTION:
+        return retireAllAction();
+      case COORDINATE_ACTION:
+        return coordinateAction(action);
+      case DISPATCH_ACTION:
+        return dispatchAction(action);
+      case ASSIGN_CODE_ACTION:
+        return assignCodeAction(action);
       case RECORD_DECISION_ACTION:
         return recordDecisionAction(action);
       default:
@@ -1211,8 +1445,12 @@ async function selectProjectAction(action: RibAction): Promise<RibActionResult> 
     } else {
       const project = getProjects?.().find((p) => p.id === scopeId);
       if (!project) return { ok: false, error: "unknown project" };
+      // The workspace default project maps to the flat scope (so a legacy roster
+      // stays visible) but keeps its projectId + rootPath so it is still castable and
+      // runnable; every other project scopes by its own id.
+      const effectiveScope = project.name === DEFAULT_PROJECT_NAME ? DEFAULT_SCOPE_ID : project.id;
       await writeSelectedProject(home, {
-        scopeId: project.id,
+        scopeId: effectiveScope,
         projectId: project.id,
         name: project.name,
         rootPath: project.rootPath,
@@ -1226,6 +1464,7 @@ async function selectProjectAction(action: RibAction): Promise<RibActionResult> 
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
     await refreshWorkflow?.("squad-cast")?.catch(() => {});
     await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+    await refreshWorkflow?.("squad-runs")?.catch(() => {});
     return { ok: true, data: { scopeId } };
   } catch (e) {
     return { ok: false, error: errText(e) };
@@ -1321,11 +1560,15 @@ function resolveRunScope(
   return { ok: true, scopeId: DEFAULT_SCOPE_ID };
 }
 
-// Cast-propose: resolve a project, run ONE confined read-only repo-scan turn that
-// auto-composes the roster, persist the proposal, refresh the Proposed-squad panel,
-// and open it in the drawer. The scan is read-only and bounded to the project root
-// inside proposeCast (cwd + allowedDirectories + read-only tools); scaffolding waits
-// for approve. Fails closed when the agent-turn / projects seams are absent.
+// Cast-propose: preflight a scannable project (immediate, helpful errors), then launch
+// the squad-cast-scan workflow so the confined repo scan runs as an inspectable run
+// rather than in-process — the fix for "creating a squad doesn't trigger a workflow".
+// The scan itself lives in squad_propose_cast (read-only, bounded to the project root
+// inside proposeCast); this action only validates and launches. Casting is
+// selection-driven — the selection's project, or the workspace default project for the
+// flat/default scope (no free-text override, the #80 footgun). No `stay`: the run
+// focuses the Workflows tab so its progress and any scan failure are visible; the
+// Proposed squad panel refreshes for review when the operator returns.
 async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   if (!runAgentTurn) {
@@ -1334,59 +1577,146 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   if (!getProjects) {
     return { ok: false, error: "casting needs the projects seam (unavailable on this harness)" };
   }
-  // Casting is selection-driven: it scans the SELECTED project and the proposal lands in that
-  // same scope (where approve reads it), so the team is exactly the one a no-arg run uses. There
-  // is deliberately no free-text project override — that could scan one project but place the
-  // team in another (the #80 footgun). A team can't be auto-composed without a repo, so no
-  // selection fails closed.
+  const projects = getProjects();
   const selection = await readSelectedProject(squadDataHome());
-  if (!selection?.projectId) {
-    // The default/"none" scope carries no projectId, so it can't be cast for — point the
-    // operator at the fix (the picker, or adding a project first) instead of a flat failure.
+  // A scannable target: the selection's project when it carries one, else the workspace
+  // default project (the flat/default scope). Only a vanished explicit selection or no
+  // project at all fails closed (mirrors proposeCastForSelection).
+  const hasTarget = selection?.projectId
+    ? projects.some((p) => p.id === selection.projectId)
+    : projects.some((p) => p.name === DEFAULT_PROJECT_NAME);
+  if (!hasTarget) {
     return {
       ok: false,
       error:
-        getProjects().length > 0
-          ? "select a project in the picker first — casting auto-composes a team for the selected project's repo"
-          : "add a project first (keelson project add), then select it to cast a team for it",
+        projects.length > 0
+          ? "select a project in the picker to cast a team for it"
+          : "add a project first (keelson project add), then cast a team for it",
     };
   }
-  const scanProject = getProjects().find((p) => p.id === selection.projectId);
-  if (!scanProject) {
+  const mission = asNonEmptyString(payload.mission);
+  return {
+    ok: true,
+    data: {
+      effect: "run-workflow",
+      workflow: "squad-cast-scan",
+      args: mission ? { mission: mission.slice(0, MAX_MISSION_CHARS) } : {},
+    },
+  };
+}
+
+// The operator-typed task is unbounded, user-controlled input; clamp it before it
+// rides into a billed assign-work run (the tools re-cap their own inputs too).
+const MAX_TASK_CHARS = 4000;
+
+// Coordinate: launch the Magentic run loop on a task. stay:true — the promoted
+// Run-loop panel on the Squad surface is where the run streams round by round.
+function coordinateAction(action: RibAction): RibActionResult {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const task = asNonEmptyString(payload.task);
+  if (!task) return { ok: false, error: "Describe the task first — what should the squad do?" };
+  return {
+    ok: true,
+    data: {
+      effect: "run-workflow",
+      workflow: "squad-coordinate-run",
+      args: { task: task.slice(0, MAX_TASK_CHARS) },
+      stay: true,
+    },
+  };
+}
+
+// Ask the team: fan one question out to the whole roster. Focuses Workflows — the
+// synthesized answer is the run's output, read in the run view.
+function dispatchAction(action: RibAction): RibActionResult {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const task = asNonEmptyString(payload.task);
+  if (!task) {
+    return { ok: false, error: "Ask a question first — what should the team weigh in on?" };
+  }
+  return {
+    ok: true,
+    data: {
+      effect: "run-workflow",
+      workflow: "squad-dispatch-run",
+      args: { task: task.slice(0, MAX_TASK_CHARS) },
+    },
+  };
+}
+
+// Assign a code task: one code-capable member edits the selected project. The card
+// carries the member slug; squad_code resolves the repo from the selection. Focuses
+// Workflows — the code summary is the run's output.
+async function assignCodeAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const slug = asNonEmptyString(payload.slug);
+  const task = asNonEmptyString(payload.task);
+  if (!slug) return { ok: false, error: "assign-code requires payload { slug }" };
+  if (!task) {
     return {
       ok: false,
-      error: "selected project no longer exists — re-select a project to cast",
+      error: "Describe the code task first — what should this member implement?",
     };
   }
-  const missionRaw = asNonEmptyString(payload.mission);
-  // A provider-listing hiccup must not block casting — degrade to unpinned members.
-  let providers: ReturnType<NonNullable<RibContext["getProviders"]>> = [];
+  // Preflight the member in the selected scope BEFORE launching a billed run — a stale
+  // card button (or a direct dispatch) would otherwise kick off a squad-code-run that
+  // is guaranteed to fail. These checks mirror squad_code's own so the two can't drift.
   try {
-    providers = getProviders?.() ?? [];
-  } catch {
-    providers = [];
-  }
-  try {
-    const result = await proposeCast({
-      runAgentTurn,
-      project: {
-        id: scanProject.id,
-        name: scanProject.name,
-        rootPath: scanProject.rootPath,
-      },
-      ...(missionRaw ? { mission: missionRaw.slice(0, MAX_MISSION_CHARS) } : {}),
-      // Available-provider catalog so the scan can auto-assign each member's engine by
-      // role (leaning overpowered). Absent seam / no providers → unpinned members.
-      providers,
-    });
-    if (!result.ok) return { ok: false, error: result.error };
     const home = squadDataHome();
-    // Write under the selection's scope so approve-cast (which reads that scope)
-    // finds the proposal — the same selection that picked the scan target.
-    const scopeId = selectedScopeId(selection);
-    await writeProposal(scopeDataHome(home, scopeId), result.proposal);
-    await refreshWorkflow?.("squad-cast");
-    return { ok: true, data: { effect: "open-canvas", key: CAST_KEY, title: "Proposed squad" } };
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    const member = (await readMembers(scopeMembersDir(home, scopeId))).find((m) => m.slug === slug);
+    if (!member) return { ok: false, error: `unknown member "${slug}"` };
+    if (member.status !== "active") return { ok: false, error: `member "${slug}" is not active` };
+    if (!memberCanCode(member)) {
+      return {
+        ok: false,
+        error: `member "${slug}" lacks the "code" capability — only code-tagged members may modify the repo`,
+      };
+    }
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+  return {
+    ok: true,
+    data: {
+      effect: "run-workflow",
+      workflow: "squad-code-run",
+      args: { member: slug, task: task.slice(0, MAX_TASK_CHARS) },
+    },
+  };
+}
+
+// Retire-all: remove every member in the selected scope — the "remove the squad" verb.
+// Reuses the per-member retire path (record + charter delete, then free the cast name)
+// over the whole scoped roster, then refreshes the roster panel. Reads the live roster
+// as the source of truth so a stale board button retires exactly what is there now.
+async function retireAllAction(): Promise<RibActionResult> {
+  try {
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    const membersRoot = scopeMembersDir(home, scopeId);
+    const scopedHome = scopeDataHome(home, scopeId);
+    const members = await readMembers(membersRoot);
+    if (members.length === 0) return { ok: false, error: "no members to retire in this scope" };
+    let retired = 0;
+    for (const m of members) {
+      try {
+        await retireMember(membersRoot, m.slug);
+        retired++;
+      } catch (e) {
+        // Only the already-gone case is expected (a concurrent retire between the read
+        // above and here); any OTHER error is real — free the cast name, then fail the
+        // action so a partial retire is reported, not silently under-counted.
+        if (!errText(e).includes("not found")) {
+          await retireCastingName(scopedHome, m.slug);
+          await refreshWorkflow?.("squad-roster")?.catch(() => {});
+          return { ok: false, error: `retire-all failed on "${m.slug}": ${errText(e)}` };
+        }
+      }
+      await retireCastingName(scopedHome, m.slug);
+    }
+    await refreshWorkflow?.("squad-roster")?.catch(() => {});
+    return { ok: true, data: { retired } };
   } catch (e) {
     return { ok: false, error: errText(e) };
   }

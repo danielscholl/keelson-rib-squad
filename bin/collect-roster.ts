@@ -9,7 +9,7 @@
 import { buildRosterBoard, type RosterPulse } from "../src/boards/roster.ts";
 import { readMembers } from "../src/member-store.ts";
 import { scopeMembersDir, squadDataHome } from "../src/paths.ts";
-import { readProjectsSnapshot, readSelectedProject, selectedScopeId } from "../src/scope.ts";
+import { readSelectedProject, selectedScopeId } from "../src/scope.ts";
 
 async function main() {
   // The squad-roster bash node bakes the resolved data home in as argv[2] (the
@@ -18,9 +18,6 @@ async function main() {
   // Fall back to squadDataHome() for a manual/standalone run.
   const home = process.argv[2]?.trim() || squadDataHome();
   const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
-  // The picker list comes from the on-disk snapshot — the collector runs
-  // out-of-process and can't call getProjects(); the rib keeps projects.json fresh.
-  const projects = await readProjectsSnapshot(home).catch(() => []);
   let members: Awaited<ReturnType<typeof readMembers>> = [];
   try {
     members = await readMembers(scopeMembersDir(home, scopeId));
@@ -35,11 +32,10 @@ async function main() {
           members: members.length,
           active: members.filter((m) => m.status === "active").length,
           inactive: members.filter((m) => m.status === "inactive").length,
+          codeCapable: members.filter((m) => (m.tools ?? []).includes("code")).length,
         }
       : undefined;
-  process.stdout.write(
-    JSON.stringify(buildRosterBoard(members, pulse, { projects, activeScopeId: scopeId })),
-  );
+  process.stdout.write(JSON.stringify(buildRosterBoard(members, pulse)));
 }
 
 await main();

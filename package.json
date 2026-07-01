@@ -26,7 +26,7 @@
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
-    "@keelson/shared": ">=0.12.0"
+    "@keelson/shared": ">=0.27.0"
   },
   "peerDependenciesMeta": {
     "@keelson/shared": {

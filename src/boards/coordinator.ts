@@ -13,6 +13,13 @@ import {
 
 type Section = CanvasBoardView["sections"][number];
 
+// The two "assign work" verbs the Run-loop composer offers. Shared with onAction so
+// the action types can't drift from their handlers. Coordinate runs the full
+// plan→delegate→observe loop (watched in this panel); dispatch fans one question out
+// to the whole roster and synthesizes.
+export const COORDINATE_ACTION = "coordinate";
+export const DISPATCH_ACTION = "dispatch";
+
 const GOAL_CAP = 280;
 const STEP_CAP = 200;
 const TRANSCRIPT_CAP = 200;
@@ -66,11 +73,55 @@ export function transcriptTrailing(e: CoordinatorEntry): string {
 
 export function buildCoordinatorBoard(ledger: CoordinatorLedger | undefined): CanvasBoardView {
   if (!ledger) return idleBoard();
+  // Head every non-active board with the task composer so assigning work is one
+  // field away; an ACTIVE run omits it (you're watching, not queuing another).
+  const base = sectionsFor(ledger);
+  const sections = ledger.status === "active" ? base : [taskComposerSection(), ...base];
   return {
     view: "board",
     title: "Run loop",
     header: { status: statusPill(ledger.status), chip: `round ${ledger.round}` },
-    sections: sectionsFor(ledger),
+    sections,
+  };
+}
+
+// The "give the squad a task" composer that heads the Run-loop board, so assigning
+// work sits where its progress streams. Coordinate runs the full loop (watched in
+// this panel); Ask the team fans one question out to the roster and synthesizes.
+export function taskComposerSection(): Section {
+  return {
+    kind: "actions",
+    title: "Give the squad a task",
+    items: [
+      {
+        type: COORDINATE_ACTION,
+        label: "Coordinate on a task",
+        glyph: "↻",
+        fields: [
+          {
+            name: "task",
+            label: "Task",
+            placeholder:
+              'What should the squad accomplish? e.g. "add retry/backoff to the sync client and verify"',
+            multiline: true,
+          },
+        ],
+      },
+      {
+        type: DISPATCH_ACTION,
+        label: "Ask the team",
+        glyph: "✦",
+        fields: [
+          {
+            name: "task",
+            label: "Question",
+            placeholder:
+              'Ask every member at once, e.g. "what are the top risks in this migration?"',
+            multiline: true,
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -344,12 +395,13 @@ function idleBoard(): CanvasBoardView {
     title: "Run loop",
     header: { status: { label: "idle", tone: "neutral" as CanvasTone }, chip: "coordinator" },
     sections: [
+      taskComposerSection(),
       {
         kind: "rows",
         items: [
           {
             glyph: "neutral" as CanvasTone,
-            text: "No coordinator run yet. Give the squad a goal with squad_coordinate; the loop's plan, findings, abandoned steps, and progress show here.",
+            text: "No coordinator run yet — give the squad a task above. The loop's plan, findings, abandoned steps, and progress stream here.",
           },
         ],
       },

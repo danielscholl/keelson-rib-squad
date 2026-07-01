@@ -74,10 +74,9 @@ describe("collector back-compat (no selected-project.json)", () => {
       members: members.length,
       active: members.filter((m) => m.status === "active").length,
       inactive: members.filter((m) => m.status === "inactive").length,
+      codeCapable: members.filter((m) => (m.tools ?? []).includes("code")).length,
     };
-    // No projects.json on disk yet, so the picker renders an empty list on the
-    // default scope — the collector always passes a picker now.
-    const expected = buildRosterBoard(members, pulse, { projects: [], activeScopeId: "default" });
+    const expected = buildRosterBoard(members, pulse);
 
     expect(await readSelectedProject(home)).toBeUndefined();
     expect(await runCollector(ROSTER, home)).toEqual(JSON.parse(JSON.stringify(expected)));
@@ -115,8 +114,9 @@ describe("collector follows the persisted selection", () => {
       members: scoped.length,
       active: scoped.filter((m) => m.status === "active").length,
       inactive: scoped.filter((m) => m.status === "inactive").length,
+      codeCapable: scoped.filter((m) => (m.tools ?? []).includes("code")).length,
     };
-    const expected = buildRosterBoard(scoped, pulse, { projects: [], activeScopeId: "alpha" });
+    const expected = buildRosterBoard(scoped, pulse);
     expect(await runCollector(ROSTER, home)).toEqual(JSON.parse(JSON.stringify(expected)));
   });
 });

@@ -2,18 +2,26 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MessageChunk, RibAgentTurn, RibAgentTurnRequest, RibContext } from "@keelson/shared";
+import type {
+  MessageChunk,
+  RibAgentTurn,
+  RibAgentTurnRequest,
+  RibContext,
+  ToolContext,
+  ToolDefinition,
+} from "@keelson/shared";
+import { DEFAULT_PROJECT_NAME } from "@keelson/shared";
 import { readProposal } from "../src/cast.ts";
 import { loadRegistry, saveRegistry } from "../src/casting/registry.ts";
 import rib from "../src/index.ts";
-import { CAST_KEY } from "../src/keys.ts";
-import { readMembers } from "../src/member-store.ts";
+import { readMembers, scaffoldMember } from "../src/member-store.ts";
 import { membersDir, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import { writeSelectedProject } from "../src/scope.ts";
 
-// onAction reads the runAgentTurn / getProjects / refreshWorkflow seams captured in
-// registerTools, so each test boots the rib with a fake ctx (a canned scan reply, a
-// project list, an in-memory data home) and disposes after — no server, no provider.
+// The cast SCAN lives in the squad_propose_cast tool (invoked by the squad-cast-scan
+// workflow); the cast-propose ACTION only preflights the selection and launches that
+// workflow. So each test boots the rib with a fake ctx (a canned scan reply, a project
+// list, an in-memory data home), then either dispatches the action or runs the tool.
 
 async function* stream(text: string): AsyncGenerator<MessageChunk> {
   yield { type: "text", content: text };
@@ -55,7 +63,12 @@ async function selectProject(id: string, name: string, rootPath: string): Promis
   });
 }
 
-function bootRib(projects: ReturnType<typeof project>[], reply = ROSTER_REPLY): void {
+// Boot the rib and return its registered tools, so a test can drive squad_propose_cast
+// directly (the scan seam the cast-scan workflow calls).
+function bootRib(
+  projects: ReturnType<typeof project>[],
+  reply = ROSTER_REPLY,
+): readonly ToolDefinition[] {
   const ctx = {
     getExec: () => ({
       runJSON: async () => ({ ok: true as const, data: undefined }),
@@ -71,7 +84,39 @@ function bootRib(projects: ReturnType<typeof project>[], reply = ROSTER_REPLY): 
       refreshed.push(name);
     },
   } as unknown as RibContext;
-  rib.registerTools?.(ctx);
+  return rib.registerTools?.(ctx) ?? [];
+}
+
+// Run a rib tool against a fake ToolContext and return the single tool_result it emits.
+async function runTool(
+  tool: ToolDefinition,
+  input: unknown,
+): Promise<{ content: string; isError: boolean }> {
+  let out = { content: "", isError: false };
+  const ctx = {
+    emit: (chunk: { type: string; content?: string; isError?: boolean }) => {
+      if (chunk.type === "tool_result") {
+        out = { content: chunk.content ?? "", isError: chunk.isError ?? false };
+      }
+    },
+  } as unknown as ToolContext;
+  await tool.execute(input, ctx);
+  return out;
+}
+
+function proposeCastTool(tools: readonly ToolDefinition[]): ToolDefinition {
+  const tool = tools.find((t) => t.name === "squad_propose_cast");
+  if (!tool) throw new Error("squad_propose_cast tool not registered");
+  return tool;
+}
+
+// Set up a pending proposal the way the surface does — through the scan tool — so the
+// approve/discard tests exercise the real produce→consume path.
+async function proposeViaTool(
+  tools: readonly ToolDefinition[],
+  input: Record<string, unknown> = {},
+): Promise<void> {
+  await runTool(proposeCastTool(tools), input);
 }
 
 beforeEach(async () => {
@@ -85,49 +130,49 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-describe("cast-propose action", () => {
-  test("scans the selected project, persists the proposal, and opens the cast canvas", async () => {
+describe("cast-propose action (launches the cast-scan workflow)", () => {
+  test("with a selected project, returns a run-workflow directive for squad-cast-scan", async () => {
+    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    const res = await rib.onAction?.(
+      { type: "cast-propose", payload: { mission: "ship the search rib" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(true);
+    if (res?.ok) {
+      // No stay: the cast run focuses the Workflows tab so its progress/failure shows.
+      expect(res.data).toEqual({
+        effect: "run-workflow",
+        workflow: "squad-cast-scan",
+        args: { mission: "ship the search rib" },
+      });
+    }
+    // The action only launches — it does NOT scan in-process (no agent turn fired).
+    expect(lastReq).toBeUndefined();
+  });
+
+  test("omits the mission arg when none is given", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);
     await selectProject("p1", "keelson", "/repo/keelson");
     const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
-      expect(res.data).toEqual({ effect: "open-canvas", key: CAST_KEY, title: "Proposed squad" });
+      expect(res.data).toEqual({
+        effect: "run-workflow",
+        workflow: "squad-cast-scan",
+        args: {},
+      });
     }
-    // The scan was confined to the selected project's root with the read-only rail.
-    expect(lastReq?.cwd).toBe("/repo/keelson");
-    expect(lastReq?.allowedDirectories).toEqual(["/repo/keelson"]);
-    expect(lastReq?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
-    // The proposal landed under the selection's scope and the cast panel was refreshed.
-    const proposal = await readProposal(scopeDataHome(home, "p1"));
-    expect(proposal?.members.map((m) => m.name)).toEqual(["Atlas", "Vera"]);
-    expect(refreshed).toContain("squad-cast");
   });
 
-  test("carries the operator mission into the scan", async () => {
-    bootRib([project("p1", "keelson", "/repo/keelson")]);
-    await selectProject("p1", "keelson", "/repo/keelson");
-    await rib.onAction?.(
-      { type: "cast-propose", payload: { mission: "ship the OSDU search rib" } },
-      {} as RibContext,
-    );
-    expect(lastReq?.prompt).toContain("ship the OSDU search rib");
-  });
-
-  test("ignores an explicit project payload — the selection governs scan and scope (#80)", async () => {
-    bootRib([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
-    // Select alpha, but pass project:"beta" in the payload — the field is gone, so it is ignored.
-    await selectProject("p1", "alpha", "/repo/a");
-    const res = await rib.onAction?.(
-      { type: "cast-propose", payload: { project: "beta" } },
-      {} as RibContext,
-    );
+  test("with only the default project and no projectId selection, still launches (workspace fallback)", async () => {
+    // Fresh install: the sole project is the workspace default and no projectId is
+    // selected yet — casting must still work (it scans the default project's root),
+    // not dead-end telling the operator to select the project they already have.
+    bootRib([project("d1", DEFAULT_PROJECT_NAME, "/repo/workspace")]);
+    const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     expect(res?.ok).toBe(true);
-    // Scan AND proposal both follow the SELECTION (alpha) — never the payload's "beta" — so a
-    // later no-arg run reads the same team. This is the #80 mis-placement footgun, closed.
-    expect(lastReq?.cwd).toBe("/repo/a");
-    expect(await readProposal(scopeDataHome(home, "p1"))).toBeDefined();
-    expect(await readProposal(scopeDataHome(home, "p2"))).toBeUndefined();
+    if (res?.ok) expect((res.data as { workflow: string }).workflow).toBe("squad-cast-scan");
   });
 
   test("with no selection but projects available, points the operator at the picker", async () => {
@@ -135,7 +180,6 @@ describe("cast-propose action", () => {
     const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     expect(res?.ok).toBe(false);
     if (!res?.ok) expect(res?.error).toContain("select a project in the picker");
-    expect(await readProposal(home)).toBeUndefined();
   });
 
   test("with no projects at all, tells the operator to add one first", async () => {
@@ -161,11 +205,60 @@ describe("cast-propose action", () => {
   });
 });
 
+describe("squad_propose_cast tool (runs the confined scan)", () => {
+  test("scans the selected project with the read-only rail, persists the proposal, refreshes cast", async () => {
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    const out = await runTool(proposeCastTool(tools), {});
+    expect(out.isError).toBe(false);
+    // The scan was confined to the selected project's root with the read-only rail.
+    expect(lastReq?.cwd).toBe("/repo/keelson");
+    expect(lastReq?.allowedDirectories).toEqual(["/repo/keelson"]);
+    expect(lastReq?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    // The proposal landed under the selection's scope and the cast panel was refreshed.
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+    expect(proposal?.members.map((m) => m.name)).toEqual(["Atlas", "Vera"]);
+    expect(refreshed).toContain("squad-cast");
+  });
+
+  test("carries the operator mission into the scan", async () => {
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await runTool(proposeCastTool(tools), { mission: "ship the OSDU search rib" });
+    expect(lastReq?.prompt).toContain("ship the OSDU search rib");
+  });
+
+  test("scans AND places under the SELECTION scope, never mis-placed (#80)", async () => {
+    const tools = bootRib([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
+    await selectProject("p1", "alpha", "/repo/a");
+    await runTool(proposeCastTool(tools), {});
+    expect(lastReq?.cwd).toBe("/repo/a");
+    expect(await readProposal(scopeDataHome(home, "p1"))).toBeDefined();
+    expect(await readProposal(scopeDataHome(home, "p2"))).toBeUndefined();
+  });
+
+  test("fails closed with no selected project", async () => {
+    const tools = bootRib([project("p1", "alpha", "/repo/a")]);
+    const out = await runTool(proposeCastTool(tools), {});
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain("select a project");
+  });
+
+  test("with no projectId selection, scans the workspace default project (flat scope)", async () => {
+    const tools = bootRib([project("d1", DEFAULT_PROJECT_NAME, "/repo/workspace")]);
+    const out = await runTool(proposeCastTool(tools), {});
+    expect(out.isError).toBe(false);
+    expect(lastReq?.cwd).toBe("/repo/workspace");
+    // The proposal lands under the flat/default scope (the home root).
+    expect(await readProposal(home)).toBeDefined();
+  });
+});
+
 describe("approve-cast / discard-cast actions", () => {
   test("approve themes + scaffolds the proposed members (with tags) and clears the proposal", async () => {
-    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
     await selectProject("p1", "keelson", "/repo/keelson");
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await proposeViaTool(tools);
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
@@ -195,12 +288,12 @@ describe("approve-cast / discard-cast actions", () => {
   });
 
   test("approve is collision-safe — re-approving the same cast skips existing members", async () => {
-    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
     await selectProject("p1", "keelson", "/repo/keelson");
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await proposeViaTool(tools);
     await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     // Cast + approve again — the authored members must not be clobbered.
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await proposeViaTool(tools);
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
@@ -214,9 +307,9 @@ describe("approve-cast / discard-cast actions", () => {
   });
 
   test("discard clears the pending proposal", async () => {
-    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
     await selectProject("p1", "keelson", "/repo/keelson");
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await proposeViaTool(tools);
     const res = await rib.onAction?.({ type: "discard-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     expect(await readProposal(scopeDataHome(home, "p1"))).toBeUndefined();
@@ -224,7 +317,7 @@ describe("approve-cast / discard-cast actions", () => {
   });
 
   test("cast↔run scope agree: a team cast for the SELECTED project lands under its scope", async () => {
-    bootRib([project("px", "proj-x", "/repo/x")]);
+    const tools = bootRib([project("px", "proj-x", "/repo/x")]);
     // Select project X — the single source of truth a no-arg cast (and a no-arg run)
     // both key on. Casting with no explicit field scans X and stores under X's scope.
     await writeSelectedProject(home, {
@@ -234,13 +327,61 @@ describe("approve-cast / discard-cast actions", () => {
       rootPath: "/repo/x",
       at: "2026-06-30T00:00:00.000Z",
     });
-    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    await proposeViaTool(tools);
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     // Members land under projects/px/members (the selection's scope), NOT the default
     // tree — so a no-arg squad_coordinate/squad_code with X selected reads this team.
     expect(await readMembers(scopeMembersDir(home, "px"))).toHaveLength(2);
     expect(await readMembers(membersDir())).toHaveLength(0);
+  });
+});
+
+describe("assign-code action", () => {
+  const now = "2026-07-01T00:00:00.000Z";
+
+  test("launches squad-code-run for an active, code-capable member in the selected scope", async () => {
+    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    // No project selected → the flat default scope; scaffold a code-capable member there.
+    await scaffoldMember(scopeMembersDir(home, "default"), {
+      slug: "coder",
+      name: "Coder",
+      role: "Engineer",
+      charter: "# Coder",
+      status: "active",
+      createdAt: now,
+      tools: ["code"],
+    });
+    const res = await rib.onAction?.(
+      { type: "assign-code", payload: { slug: "coder", task: "add a --json flag" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(true);
+    if (res?.ok) {
+      expect(res.data).toEqual({
+        effect: "run-workflow",
+        workflow: "squad-code-run",
+        args: { member: "coder", task: "add a --json flag" },
+      });
+    }
+  });
+
+  test("rejects a member that lacks the code capability, before launching", async () => {
+    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await scaffoldMember(scopeMembersDir(home, "default"), {
+      slug: "talker",
+      name: "Talker",
+      role: "Reviewer",
+      charter: "# Talker",
+      status: "active",
+      createdAt: now,
+    });
+    const res = await rib.onAction?.(
+      { type: "assign-code", payload: { slug: "talker", task: "x" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain('lacks the "code" capability');
   });
 });
 
