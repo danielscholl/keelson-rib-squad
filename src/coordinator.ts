@@ -794,7 +794,7 @@ function reviewVerdictSpeaker(
       if (!r || r.status !== "ok" || r.text.trim().length === 0) return false;
       return blocked ? hasBlockVerdict(r.text) : true;
     });
-  return matching.length ? matching.map((r) => r.name).join(", ") : undefined;
+  return matching.length ? matching.map((r) => r.slug).join(", ") : undefined;
 }
 
 // The distinct provider ids among a wave's successful members, joined for one entry's

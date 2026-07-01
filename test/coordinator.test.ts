@@ -985,7 +985,7 @@ describe("runCoordinator loop", () => {
         },
         {
           slug: reviewer,
-          name: reviewer,
+          name: "Vera",
           role: "Reviewer",
           charter: "x",
           status: "active",
