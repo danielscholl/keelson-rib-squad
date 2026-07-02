@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.7.1...v0.8.0) (2026-07-02)
+
+
+### Added
+
+* **boards:** recompose the Run-loop board around rounds, minds, and expandable detail ([#117](https://github.com/danielscholl/keelson-rib-squad/issues/117)) ([e517f37](https://github.com/danielscholl/keelson-rib-squad/commit/e517f37991c2a864b74c9a1e3e9802acbae6a7c5))
+* **coordinator:** capture tool traces, usage, and timing from turns ([#115](https://github.com/danielscholl/keelson-rib-squad/issues/115)) ([cb5503a](https://github.com/danielscholl/keelson-rib-squad/commit/cb5503a2a65d6e61513a373b9856e7cc037d8819))
+
+
+### Fixed
+
+* **boards:** harden loadRun shape guard, keep identifiers in stripMd, catch in view-run ([#118](https://github.com/danielscholl/keelson-rib-squad/issues/118)) ([dddc5a4](https://github.com/danielscholl/keelson-rib-squad/commit/dddc5a4ac21a3a3137b045327d7b850cb858408c))
+
 ## [0.7.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.7.0...v0.7.1) (2026-07-02)
 
 
