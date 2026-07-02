@@ -1707,21 +1707,23 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     await persist(ledger);
     // Live tool-trace relay (#113): the code arm streams tool_use folds here; each
     // (throttled) update re-persists the ledger with the growing in-flight trace so
-    // the bound board's refresh shows the work as it happens. The main loop is
-    // awaiting executeStep for this whole window, so these writes cannot interleave
-    // with a loop-side persist.
+    // the bound board's refresh shows the work as it happens. Writes chain serially
+    // and the chain is drained after executeStep, so a slow live write can never land
+    // after the loop's own post-step persist and resurrect stale in-flight state.
     const inFlightBase = ledger;
     let lastTracePersist = 0;
+    let livePersists: Promise<void> = Promise.resolve();
     const onTool = (tools: readonly ToolTrace[]): void => {
       const nowMs = Date.now();
       if (nowMs - lastTracePersist < LIVE_TRACE_THROTTLE_MS) return;
       lastTracePersist = nowMs;
       if (!inFlightBase.inFlight) return;
-      void persist({
+      const live: CoordinatorLedger = {
         ...inFlightBase,
-        inFlight: { ...inFlightBase.inFlight, tools: tools.map((t) => ({ ...t })) },
+        inFlight: { ...inFlightBase.inFlight, tools: [...tools] },
         updatedAt: now(),
-      }).catch(() => {});
+      };
+      livePersists = livePersists.then(() => persist(live)).catch(() => {});
     };
     const result = await executeStep(decided.step, {
       dispatch,
@@ -1730,6 +1732,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       roster: opts.roster,
       onTool,
     });
+    await livePersists.catch(() => {});
     // An abort during the execute arm returns aborted member results that would otherwise
     // fold a junk "(no synthesis)" fact and advance the round. Break before that fold/advance
     // — clearing only the pre-execute in-flight marker (at the UNCHANGED round) so a connected

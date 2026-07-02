@@ -63,7 +63,7 @@ export async function runConfinedTurn(
   parentSignal?.addEventListener("abort", onParentAbort, { once: true });
 
   const startedAt = Date.now();
-  const trace: TraceState = { entries: [], byId: new Map() };
+  const trace: TraceState = { entries: [], ids: [], byId: new Map() };
   // Snapshot at return: a timed-out turn's consume keeps running in the background,
   // so the outcome must carry a copy, not the live array.
   const outcomeTools = (): Pick<TurnOutcome, "tools" | "durationMs"> => ({
@@ -128,8 +128,11 @@ export async function runConfinedTurn(
 
 interface TraceState {
   entries: ToolTrace[];
-  // tool_use id → its trace entry, so a later tool_result can stamp `ok` even
-  // after older entries rolled off the cap window.
+  // tool_use ids aligned index-for-index with `entries` (undefined for id-less
+  // chunks), so capping can prune `byId` as entries roll off.
+  ids: (string | undefined)[];
+  // tool_use id → its trace entry, so a tool_result can stamp `ok`. Pruned in
+  // lockstep with the cap window — a result for a rolled-off call is dropped.
   byId: Map<string, ToolTrace>;
 }
 
@@ -145,7 +148,9 @@ async function consumeResult(
     for await (const chunk of turn.stream) {
       if (foldToolChunk(chunk, trace)) {
         try {
-          onTool?.(trace.entries);
+          // A fresh snapshot per notification: an observer must never see (or be able
+          // to mutate) the live fold state, and a retained reference must stay stable.
+          onTool?.(trace.entries.map((t) => ({ ...t })));
         } catch {
           // a throwing observer must never break the turn
         }
@@ -162,8 +167,13 @@ function foldToolChunk(chunk: MessageChunk, trace: TraceState): boolean {
     const target = digestTarget(chunk.toolInput);
     const entry: ToolTrace = { name: chunk.toolName, ...(target ? { target } : {}) };
     trace.entries.push(entry);
+    trace.ids.push(chunk.id);
     if (chunk.id) trace.byId.set(chunk.id, entry);
-    if (trace.entries.length > TOOL_TRACE_CAP) trace.entries.shift();
+    if (trace.entries.length > TOOL_TRACE_CAP) {
+      trace.entries.shift();
+      const dropped = trace.ids.shift();
+      if (dropped) trace.byId.delete(dropped);
+    }
     return true;
   }
   if (chunk.type === "tool_result") {
