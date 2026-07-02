@@ -9,27 +9,22 @@ A single chat agent gets work done, but the team is fixed at one model, the meth
 is whatever that agent reaches for, and nothing it learns survives the session.
 
 Squad adds a **governed, self-improving dev squad** to Keelson. A coordinator
-assesses a task, casts the specialists it needs, chooses how to execute — author a
-reusable workflow, dispatch specialists in parallel, or modify code directly — and
+assesses a task, casts the specialists it needs, chooses how to execute (author a
+reusable workflow, dispatch specialists in parallel, or modify code directly), and
 records what it decided to the governed memory ledger so the next pass starts smarter.
 
 Use Squad to run an issue-driven dev loop where the reviewer, coder, and triager can
-each run on a different provider, every consequential action is approval-gated, and
-every run and decision is auditable in SQLite.
+each run on a different provider, a self-merge or a force-push is always denied
+regardless of what a member attempts, and every run and decision is auditable in
+SQLite.
 
 **Cast** composes the team. The **coordinator** picks the method and runs the loop.
 **Memory** keeps what was learned.
 
 Squad is a [Keelson](https://danielscholl.github.io/keelson/) rib: it installs into
-the harness you already run and reuses what the harness owns — provider routing, the
-workflow engine, the governed memory ledger, and the canvas — so the squad renders a
+the harness you already run and reuses what the harness owns (provider routing, the
+workflow engine, the governed memory ledger, and the canvas) so the squad renders a
 live run board with no hand-coded UI. Everything here is what Squad adds.
-
-:::note[Docs in progress]
-This site is scaffolded; the tier pages below are stubs we are filling in. Start
-from the [README](https://github.com/danielscholl/keelson-rib-squad) for the current
-picture.
-:::
 
 <CardGrid>
   <LinkCard

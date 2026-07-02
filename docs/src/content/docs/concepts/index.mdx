@@ -6,19 +6,34 @@ sidebar:
   order: 1
 ---
 
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
+
 This tier is the mental model behind Squad. It assumes you know the
 [Keelson](https://danielscholl.github.io/keelson/) harness and spends its words on
 what Squad adds.
 
-:::note[Stub]
-Scaffolded, not yet written. Planned pages for this tier:
-
-- **Cast and roster** — project-driven team composition; casting specialists to fit
-  the task.
-- **The coordinator loop** — recall → assess → pick method → execute → reflect.
-- **Method agency** — author a workflow, dispatch specialists, or modify code.
-- **Governed memory** — shared decisions, per-agent memory, and the reflection pass.
-:::
+<CardGrid>
+  <LinkCard
+    title="Cast and roster"
+    href="cast-and-roster/"
+    description="Project-driven team composition: casting specialists to fit the task."
+  />
+  <LinkCard
+    title="The coordinator loop"
+    href="the-coordinator-loop/"
+    description="Recall, assess, pick a method, execute, and reflect."
+  />
+  <LinkCard
+    title="Method agency"
+    href="method-agency/"
+    description="Author a workflow, dispatch specialists, or modify code."
+  />
+  <LinkCard
+    title="Governed memory"
+    href="governed-memory/"
+    description="Shared decisions, per-member memory, and the reflection pass."
+  />
+</CardGrid>
 
 ## Where a squad fits
 

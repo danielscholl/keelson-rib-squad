@@ -6,14 +6,25 @@ sidebar:
   order: 1
 ---
 
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
+
 A problem-first learning rail. Where the guides are recipes, the tutorials build
 understanding from a concrete starting point.
 
-:::note[Stub]
-Scaffolded, not yet written. Planned rail:
-
-- **Your first squad run** — cast a team and complete one task on a real project.
-- **A mixed-provider review** — author and reviewer on different model families.
-- **The self-improving loop** — let the coordinator recall, reflect, and grow memory
-  across passes.
-:::
+<CardGrid>
+  <LinkCard
+    title="Your first squad run"
+    href="your-first-squad-run/"
+    description="Cast a team and complete one task on a real project."
+  />
+  <LinkCard
+    title="A mixed-provider review"
+    href="a-mixed-provider-review/"
+    description="Author and reviewer on different model families."
+  />
+  <LinkCard
+    title="The self-improving loop"
+    href="the-self-improving-loop/"
+    description="Let the coordinator recall, reflect, and grow memory across passes."
+  />
+</CardGrid>

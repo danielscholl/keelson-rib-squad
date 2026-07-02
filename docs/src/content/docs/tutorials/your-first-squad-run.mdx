@@ -1,0 +1,189 @@
+---
+title: Your first squad run
+description: Install Squad, cast a small team for a real project from a repository scan, and hand the coordinator one task to watch it plan, delegate, gate, and finish.
+sidebar:
+  order: 2
+---
+
+import { Steps } from "@astrojs/starlight/components";
+
+This is where Squad stops being a roster you read about and starts being a team
+you run. You will install the rib, point it at a real project, cast a small
+team from a scan of that project, and hand the resulting squad one small task.
+Then you will watch the coordinator plan the work, delegate it, gate its own
+result, and finish.
+
+:::note[Before you start]
+A running Keelson server with a provider signed in (Copilot is the default).
+You will also want a real local git checkout you are comfortable letting a
+squad open a branch against: nothing here can merge or force-push, but the
+coding turn does read, edit, and commit for real. Actions that launch prompt
+turns (genesis, cast scan, dispatch, code, coordinate, and rendering Decisions)
+spend paid agent turns; the roster/run/runs boards themselves are refreshed by
+deterministic collectors.
+:::
+
+## Install Squad
+
+Squad arrives as a rib: an installable package, not a fork. Add it and restart
+so the server discovers it at boot.
+
+```bash
+keelson rib add https://github.com/danielscholl/keelson-rib-squad
+keelson stop && keelson start
+```
+
+Open the harness in a browser and look for a **Squad** tab, subtitled "Author
+members, cast a squad, assign work". If it is there, the rib activated. For
+the full contract on what installing wires up, see
+[Install the rib](../../guides/install-the-rib/).
+
+## Point Squad at a project
+
+Squad's surface is project-scoped: the roster, the proposed cast, and the run
+loop are all scoped to whichever project is selected in the picker chip in the
+surface header. Register a real project before you cast anything:
+
+```bash
+keelson project add my-app ~/code/my-app
+```
+
+Open the Squad surface and use the project picker chip to select `my-app`.
+Every panel clears to that project's own scope. A project you have never cast
+for always starts with an empty roster, even if you have cast squads for other
+projects before.
+
+## Cast a small team from a scan
+
+With an empty roster, the surface shows a cold-start screen explaining that a
+squad is a team tuned to your project, with two ways to start one: cast it
+automatically from the repo, or author members yourself. Take the first path.
+Click **Cast a squad for the selected project**, optionally adding a short
+mission to focus it, for example "prioritize the parts of the repo a new
+contributor touches first".
+
+That launches one confined, read-only agent turn: it can read the repo's
+languages, frameworks, layout, tests, and CI, but it cannot edit or run
+anything. A few moments later the **Proposed squad** panel fills in, typically
+three to five members (never more than six), each with a name, a role, a
+charter grounded in what the scan actually found, and a tools tag: `code` for
+an implementer, `read` for everyone reviewing or advising.
+
+Review the cards, then click **Approve & scaffold**. Every proposed member
+becomes a real chat agent on the Roster, each with its own charter, working
+memory, and log file on disk. If you would rather build a team one member at a
+time from your own brief instead of a scan, [Cast a team](../../guides/cast-a-team/)
+covers genesis, the other path to the same roster.
+
+## Hand the team one small task
+
+The **Run loop** panel is the promoted panel on the surface: it sits alone in
+row one, and it is the only panel that shows a live freshness pulse while a
+run is streaming. With no run active it shows a plain composer with two
+actions, **Coordinate on a task** and **Ask the team**. Ask the team fans a
+question out to the whole roster in parallel; you want the other one, which
+runs a standing loop against your project.
+
+Click **Coordinate on a task** and type something small and concrete into the
+field it opens, scoped to the project you just cast for. For example:
+
+```text
+Fix the typo in the README's opening paragraph and open a draft PR for review.
+```
+
+Submitting it launches a standing coordinator run bound to your project. A run
+started this way, from the surface rather than from chat directly, is capped
+at six rounds: a deliberately low ceiling because this is a bounded,
+surface-launched run, not an unbounded background job. Six rounds is plenty
+for a fix this size.
+
+## Watch the round loop
+
+Once the run starts, the composer disappears (you are watching this run, not
+queuing another) and the panel fills in round by round. Each round does the
+same thing:
+
+<Steps>
+
+1. **The manager reasons.** One turn looks at the goal, the roster, the
+   current plan, the facts gathered so far, and the last few rounds of
+   transcript, then decides what happens next.
+2. **It decides one of two things.** Either the goal is satisfied and it says
+   so, or it names exactly one next step: which member should run it, and
+   what to tell them.
+3. **Squad delegates that one step.** A plain dispatch turn to a member, a
+   confined coding turn if the step needs an edit and the named member carries
+   the `code` tag, or a workflow-authoring turn if the step is worth capturing
+   as a reusable DAG. Only one step runs per round.
+4. **The outcome folds back into the ledger.** Facts, the plan, and any team
+   gaps the manager flagged get updated, the round advances, and the board
+   republishes so you see it without refreshing.
+
+</Steps>
+
+While a step is running, an **In flight** card names the acting member and the
+instruction it was given, so you can see work happening in real time instead
+of staring at a spinner. The **Transcript** section at the bottom of the panel
+is the hero: the most recent rounds, each labeled with who spoke and what
+happened.
+
+## Watch the gates before it calls done
+
+When the manager decides the goal is met, Squad does not take that on faith.
+Because your project is bound and code changed, three checks run before a
+`done` sticks:
+
+1. **Adversarial review.** A read-capable member reviews the actual working
+   diff and has to name a specific, reproducible defect to block it, not a
+   hunch. A clean pass or a substantiated block, nothing in between.
+2. **Command verification.** Squad reads your project's `package.json` and
+   runs whichever of `check`, `typecheck`, and `test` exist, with `bun` or
+   `npm` depending on your lockfile. A red exit sends the manager back for
+   another round.
+3. **Change-quality inspection.** The diff itself is checked for the ways a
+   run could fake a green result: a deleted test file, a net loss of test
+   assertions, or a newly added lint or type suppression comment. This is not
+   something the model can talk its way past; it inspects what actually
+   changed.
+
+Any one of these can send the manager back for another round instead of
+finishing. Only when all of them clear, or genuinely do not apply, does the
+run reach status **done**. And whatever the coding member did, it opened a
+branch or a draft PR at most: a non-overridable policy floor denies a
+self-merge or a force-push outright, on this run or any other, so a human
+stays the one who actually merges.
+
+## Find the finished run
+
+A finished run archives itself to the project's run history, and the **Runs**
+panel picks it up: a row with the run's status, the round it finished on, when
+it last updated, and the task text. Once code changes, the panel also grows a
+**Worked by** line naming which member, and which provider, actually did the
+work; the run's own closing summary carries the same line.
+
+The row on the Runs panel is deliberately coarse. If you want the full
+transcript, facts, and verification detail, that is sitting in the archived
+run file itself, under the project's own scope on disk.
+
+## What you proved
+
+You installed Squad, pointed it at a real project, cast a small team from what
+the scan actually found rather than from a template, and handed that team one
+small, real task. The coordinator planned it, delegated it to a named member,
+reviewed and verified its own work, and stopped only once both came back
+clean. Every squad run from here is a bigger version of the same loop.
+
+Next, cast a squad where the reviewer and the coder run on genuinely different
+models, so the review you just watched is reasoning from different weights
+than the code it is reviewing.
+
+## Related
+
+- [A mixed-provider review](../a-mixed-provider-review/): pin the reviewer
+  and the coder to different providers.
+- [The coordinator loop](../../concepts/the-coordinator-loop/): why the loop
+  is shaped as plan, delegate, gate, repeat.
+- [Cast a team](../../guides/cast-a-team/): the full mechanics of genesis and
+  auto-cast, including how to retire a member.
+- [Run a coordinator loop](../../guides/run-a-coordinator-loop/): the operator
+  how-to once you know the shape, including the chat tool for a bigger run.

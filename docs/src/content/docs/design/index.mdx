@@ -6,15 +6,30 @@ sidebar:
   order: 1
 ---
 
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
+
 Why the rib is shaped the way it is: decision records and the rationale behind its
 seams. Read this tier when the contract alone does not explain the *why*.
 
-:::note[Stub]
-Scaffolded, not yet written. Planned design notes:
-
-- **The coordinator loop** — recall, method selection, execution, and reflection.
-- **Governed autonomy** — approval gates, the policy floor, and cost/turn budgets.
-- **Memory that compounds** — recalling decisions into the next pass, not just storing.
-- **Building on the rib contract** — the upstream seams Squad relies on, and the
-  workarounds it ships.
-:::
+<CardGrid>
+  <LinkCard
+    title="The coordinator loop"
+    href="the-coordinator-loop/"
+    description="Recall, method selection, execution, and reflection, folded into one manager turn."
+  />
+  <LinkCard
+    title="Governed autonomy"
+    href="governed-autonomy/"
+    description="Approval gates, the policy floor, and cost and turn budgets."
+  />
+  <LinkCard
+    title="Memory that compounds"
+    href="memory-that-compounds/"
+    description="Recalling decisions into the next pass, not just storing them."
+  />
+  <LinkCard
+    title="Building on the rib contract"
+    href="building-on-the-rib-contract/"
+    description="The upstream seams Squad relies on, and the workarounds it ships."
+  />
+</CardGrid>
