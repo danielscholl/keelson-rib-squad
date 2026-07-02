@@ -1,5 +1,7 @@
+import type { TokenUsage } from "@keelson/shared";
 import { memberCanCode } from "./code.ts";
 import type { DispatchOutcome } from "./dispatch.ts";
+import type { ToolTrace } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
 
 // The Magentic coordinator's control core (#20). Two layers, mirroring chamber's
@@ -180,6 +182,11 @@ export interface CodeStepOutcome {
   error?: string;
   // The provider id the host resolved the coding turn to — for "coded by X" provenance.
   providerId?: string;
+  // Observability captured from the turn stream/result (#113): the tool trace,
+  // token usage, and wall-clock the ledger entry carries.
+  tools?: ToolTrace[];
+  usage?: TokenUsage;
+  durationMs?: number;
 }
 
 // The normalized outcome of a workflow-authoring arm (#20 P3): a workflow DAG authored,
@@ -194,9 +201,16 @@ export interface WorkflowStepOutcome {
 
 export interface ExecuteStepDeps {
   dispatch: (members: Member[], instruction: string) => Promise<DispatchOutcome>;
-  code?: (member: Member, instruction: string) => Promise<CodeStepOutcome>;
+  code?: (
+    member: Member,
+    instruction: string,
+    onTool?: (tools: readonly ToolTrace[]) => void,
+  ) => Promise<CodeStepOutcome>;
   workflow?: (member: Member, instruction: string) => Promise<WorkflowStepOutcome>;
   roster: Member[];
+  // Live tool-trace observer for the code arm, so the driver can stream an
+  // in-flight turn's work to a watching board. Dispatch fan-out stays final-only.
+  onTool?: (tools: readonly ToolTrace[]) => void;
 }
 
 export interface OrchestratorStepResult {
@@ -216,7 +230,7 @@ export async function executeStep(
   if (step.mode === "code" && deps.code && step.speaker) {
     const member = deps.roster.find((m) => m.slug === step.speaker);
     if (member) {
-      const code = await deps.code(member, step.instruction);
+      const code = await deps.code(member, step.instruction, deps.onTool);
       return { step, code };
     }
   }

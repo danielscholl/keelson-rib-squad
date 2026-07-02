@@ -1,15 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type {
-  RibAgentTurn,
-  RibAgentTurnRequest,
-  RibAgentTurnResult,
-  RibContext,
-  RibExec,
-} from "@keelson/shared";
+import type { RibContext, RibExec, TokenUsage } from "@keelson/shared";
 import { errText } from "@keelson/shared";
 import { composeMemberSystemPrompt } from "./compose.ts";
 import { MEMORY_DOC_CAP, readMemberDoc, writeMemory } from "./member-store.ts";
+import { runConfinedTurn, type ToolTrace } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
 
 // The fan-out coordinator: one turn per member in parallel, then one synthesis
@@ -55,6 +50,10 @@ export interface DispatchResult {
   error?: string;
   // The provider id the host resolved this member's turn to — for "contributed by X" provenance.
   providerId?: string;
+  // Observability captured from the member's turn (#113).
+  tools?: ToolTrace[];
+  usage?: TokenUsage;
+  durationMs?: number;
 }
 
 export interface DispatchOutcome {
@@ -64,6 +63,9 @@ export interface DispatchOutcome {
   // Truncation, synthesis-skip, and synthesis-failure are surfaced here, never
   // silently dropped.
   notes: string[];
+  // Wave-total token usage: every member turn plus the synthesis turn, summed.
+  // Absent when no turn reported usage.
+  usage?: TokenUsage;
 }
 
 export interface DispatchFanoutOptions {
@@ -125,7 +127,7 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
       return { slug: member.slug, name: member.name, status: "aborted", text: "" };
     }
     const system = await composeMemberSystemPrompt(opts.membersRoot, member);
-    const outcome = await executeTurn(
+    const outcome = await runConfinedTurn(
       opts.runAgentTurn,
       {
         system,
@@ -142,6 +144,7 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
 
   const oks = perMember.filter((r) => r.status === "ok");
   let synthesis: string | undefined;
+  let synthesisUsage: TokenUsage | undefined;
   if (!wantSynthesis) {
     notes.push("synthesis skipped (disabled)");
   } else if (oks.length === 0) {
@@ -152,7 +155,7 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
     const synthSystem = opts.synthesizer
       ? await composeMemberSystemPrompt(opts.membersRoot, opts.synthesizer)
       : GENERIC_SYNTH_SYSTEM;
-    const outcome = await executeTurn(
+    const outcome = await runConfinedTurn(
       opts.runAgentTurn,
       {
         system: synthSystem,
@@ -169,8 +172,10 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
       perTurnTimeoutMs,
       opts.abortSignal,
     );
-    if (outcome.status === "ok") synthesis = outcome.text;
-    else {
+    if (outcome.status === "ok") {
+      synthesis = outcome.text;
+      synthesisUsage = outcome.usage;
+    } else {
       notes.push(
         `synthesis turn ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""} — returning per-member results only`,
       );
@@ -185,12 +190,28 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
     await reflectMembers(opts, members, perMember, concurrency, perTurnTimeoutMs, notes);
   }
 
+  const usage = sumUsage([...perMember.map((r) => r.usage), synthesisUsage]);
   return {
     task: opts.task,
     perMember,
     ...(synthesis !== undefined ? { synthesis } : {}),
     notes,
+    ...(usage ? { usage } : {}),
   };
+}
+
+// Sum the defined usages into a wave total; undefined when no turn reported one.
+function sumUsage(usages: readonly (TokenUsage | undefined)[]): TokenUsage | undefined {
+  let input = 0;
+  let output = 0;
+  let seen = false;
+  for (const u of usages) {
+    if (!u) continue;
+    seen = true;
+    input += u.inputTokens;
+    output += u.outputTokens;
+  }
+  return seen ? { inputTokens: input, outputTokens: output } : undefined;
 }
 
 // One reflection turn per member that produced substance, bounded by the same pool
@@ -227,7 +248,7 @@ async function reflectMembers(
     if (opts.abortSignal?.aborted) return;
     const prior = (await readMemberDoc(opts.membersRoot, member.slug, "memory.md")) ?? "";
     const system = await composeMemberSystemPrompt(opts.membersRoot, member);
-    const outcome = await executeTurn(
+    const outcome = await runConfinedTurn(
       opts.runAgentTurn,
       {
         system,
@@ -297,7 +318,7 @@ export async function reflectMembersAtClose(opts: ReflectAtCloseOptions): Promis
     if (opts.abortSignal?.aborted) return;
     const prior = (await readMemberDoc(opts.membersRoot, member.slug, "memory.md")) ?? "";
     const system = await composeMemberSystemPrompt(opts.membersRoot, member);
-    const outcome = await executeTurn(
+    const outcome = await runConfinedTurn(
       opts.runAgentTurn,
       {
         system,
@@ -562,94 +583,6 @@ const GENERIC_SYNTH_SYSTEM =
 function buildSynthesisPrompt(task: string, results: readonly DispatchResult[]): string {
   const sections = results.map((r) => `### ${r.name} (${r.slug})\n${r.text}`).join("\n\n");
   return `A task was dispatched to several squad members in parallel. Synthesize their independent responses into one coherent answer.\n\n## Task\n${task}\n\n## Member responses\n\n${sections}\n\n## Your job\nProduce a single synthesized answer to the task. Reconcile where they agree, note where they diverge, and do not merely concatenate them.`;
-}
-
-interface TurnOutcome {
-  status: DispatchStatus;
-  text: string;
-  error?: string;
-}
-
-// Run one turn to its settled result, mirroring the room.ts drain discipline:
-// own a per-turn AbortController linked to the wave signal, drain the stream
-// (result is the source of truth), and race the result against the timeout —
-// aborting the turn on timeout. Never throws; every failure mode maps to a
-// TurnOutcome so a wave's Promise.all can't be short-circuited by one bad turn.
-async function executeTurn(
-  runAgentTurn: NonNullable<RibContext["runAgentTurn"]>,
-  req: Omit<RibAgentTurnRequest, "abortSignal" | "timeoutMs">,
-  perTurnTimeoutMs: number,
-  parentSignal?: AbortSignal,
-): Promise<TurnOutcome> {
-  if (parentSignal?.aborted) return { status: "aborted", text: "" };
-
-  const controller = new AbortController();
-  const onParentAbort = () => controller.abort();
-  parentSignal?.addEventListener("abort", onParentAbort, { once: true });
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const turn = runAgentTurn({
-      ...req,
-      abortSignal: controller.signal,
-      timeoutMs: perTurnTimeoutMs,
-    });
-    // Wrap so neither branch rejects: a timed-out turn's still-pending drain must
-    // not surface as an unhandled rejection once the race has settled.
-    const settled = drainResult(turn).then(
-      (result) => ({ kind: "result" as const, result }),
-      (err) => ({ kind: "error" as const, err }),
-    );
-    const timed = new Promise<{ kind: "timeout" }>((resolve) => {
-      timer = setTimeout(() => {
-        controller.abort();
-        resolve({ kind: "timeout" });
-      }, perTurnTimeoutMs);
-    });
-
-    const outcome = await Promise.race([settled, timed]);
-    if (outcome.kind === "timeout") {
-      return { status: "timeout", text: "", error: `turn exceeded ${perTurnTimeoutMs}ms` };
-    }
-    if (outcome.kind === "error") {
-      return { status: "error", text: "", error: errText(outcome.err) };
-    }
-    return mapResult(outcome.result, controller.signal.aborted);
-  } catch (e) {
-    return { status: "error", text: "", error: errText(e) };
-  } finally {
-    if (timer) clearTimeout(timer);
-    parentSignal?.removeEventListener("abort", onParentAbort);
-  }
-}
-
-function mapResult(result: RibAgentTurnResult, aborted: boolean): TurnOutcome {
-  if (aborted || result.status === "aborted") return { status: "aborted", text: result.text ?? "" };
-  if (result.status === "ok") {
-    return {
-      status: "ok",
-      text: result.text,
-      ...(result.providerId ? { providerId: result.providerId } : {}),
-    };
-  }
-  return {
-    status: result.status,
-    text: "",
-    error: result.error ?? result.text ?? `turn ${result.status}`,
-  };
-}
-
-// Drain the live stream to completion, then take the settled result (the source
-// of truth). A stream error is swallowed — it resurfaces via result.status.
-async function drainResult(turn: RibAgentTurn): Promise<RibAgentTurnResult> {
-  try {
-    for await (const _chunk of turn.stream) {
-      // result is the source of truth; the stream is drained, not consumed
-    }
-  } catch {
-    // a stream error surfaces via result.status below
-  }
-  return await turn.result;
 }
 
 // A bounded async pool: at most `concurrency` workers in flight, each pulling the

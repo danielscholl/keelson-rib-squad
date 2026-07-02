@@ -1,6 +1,6 @@
 import type { RibContext } from "@keelson/shared";
 import { composeMemberSystemPrompt } from "./compose.ts";
-import { runConfinedTurn, type TurnOutcome } from "./turn-runner.ts";
+import { runConfinedTurn, type ToolTrace, type TurnOutcome } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
 
 // Code mode: a code-capable member runs ONE confined coding turn that actually edits
@@ -50,6 +50,9 @@ export interface RunCodeTurnOptions {
   task: string;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
+  // Live tool-trace observer, forwarded to the runner so a watching board can
+  // stream the coding turn's work as it happens.
+  onTool?: (tools: readonly ToolTrace[]) => void;
 }
 
 export type RunCodeTurnResult = { ok: true; outcome: TurnOutcome } | { ok: false; error: string };
@@ -88,6 +91,7 @@ export async function runCodeTurn(opts: RunCodeTurnOptions): Promise<RunCodeTurn
     },
     opts.timeoutMs ?? DEFAULT_CODE_TIMEOUT_MS,
     opts.abortSignal,
+    opts.onTool,
   );
   return { ok: true, outcome };
 }
