@@ -58,6 +58,16 @@ function statsItems(board: Board): StatItem[] {
   return section.items as StatItem[];
 }
 
+describe("stripMd", () => {
+  test("removes bold, code spans, and heading hashes but keeps identifiers and globs", async () => {
+    const { stripMd } = await import("../../src/boards/coordinator.ts");
+    expect(stripMd("# Edie **Personality.** `code`")).toBe("Edie Personality. code");
+    expect(stripMd("rename foo_bar and run --filter '*' typecheck")).toBe(
+      "rename foo_bar and run --filter '*' typecheck",
+    );
+  });
+});
+
 describe("buildCoordinatorBoard idle", () => {
   test("renders a valid calm board with no ledger", () => {
     const board = buildCoordinatorBoard(undefined);

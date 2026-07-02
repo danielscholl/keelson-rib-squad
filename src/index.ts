@@ -2004,15 +2004,19 @@ async function viewRunAction(action: RibAction): Promise<RibActionResult> {
   if (!snapshots) {
     return { ok: false, error: "run drill-down unavailable: no snapshot seam on this harness" };
   }
-  const home = squadDataHome();
-  const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
-  const ledger = await loadRun(scopeDataHome(home, scopeId), id);
-  runDetailBoard = buildRunDetailBoard(ledger, id);
-  await snapshots.recompose(RUN_DETAIL_KEY);
-  return {
-    ok: true,
-    data: { effect: "open-canvas", key: RUN_DETAIL_KEY, title: `Run ${id}` },
-  };
+  try {
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
+    const ledger = await loadRun(scopeDataHome(home, scopeId), id);
+    runDetailBoard = buildRunDetailBoard(ledger, id);
+    await snapshots.recompose(RUN_DETAIL_KEY);
+    return {
+      ok: true,
+      data: { effect: "open-canvas", key: RUN_DETAIL_KEY, title: `Run ${id}` },
+    };
+  } catch (e) {
+    return { ok: false, error: `view-run failed: ${errText(e)}` };
+  }
 }
 
 function recordDecisionAction(action: RibAction): RibActionResult {

@@ -56,7 +56,8 @@ export async function archiveRun(scopeDataHome: string, ledger: CoordinatorLedge
 
 // Load one archived run by its id (the timestamp-derived file basename listRuns
 // reports). Returns undefined for an unknown id, a torn file, or a shape that isn't
-// a ledger — the caller renders "not found", never a throw.
+// a ledger — the caller renders "not found", never a throw. The guard covers every
+// field the board builders dereference, so a hand-edited file can't crash a compose.
 export async function loadRun(
   scopeDataHome: string,
   id: string,
@@ -66,8 +67,20 @@ export async function loadRun(
   try {
     const raw = await readFile(runPath(scopeDataHome, id), "utf8");
     const parsed = JSON.parse(raw) as Partial<CoordinatorLedger>;
-    if (typeof parsed.task !== "string" || typeof parsed.status !== "string") return undefined;
-    if (!Array.isArray(parsed.transcript)) return undefined;
+    if (
+      typeof parsed.task !== "string" ||
+      typeof parsed.status !== "string" ||
+      typeof parsed.round !== "number" ||
+      typeof parsed.stallCount !== "number" ||
+      typeof parsed.resetCount !== "number" ||
+      typeof parsed.createdAt !== "string" ||
+      typeof parsed.updatedAt !== "string" ||
+      !Array.isArray(parsed.transcript) ||
+      !Array.isArray(parsed.facts) ||
+      !Array.isArray(parsed.plan)
+    ) {
+      return undefined;
+    }
     return parsed as CoordinatorLedger;
   } catch {
     return undefined;

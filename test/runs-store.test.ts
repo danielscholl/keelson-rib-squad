@@ -134,4 +134,14 @@ describe("loadRun", () => {
     await writeFile(join(home, "runs", "bogus.json"), JSON.stringify({ nope: 1 }));
     expect(await loadRun(home, "bogus")).toBeUndefined();
   });
+
+  test("rejects a ledger-ish file missing the fields the board dereferences", async () => {
+    await mkdir(join(home, "runs"), { recursive: true });
+    // Has task/status/transcript but no facts/plan/round — composing it would throw.
+    await writeFile(
+      join(home, "runs", "partial.json"),
+      JSON.stringify({ task: "t", status: "done", transcript: [] }),
+    );
+    expect(await loadRun(home, "partial")).toBeUndefined();
+  });
 });
