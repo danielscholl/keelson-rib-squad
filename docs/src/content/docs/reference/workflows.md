@@ -6,10 +6,12 @@ sidebar:
 ---
 
 Squad contributes 11 workflows to the catalog, all defined in code in the rib's
-`contributeWorkflows` hook, so there are no YAML files to edit. Six are
-deterministic: four bash collectors that read the data home and publish a
-board, plus one bash node paired with a declarative memory writeback. Five are
-single prompt turns that call exactly one tool.
+`contributeWorkflows` hook, so there are no YAML files to edit. Five are
+no-turn/deterministic: four bash collectors that read the data home and publish a
+board, plus one constant bash node paired with a declarative memory writeback.
+Five are single prompt turns that call exactly one tool; the remaining workflow
+(`squad-decisions`) combines a memory recall with a prompt render to publish the
+Decisions board.
 
 Each workflow ships a description in the `Use when / Triggers / Does / NOT
 for` shape, so the catalog and the surface render it scannably and a reader
