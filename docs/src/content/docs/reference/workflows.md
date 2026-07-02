@@ -55,7 +55,7 @@ binds its output to a fixed snapshot key, and validates fail-closed with
 `CAST_KEY`, `squad-coordinator` binds `COORDINATOR_KEY`, and `squad-runs`
 binds `SQUAD_RUNS_KEY`. See [Snapshot keys](../snapshot-keys/) for the full
 key list. On the surface `squad-roster`, `squad-coordinator`, and `squad-runs`
-carry a `cadenceMs` of `120000`, while `squad-cast` intentionally has no
+carry a `cadenceMs` of `120000`, while `squad-cast` has no
 cadence and refreshes on propose/approve/discard actions; see
 [Surface](../surface/) for the region-by-region cadence table.
 
