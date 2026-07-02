@@ -54,6 +54,26 @@ export async function archiveRun(scopeDataHome: string, ledger: CoordinatorLedge
   await rename(tmp, path);
 }
 
+// Load one archived run by its id (the timestamp-derived file basename listRuns
+// reports). Returns undefined for an unknown id, a torn file, or a shape that isn't
+// a ledger — the caller renders "not found", never a throw.
+export async function loadRun(
+  scopeDataHome: string,
+  id: string,
+): Promise<CoordinatorLedger | undefined> {
+  // The id is a path segment; refuse anything that could escape the runs dir.
+  if (!/^[A-Za-z0-9-]+$/.test(id)) return undefined;
+  try {
+    const raw = await readFile(runPath(scopeDataHome, id), "utf8");
+    const parsed = JSON.parse(raw) as Partial<CoordinatorLedger>;
+    if (typeof parsed.task !== "string" || typeof parsed.status !== "string") return undefined;
+    if (!Array.isArray(parsed.transcript)) return undefined;
+    return parsed as CoordinatorLedger;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function listRuns(scopeDataHome: string): Promise<RunSummary[]> {
   let entries: string[];
   try {

@@ -187,44 +187,37 @@ describe("buildRosterBoard pulse", () => {
     ...over,
   });
 
-  function statsItems(board: ReturnType<typeof buildRosterBoard>) {
+  function pulseRow(board: ReturnType<typeof buildRosterBoard>) {
     const first = board.sections[0];
-    if (first?.kind !== "stats") throw new Error("sections[0] is not a stats section");
-    return first.items;
+    if (first?.kind !== "rows") throw new Error("sections[0] is not a rows section");
+    const item = first.items[0];
+    if (!item) throw new Error("pulse row missing");
+    return item;
   }
 
-  test("omitting pulse keeps the historical no-stats shape", () => {
+  test("omitting pulse keeps the historical no-pulse shape", () => {
     const board = buildRosterBoard(two);
-    expect(board.sections[0]?.kind).not.toBe("stats");
-    expect(board.sections.some((s) => s.kind === "stats")).toBe(false);
+    expect(board.sections.some((s) => s.kind === "rows")).toBe(false);
+    expect(JSON.stringify(board)).not.toContain('"pulse"');
   });
 
-  test("with pulse, sections[0] is a stats section carrying the four labels", () => {
+  test("with pulse, sections[0] is one quiet summary line — never stat tiles", () => {
     const board = buildRosterBoard(two, pulse({ active: 1, inactive: 1, codeCapable: 1 }));
-    expect(board.sections[0]?.kind).toBe("stats");
-    expect(statsItems(board).map((i) => i.label)).toEqual([
-      "Members",
-      "Active",
-      "Inactive",
-      "Code-capable",
-    ]);
-    const byLabel = new Map(statsItems(board).map((i) => [i.label, i.value]));
-    expect(byLabel.get("Members")).toBe(2);
-    expect(byLabel.get("Active")).toBe(1);
-    expect(byLabel.get("Inactive")).toBe(1);
-    expect(byLabel.get("Code-capable")).toBe(1);
+    expect(board.sections.some((s) => s.kind === "stats")).toBe(false);
+    const row = pulseRow(board);
+    expect(row.text).toBe("1 active · 1 inactive · 1 code-capable");
+    expect(row.trailing).toBe("pulse");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 
-  test("a zero count tones neutral so an idle squad stays calm", () => {
-    const items = statsItems(buildRosterBoard(two, pulse({ active: 0, inactive: 0 })));
-    expect(items.find((i) => i.label === "Active")?.tone).toBe("neutral");
-    expect(items.find((i) => i.label === "Inactive")?.tone).toBe("neutral");
+  test("a zero inactive count is omitted from the summary line", () => {
+    const row = pulseRow(buildRosterBoard(two, pulse({ active: 2, inactive: 0, codeCapable: 1 })));
+    expect(row.text).toBe("2 active · 1 code-capable");
   });
 
   test("the pulse leads even the cold-start board and stays valid", () => {
     const board = buildRosterBoard([], pulse({ members: 0, active: 0, inactive: 0 }));
-    expect(board.sections[0]?.kind).toBe("stats");
+    expect(board.sections[0]?.kind).toBe("rows");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 });

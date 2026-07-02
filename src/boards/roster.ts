@@ -4,6 +4,7 @@ import { stableHash } from "../genesis.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
 import type { Member } from "../types.ts";
 import { CAST_PROPOSE_ACTION } from "./cast.ts";
+import { stripMd } from "./coordinator.ts";
 
 type Section = CanvasBoardView["sections"][number];
 
@@ -26,18 +27,9 @@ function memberCanCode(member: Member): boolean {
   return (member.tools ?? []).includes(CODE_CAPABILITY);
 }
 
-// The full canvas tone ramp, used to give each member a deterministic identity dot
-// hashed from its slug — a stable per-member hue, not a status.
-const DOT_TONES = [
-  "ok",
-  "warn",
-  "error",
-  "info",
-  "caution",
-  "brand",
-  "accent",
-  "neutral",
-] as const satisfies readonly CanvasTone[];
+// Identity dots draw only from non-status tones — a member hashed to ok/warn/error
+// would masquerade as an outcome. Matches the Run-loop board's identity pool.
+const DOT_TONES = ["brand", "accent", "info", "neutral"] as const satisfies readonly CanvasTone[];
 
 // stableHash returns a base-36 string; parsing it back at radix 36 recovers the
 // integer to mod across the ramp, so distinct slugs spread across the tones.
@@ -45,9 +37,10 @@ function dotFor(slug: string): CanvasTone {
   return DOT_TONES[Number.parseInt(stableHash(slug), 36) % DOT_TONES.length]!;
 }
 
-// The Squad pulse, the optional `stats` section the roster leads with: the team
-// size, the active/inactive split, and how many members can code. Computed from the
-// members list (the collector builds it inline), so it stays a plain shape here.
+// The Squad pulse: team size, the active/inactive split, and how many members can
+// code. Computed from the members list (the collector builds it inline). Rendered as
+// one quiet summary line, not stat tiles — the head chip already carries the count,
+// and four tiles for a handful of members drowned the roster below them.
 export interface RosterPulse {
   members: number;
   active: number;
@@ -95,19 +88,15 @@ export function buildRosterBoard(members: readonly Member[], pulse?: RosterPulse
   };
 }
 
-// The pulse `stats` section: team size, the active/inactive split, and the
-// code-capable count (who can run a code turn). A zero count tones neutral so an
-// idle squad stays quiet.
 function pulseSection(pulse: RosterPulse): Section {
-  const toned = (n: number, tone: CanvasTone): CanvasTone => (n > 0 ? tone : "neutral");
+  const parts = [
+    `${pulse.active} active`,
+    ...(pulse.inactive > 0 ? [`${pulse.inactive} inactive`] : []),
+    `${pulse.codeCapable} code-capable`,
+  ];
   return {
-    kind: "stats",
-    items: [
-      { label: "Members", value: pulse.members, tone: toned(pulse.members, "brand") },
-      { label: "Active", value: pulse.active, tone: toned(pulse.active, "ok") },
-      { label: "Inactive", value: pulse.inactive, tone: toned(pulse.inactive, "neutral") },
-      { label: "Code-capable", value: pulse.codeCapable, tone: toned(pulse.codeCapable, "info") },
-    ],
+    kind: "rows",
+    items: [{ glyph: "brand" as CanvasTone, text: parts.join(" · "), trailing: "pulse" }],
   };
 }
 
@@ -121,7 +110,7 @@ function cardFor(member: Member) {
   if (member.themeId) {
     fields.push({ label: "cast", value: themeLabel(member.themeId) ?? member.themeId });
   }
-  fields.push({ label: "charter", value: truncate(member.charter) });
+  fields.push({ label: "charter", value: truncate(stripMd(member.charter)) });
   if (member.model) fields.push({ label: "model", value: member.model });
   return {
     title: member.name.trim() || "(unnamed)",
