@@ -84,11 +84,13 @@ export function transcriptTrailing(e: CoordinatorEntry): string {
 }
 
 // Markdown control characters leak into one-line previews as noise (##, **, `code`);
-// strip them for row text. Detail bodies keep the raw stored text.
+// strip them for row text. Deliberately conservative: only paired emphasis markers
+// (** __), backticks, and heading hashes go — a single * or _ stays, so identifiers
+// like foo_bar and glob args like --filter '*' survive. Detail bodies keep raw text.
 export function stripMd(text: string): string {
   return text
     .replace(/```[a-zA-Z]*\n?/g, "")
-    .replace(/[*_`]+/g, "")
+    .replace(/\*\*|__|`/g, "")
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/\s+/g, " ")
     .trim();
