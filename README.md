@@ -24,7 +24,7 @@ domain-free, and the rib ships **zero React** into the trusted SPA.
   Each member is a directory under the data home with a `charter.md`, `memory.md`,
   `rules.md`, and `log.md`.
 - **Roster** — a deterministic canvas board (the `squad-roster` workflow) with one
-  card per member: a themed identity, the role pill, the charter, and the
+  card per member: a hashed identity dot, the role pill, the charter, and the
   Enter / Set model / Retire controls. Zero members renders a cold-start launchpad
   with role archetypes.
 - **The standing coordinator** — hand the squad a task and it plans, delegates one
