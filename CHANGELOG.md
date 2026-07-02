@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.7.0...v0.7.1) (2026-07-02)
+
+
+### Documentation
+
+* fill out the Squad rib Starlight docs ([#104](https://github.com/danielscholl/keelson-rib-squad/issues/104)) ([4e18599](https://github.com/danielscholl/keelson-rib-squad/commit/4e185998ecb17cf0cf375cedac07ae7424804d6e))
+
 ## [0.7.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.6.0...v0.7.0) (2026-07-01)
 
 
