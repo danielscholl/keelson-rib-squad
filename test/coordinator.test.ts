@@ -911,6 +911,67 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.transcript.find((e) => e.kind === "dispatch")?.provider).toBe("copilot");
   });
 
+  test("captures tool traces, usage, timing, and at-stamps on ledger entries (#113)", async () => {
+    const team: Member[] = [
+      {
+        slug: "atlas",
+        name: "atlas",
+        role: "Engineer",
+        charter: "x",
+        status: "active",
+        tools: ["code", "read"],
+      },
+    ];
+    let codeOnTool: unknown;
+    const res = await runCoordinator({
+      ...base(),
+      roster: team,
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X","mode":"code"}',
+        'ask\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"summarize"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      code: async (_member: Member, _instruction: string, onTool?: unknown) => {
+        codeOnTool = onTool;
+        return {
+          status: "ok" as const,
+          text: "edited files",
+          providerId: "claude",
+          tools: [{ name: "Edit", target: "src/a.ts", ok: true }],
+          usage: { inputTokens: 900, outputTokens: 120 },
+          durationMs: 4200,
+        };
+      },
+      dispatch: async (members, instruction): Promise<DispatchOutcome> => ({
+        task: instruction,
+        perMember: members.map((m) => ({
+          slug: m.slug,
+          name: m.name,
+          status: "ok" as const,
+          text: "summary text",
+          durationMs: 800,
+          tools: [{ name: "Read", target: "README.md", ok: true }],
+        })),
+        notes: [],
+        usage: { inputTokens: 300, outputTokens: 40 },
+      }),
+    });
+    expect(res.status).toBe("done");
+    expect(typeof codeOnTool).toBe("function");
+    const codeEntry = res.ledger.transcript.find((e) => e.kind === "code");
+    expect(codeEntry?.tools).toEqual([{ name: "Edit", target: "src/a.ts", ok: true }]);
+    expect(codeEntry?.usage).toEqual({ inputTokens: 900, outputTokens: 120 });
+    expect(codeEntry?.durationMs).toBe(4200);
+    expect(codeEntry?.at).toBe(NOW);
+    const dispatchEntry = res.ledger.transcript.find((e) => e.kind === "dispatch");
+    expect(dispatchEntry?.usage).toEqual({ inputTokens: 300, outputTokens: 40 });
+    expect(dispatchEntry?.tools).toEqual([{ name: "Read", target: "README.md", ok: true }]);
+    expect(dispatchEntry?.durationMs).toBe(800);
+    const coordEntry = res.ledger.transcript.find((e) => e.kind === "coordinator");
+    expect(coordEntry?.at).toBe(NOW);
+  });
+
   const coder = (): Member[] => [
     {
       slug: "atlas",

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MemoryTools, RibContext, RibExec } from "@keelson/shared";
+import type { MemoryTools, RibContext, RibExec, TokenUsage } from "@keelson/shared";
 import {
   type ChangeQualityDiffNumstat,
   type DiffNameStatusEntry,
@@ -37,7 +37,7 @@ import {
 } from "./orchestrator.ts";
 import { hasBlockVerdict } from "./policies.ts";
 import { archiveRun } from "./runs-store.ts";
-import { runConfinedTurn } from "./turn-runner.ts";
+import { runConfinedTurn, type ToolTrace } from "./turn-runner.ts";
 import type { Member } from "./types.ts";
 import { authorWorkflow, screenWorkflowForRun } from "./workflow-authoring.ts";
 
@@ -117,6 +117,10 @@ export interface InFlightTurn {
   speaker?: string;
   action: string;
   instruction?: string;
+  startedAt?: string;
+  // The live tool trace the executing turn has produced so far (#113) — updated on a
+  // throttle while the turn runs, so a watching board streams the work as it happens.
+  tools?: ToolTrace[];
 }
 
 export interface CoordinatorEntry {
@@ -131,6 +135,12 @@ export interface CoordinatorEntry {
   verdict?: "pass" | "block";
   // Per-code-step repo footprint (including untracked files) surfaced for manager visibility.
   touched?: { files: number; insertions: number; deletions: number };
+  // Observability captured from the step's turn(s) (#113); all optional so ledgers
+  // written before these fields existed keep loading and rendering.
+  at?: string;
+  durationMs?: number;
+  usage?: TokenUsage;
+  tools?: ToolTrace[];
 }
 
 // A deterministic verification result: the operator-configured check that gates `done`.
@@ -183,6 +193,9 @@ function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTe
 const COORDINATOR_ACTIONS: ReadonlySet<string> = new Set(["progress", "done"]);
 
 const FACT_CAP = 600; // per-fact char cap so one long synthesis can't bloat the ledger
+// Floor between live in-flight trace persists, so a tool-heavy turn (dozens of calls
+// in seconds) can't turn the ledger file + board refresh into a write storm.
+const LIVE_TRACE_THROTTLE_MS = 2000;
 const MAX_FACTS = 60; // ledger keeps the most recent facts
 const MAX_TRANSCRIPT = 40; // bounded so the prompt + file stay sane
 const ENTRY_CAP = 1500; // per-transcript-entry char cap
@@ -1048,7 +1061,11 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   const code =
     opts.code ??
     (project
-      ? async (member: Member, instruction: string): Promise<CodeStepOutcome> => {
+      ? async (
+          member: Member,
+          instruction: string,
+          onTool?: (tools: readonly ToolTrace[]) => void,
+        ): Promise<CodeStepOutcome> => {
           const r = await runCodeTurn({
             runAgentTurn: opts.runAgentTurn,
             membersRoot: opts.membersRoot,
@@ -1056,6 +1073,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             project: { name: project.name, rootPath: project.rootPath },
             task: withTeamMemory(instruction, recalled),
             ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+            ...(onTool ? { onTool } : {}),
           });
           return r.ok
             ? {
@@ -1063,6 +1081,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
                 text: r.outcome.text,
                 ...(r.outcome.error ? { error: r.outcome.error } : {}),
                 ...(r.outcome.providerId ? { providerId: r.outcome.providerId } : {}),
+                ...(r.outcome.tools ? { tools: r.outcome.tools } : {}),
+                ...(r.outcome.usage ? { usage: r.outcome.usage } : {}),
+                ...(r.outcome.durationMs !== undefined ? { durationMs: r.outcome.durationMs } : {}),
               }
             : { status: "error", text: "", error: r.error };
         }
@@ -1146,6 +1167,12 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       }
     })();
   };
+
+  // Every transcript entry is stamped with the run's (injectable) clock at append.
+  const append = (
+    transcript: readonly CoordinatorEntry[],
+    entry: CoordinatorEntry,
+  ): CoordinatorEntry[] => appendEntry(transcript, entry.at ? entry : { ...entry, at: now() });
 
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now(), limits.maxRounds);
   const exec = opts.getExec;
@@ -1256,10 +1283,12 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ? { teamGaps: dedupeCap(ledger.teamGaps ?? [], directive.needs, MAX_GAPS) }
         : {}),
       ...(directive.summary ? { summary: directive.summary } : {}),
-      transcript: appendEntry(ledger.transcript, {
+      transcript: append(ledger.transcript, {
         round: ledger.round,
         kind: "coordinator",
         text: directive.head || "(no reasoning)",
+        ...(turn.usage ? { usage: turn.usage } : {}),
+        ...(turn.durationMs !== undefined ? { durationMs: turn.durationMs } : {}),
       }),
       updatedAt: now(),
     };
@@ -1301,7 +1330,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           ledger = {
             ...ledger,
             facts: foldFacts(ledger.facts, [cap(text, FACT_CAP)]),
-            transcript: appendEntry(ledger.transcript, {
+            transcript: append(ledger.transcript, {
               round: ledger.round,
               kind: "verify",
               text,
@@ -1327,7 +1356,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         const reviewSpeaker = reviewVerdictSpeaker(reviewers, review.perMember, blocked);
         ledger = {
           ...ledger,
-          transcript: appendEntry(ledger.transcript, {
+          transcript: append(ledger.transcript, {
             round: ledger.round,
             kind: "verify",
             text: blocked
@@ -1336,6 +1365,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             ...(reviewSpeaker ? { speaker: reviewSpeaker } : {}),
             ...(reviewProvider ? { provider: reviewProvider } : {}),
             verdict: blocked ? "block" : "pass",
+            ...(review.usage ? { usage: review.usage } : {}),
           }),
           ...(blocked || !hadUsableOutput
             ? { facts: foldFacts(ledger.facts, [cap(`RAI VERDICT: BLOCK\n${summary}`, FACT_CAP)]) }
@@ -1360,7 +1390,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ledger = {
           ...ledger,
           verification: v,
-          transcript: appendEntry(ledger.transcript, {
+          transcript: append(ledger.transcript, {
             round: ledger.round,
             kind: "verify",
             text: v.passed
@@ -1413,7 +1443,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         // the ungated done rather than silently accepting it, so the operator isn't misled.
         ledger = {
           ...ledger,
-          transcript: appendEntry(ledger.transcript, {
+          transcript: append(ledger.transcript, {
             round: ledger.round,
             kind: "verify",
             text: "verification skipped: exec seam unavailable on this harness (done not gated)",
@@ -1450,7 +1480,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             ...ledger,
             incompleteCommitFailures: failures,
             facts: foldFacts(ledger.facts, [cap(text, FACT_CAP)]),
-            transcript: appendEntry(ledger.transcript, {
+            transcript: append(ledger.transcript, {
               round: ledger.round,
               kind: "verify",
               text,
@@ -1506,7 +1536,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             ...ledger,
             changeQualityFailures: failures,
             facts: foldFacts(ledger.facts, [cap(text, FACT_CAP)]),
-            transcript: appendEntry(ledger.transcript, {
+            transcript: append(ledger.transcript, {
               round: ledger.round,
               kind: "verify",
               text,
@@ -1590,7 +1620,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         if (memoryNote) {
           ledger = {
             ...ledger,
-            transcript: appendEntry(ledger.transcript, {
+            transcript: append(ledger.transcript, {
               round: ledger.round,
               kind: "coordinator",
               text: memoryNote,
@@ -1607,7 +1637,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             if (reflected.length > 0) {
               ledger = {
                 ...ledger,
-                transcript: appendEntry(ledger.transcript, {
+                transcript: append(ledger.transcript, {
                   round: ledger.round,
                   kind: "coordinator",
                   text: `[memory] ${reflected.length} member${reflected.length === 1 ? "" : "s"} reflected on the run`,
@@ -1637,13 +1667,13 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         : ledger.failedSteps;
       let transcript = ledger.transcript;
       if (swept.length) {
-        transcript = appendEntry(transcript, {
+        transcript = append(transcript, {
           round: ledger.round,
           kind: "failed",
           text: `swept ${swept.length} stalled step${swept.length === 1 ? "" : "s"} to failed before rebuild`,
         });
       }
-      transcript = appendEntry(transcript, {
+      transcript = append(transcript, {
         round: ledger.round,
         kind: "replan",
         text: decided.step.reason,
@@ -1670,16 +1700,39 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
         action: actionLabel(decided.step),
         ...(decided.step.instruction ? { instruction: decided.step.instruction } : {}),
+        startedAt: now(),
       },
       updatedAt: now(),
     };
     await persist(ledger);
+    // Live tool-trace relay (#113): the code arm streams tool_use folds here; each
+    // (throttled) update re-persists the ledger with the growing in-flight trace so
+    // the bound board's refresh shows the work as it happens. Writes chain serially
+    // and the chain is drained after executeStep, so a slow live write can never land
+    // after the loop's own post-step persist and resurrect stale in-flight state.
+    const inFlightBase = ledger;
+    let lastTracePersist = 0;
+    let livePersists: Promise<void> = Promise.resolve();
+    const onTool = (tools: readonly ToolTrace[]): void => {
+      const nowMs = Date.now();
+      if (nowMs - lastTracePersist < LIVE_TRACE_THROTTLE_MS) return;
+      lastTracePersist = nowMs;
+      if (!inFlightBase.inFlight) return;
+      const live: CoordinatorLedger = {
+        ...inFlightBase,
+        inFlight: { ...inFlightBase.inFlight, tools: [...tools] },
+        updatedAt: now(),
+      };
+      livePersists = livePersists.then(() => persist(live)).catch(() => {});
+    };
     const result = await executeStep(decided.step, {
       dispatch,
       ...(code ? { code } : {}),
       workflow,
       roster: opts.roster,
+      onTool,
     });
+    await livePersists.catch(() => {});
     // An abort during the execute arm returns aborted member results that would otherwise
     // fold a junk "(no synthesis)" fact and advance the round. Break before that fold/advance
     // — clearing only the pre-execute in-flight marker (at the UNCHANGED round) so a connected
@@ -1712,13 +1765,20 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         facts: foldFacts(ledger.facts, [
           cap(`[${decided.step.speaker ?? "team"}] ${synth}`, FACT_CAP),
         ]),
-        transcript: appendEntry(ledger.transcript, {
+        transcript: append(ledger.transcript, {
           round: ledger.round,
           kind: "dispatch",
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
           instruction: decided.step.instruction,
           text: synth + noteSuffix,
           ...(provider ? { provider } : {}),
+          ...(d.usage ? { usage: d.usage } : {}),
+          ...(d.perMember.length === 1 && d.perMember[0]?.tools
+            ? { tools: d.perMember[0].tools }
+            : {}),
+          ...(d.perMember.length === 1 && d.perMember[0]?.durationMs !== undefined
+            ? { durationMs: d.perMember[0].durationMs }
+            : {}),
         }),
         updatedAt: now(),
       };
@@ -1736,7 +1796,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         facts: foldFacts(ledger.facts, [
           cap(`[${decided.step.speaker ?? "member"} edited code] ${text}`, FACT_CAP),
         ]),
-        transcript: appendEntry(ledger.transcript, {
+        transcript: append(ledger.transcript, {
           round: ledger.round,
           kind: "code",
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
@@ -1744,6 +1804,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           text,
           ...(result.code.providerId ? { provider: result.code.providerId } : {}),
           ...(touched ? { touched } : {}),
+          ...(result.code.tools ? { tools: result.code.tools } : {}),
+          ...(result.code.usage ? { usage: result.code.usage } : {}),
+          ...(result.code.durationMs !== undefined ? { durationMs: result.code.durationMs } : {}),
         }),
         lastCodeRound: ledger.round,
         updatedAt: now(),
@@ -1755,7 +1818,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         facts: foldFacts(ledger.facts, [
           cap(`[${decided.step.speaker ?? "member"} authored workflow] ${text}`, FACT_CAP),
         ]),
-        transcript: appendEntry(ledger.transcript, {
+        transcript: append(ledger.transcript, {
           round: ledger.round,
           kind: "workflow",
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
