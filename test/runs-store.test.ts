@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CoordinatorLedger } from "../src/coordinator.ts";
-import { archiveRun, listRuns } from "../src/runs-store.ts";
+import { archiveRun, listRuns, loadRun } from "../src/runs-store.ts";
 
 let home: string;
 
@@ -107,5 +107,31 @@ describe("listRuns", () => {
     const runs = await listRuns(home);
     expect(runs).toHaveLength(1);
     expect(runs[0]?.id).toBe(idFor("2026-06-30T00:00:00.000Z"));
+  });
+});
+
+describe("loadRun", () => {
+  test("round-trips an archived ledger by its listed id", async () => {
+    const createdAt = "2026-06-30T01:02:03.456Z";
+    await archiveRun(home, ledger({ createdAt, task: "the archived task", round: 7 }));
+    const [summary] = await listRuns(home);
+    const loaded = await loadRun(home, summary?.id ?? "");
+    expect(loaded?.task).toBe("the archived task");
+    expect(loaded?.round).toBe(7);
+  });
+
+  test("returns undefined for an unknown id", async () => {
+    expect(await loadRun(home, idFor("2026-06-30T09:09:09.999Z"))).toBeUndefined();
+  });
+
+  test("refuses a path-escaping id", async () => {
+    expect(await loadRun(home, "../coordinator-ledger")).toBeUndefined();
+    expect(await loadRun(home, "a/b")).toBeUndefined();
+  });
+
+  test("returns undefined for a file that is not a ledger", async () => {
+    await mkdir(join(home, "runs"), { recursive: true });
+    await writeFile(join(home, "runs", "bogus.json"), JSON.stringify({ nope: 1 }));
+    expect(await loadRun(home, "bogus")).toBeUndefined();
   });
 });

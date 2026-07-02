@@ -20,3 +20,7 @@ export const COORDINATOR_KEY = "rib:squad:coordinator";
 // coordinator run ledgers under the selected scope) and rendered on the Squad surface;
 // the archive is written by the coordinator on each completed run.
 export const SQUAD_RUNS_KEY = "rib:squad:runs";
+// The single-run drill-down board. Registered imperatively (not workflow-bound): the
+// Runs panel's View action loads one archived ledger, republishes this key, and
+// returns an open-canvas effect pointing at it.
+export const RUN_DETAIL_KEY = "rib:squad:run-detail";

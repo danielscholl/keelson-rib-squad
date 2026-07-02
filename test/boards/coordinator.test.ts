@@ -197,7 +197,7 @@ describe("buildCoordinatorBoard active layout", () => {
     ).toBe(true);
   });
 
-  test("the Transcript is the hero: last section, speaker chips, R{round}/provider/diff trailing", () => {
+  test("the Ledger is the hero: round groups newest-first, speaker chips, trailing detail", () => {
     const board = buildCoordinatorBoard(
       ledger({
         round: 4,
@@ -210,6 +210,7 @@ describe("buildCoordinatorBoard active layout", () => {
             text: "edited the loader",
             provider: "claude",
             touched: { files: 2, insertions: 30, deletions: 4 },
+            usage: { inputTokens: 9000, outputTokens: 1000 },
           }),
           entry({ round: 3, kind: "verify", text: "checks passed" }),
         ],
@@ -217,17 +218,119 @@ describe("buildCoordinatorBoard active layout", () => {
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
 
-    const titles = sectionTitles(board);
-    expect(titles[titles.length - 1]).toBe("Transcript");
+    // Newest round leads and carries the Ledger title; older rounds follow.
+    const titles = sectionTitles(board).filter(
+      (t) => t?.startsWith("Ledger · R") || /^R\d/.test(t ?? ""),
+    );
+    expect(titles[0]).toContain("Ledger · R3");
+    expect(titles[1]).toContain("R2");
+    expect(titles[2]).toContain("R1");
 
-    const rows = rowsTitled(board, "Transcript");
-    expect(rows).toHaveLength(3);
-    expect(rows[0]?.chip?.label).toBe("coordinator");
-    expect(rows[1]?.chip?.label).toBe("atlas");
-    expect(rows[1]?.trailing).toContain("R2");
-    expect(rows[1]?.trailing).toContain("claude");
-    expect(rows[1]?.trailing).toContain("+30/−4");
-    expect(rows[2]?.glyph).toBe("ok");
+    const r2 = rowsTitled(board, titles[1] ?? "");
+    expect(r2[0]?.chip?.label).toBe("atlas");
+    expect(r2[0]?.trailing).toContain("R2");
+    expect(r2[0]?.trailing).toContain("claude");
+    expect(r2[0]?.trailing).toContain("10k tok");
+    expect(r2[0]?.trailing).toContain("+30/−4");
+    const r3 = rowsTitled(board, titles[0] ?? "");
+    expect(r3[0]?.glyph).toBe("ok");
+  });
+
+  test("the round rail renders one grid cell per round with outcome-toned badges", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        round: 3,
+        transcript: [
+          entry({ round: 0, kind: "code", speaker: "atlas", text: "edited" }),
+          entry({ round: 1, kind: "verify", text: "change-quality FAILED: suppression" }),
+          entry({ round: 2, kind: "replan", text: "rebuild" }),
+        ],
+        inFlight: { round: 3, action: "coding", speaker: "atlas" },
+        status: "active",
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const rail = board.sections.find((s) => s.kind === "grid");
+    if (rail?.kind !== "grid") throw new Error("no round rail");
+    const byLabel = new Map(rail.cells.map((c) => [c.label, c.badge]));
+    expect(byLabel.get("R0")?.tone).toBe("accent");
+    expect(byLabel.get("R0")?.text).toContain("atlas");
+    expect(byLabel.get("R1")?.tone).toBe("error");
+    expect(byLabel.get("R2")?.tone).toBe("caution");
+    expect(byLabel.get("R3")?.text).toContain("now");
+  });
+
+  test("a ledger row expands to the full entry: instruction, text, and tool trace in detail", () => {
+    const longText = `did the work ${"x".repeat(300)}`;
+    const board = buildCoordinatorBoard(
+      ledger({
+        transcript: [
+          entry({
+            round: 0,
+            kind: "code",
+            speaker: "atlas",
+            instruction: "edit the loader",
+            text: longText,
+            tools: [
+              { name: "Edit", target: "src/loader.ts", ok: true },
+              { name: "Bash", target: "bun test", ok: false },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const rows = board.sections
+      .filter((s) => s.kind === "rows")
+      .flatMap((s) => (s.kind === "rows" ? s.items : []));
+    const row = rows.find((r) => r.chip?.label === "atlas") as
+      | (RowItem & { detail?: string })
+      | undefined;
+    expect(row?.detail).toContain("instruction: edit the loader");
+    expect(row?.detail).toContain(longText.slice(0, 120));
+    expect(row?.detail).toContain("✓ Edit src/loader.ts");
+    expect(row?.detail).toContain("✕ Bash bun test");
+  });
+
+  test("older rounds compress to a stub naming the span instead of vanishing", () => {
+    const transcript = Array.from({ length: 6 }, (_, r) =>
+      entry({ round: r, kind: "coordinator", text: `round ${r} thinking` }),
+    );
+    const board = buildCoordinatorBoard(ledger({ round: 6, transcript }));
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const stub = board.sections
+      .filter((s) => s.kind === "rows")
+      .flatMap((s) => (s.kind === "rows" ? s.items : []))
+      .find((r) => r.text.includes("earlier"));
+    expect(stub?.text).toContain("R0–R2");
+    expect(stub?.text).toContain("3 earlier entries");
+  });
+
+  test("gate history lists every verify entry across the run with round trailing", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        transcript: [
+          entry({
+            round: 2,
+            kind: "verify",
+            text: "verification passed: 5 checks",
+            verdict: "pass",
+          }),
+          entry({ round: 2, kind: "verify", text: "change-quality FAILED: suppression" }),
+          entry({
+            round: 4,
+            kind: "verify",
+            text: "review passed (no BLOCK verdict)",
+            verdict: "pass",
+          }),
+        ],
+      }),
+    );
+    const gates = rowsTitled(board, "Gate history");
+    expect(gates).toHaveLength(3);
+    expect(gates[0]?.glyph).toBe("ok");
+    expect(gates[1]?.glyph).toBe("error");
+    expect(gates[1]?.trailing).toBe("R2");
   });
 
   test("surfaces Verification while still active (a failed done-gate keeps the run going)", () => {
@@ -306,9 +409,44 @@ describe("buildCoordinatorBoard in-flight card", () => {
     expect(cards[0]?.fields?.some((f) => f.value === "R3")).toBe(true);
     expect(cards[0]?.reason?.text).toContain("edit the loader");
 
-    // "What's happening now" sits immediately above the history.
+    // "What's happening now" sits above the run history (the newest Ledger group).
     const titles = sectionTitles(board);
-    expect(titles.indexOf("In flight")).toBeLessThan(titles.indexOf("Transcript"));
+    const ledgerIdx = titles.findIndex((t) => t?.startsWith("Ledger"));
+    expect(titles.indexOf("In flight")).toBeLessThan(ledgerIdx);
+  });
+
+  test("an in-flight turn with a live trace renders its last tools and a running marker", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "active",
+        round: 2,
+        inFlight: {
+          round: 2,
+          speaker: "atlas",
+          action: "coding",
+          startedAt: "2026-07-02T20:01:30.000Z",
+          tools: [
+            { name: "Read", target: "a.ts", ok: true },
+            { name: "Edit", target: "a.ts", ok: true },
+            { name: "Grep", target: "loader", ok: true },
+            { name: "Bash", target: "bun test" },
+          ],
+        },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const card = cardsTitled(board, "In flight")[0];
+    expect(card?.fields?.some((f) => f.label === "started" && f.value === "20:01")).toBe(true);
+    expect(card?.fields?.some((f) => f.label === "tools" && f.value === 4)).toBe(true);
+    // The trace rows show the LAST three calls; the unpaired final call reads as running.
+    const inFlightIdx = sectionTitles(board).indexOf("In flight");
+    const trace = board.sections[inFlightIdx + 1];
+    if (trace?.kind !== "rows") throw new Error("no trace rows after the In flight card");
+    expect(trace.items).toHaveLength(3);
+    expect(trace.items[0]?.text).toBe("Edit a.ts");
+    expect(trace.items[2]?.text).toBe("Bash bun test");
+    expect(trace.items[2]?.trailing).toBe("running");
+    expect(trace.items[2]?.icon).toBe("⟳");
   });
 
   test("an in-flight card with no speaker falls back to coordinator and omits a reason without instruction", () => {
@@ -367,7 +505,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     const verify = rowsTitled(board, "Verification");
     expect(verify[0]?.icon).toBe("✓");
     expect(verify[0]?.glyph).toBe("ok");
-    expect(rowsTitled(board, "Worked by").length).toBeGreaterThan(0);
+    expect(cardsTitled(board, "Minds").length).toBeGreaterThan(0);
   });
 
   test("a done Verification section is boxed", () => {
@@ -478,38 +616,61 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(
       rowsTitled(board, "Summary").some((i) => i.text.includes("could not make progress")),
     ).toBe(true);
-    expect(rowsTitled(board, "Worked by").length).toBeGreaterThan(0);
+    expect(cardsTitled(board, "Minds").length).toBeGreaterThan(0);
   });
 
-  test("Worked by uses identity chips and the provider as the trailing", () => {
+  test("Minds aggregates one lane per member: provider pill, turn/token counts, last act", () => {
     const board = buildCoordinatorBoard(
       ledger({
         transcript: [
-          entry({ kind: "code", speaker: "atlas", text: "edited", provider: "claude" }),
+          entry({
+            kind: "code",
+            speaker: "atlas",
+            text: "edited",
+            provider: "claude",
+            usage: { inputTokens: 5000, outputTokens: 500 },
+          }),
+          entry({
+            kind: "code",
+            speaker: "atlas",
+            text: "fixed the test",
+            provider: "claude",
+            usage: { inputTokens: 3000, outputTokens: 500 },
+          }),
           entry({ kind: "dispatch", speaker: "vera", text: "reviewed", provider: "copilot" }),
         ],
       }),
     );
-    const worked = rowsTitled(board, "Worked by");
-    expect(worked.some((i) => i.chip?.label === "atlas" && i.trailing === "claude")).toBe(true);
-    expect(worked.some((i) => i.chip?.label === "vera" && i.trailing === "copilot")).toBe(true);
+    const minds = cardsTitled(board, "Minds");
+    const atlas = minds.find((c) => c.title === "atlas");
+    expect(atlas?.pill?.label).toBe("claude");
+    expect(atlas?.fields?.some((f) => f.label === "turns" && f.value === 2)).toBe(true);
+    expect(atlas?.fields?.some((f) => f.label === "tok" && f.value === "9k")).toBe(true);
+    expect(atlas?.reason?.text).toContain("fixed the test");
+    const vera = minds.find((c) => c.title === "vera");
+    expect(vera?.pill?.label).toBe("copilot");
+    expect(vera?.fields?.some((f) => f.label === "turns" && f.value === 1)).toBe(true);
   });
 
-  test("old-shape verify transcript entries do not add reviewed provenance", () => {
+  test("verify entries never become Minds lanes (the gate is the harness, not a member)", () => {
     const board = buildCoordinatorBoard(
       ledger({
         status: "done",
         transcript: [
           entry({ kind: "code", speaker: "atlas", text: "edited", provider: "claude" }),
-          entry({ kind: "verify", text: "review passed (no BLOCK verdict)" }),
+          entry({
+            kind: "verify",
+            speaker: "atlas, vera",
+            text: "review passed (no BLOCK verdict)",
+          }),
         ],
       }),
     );
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const worked = rowsTitled(board, "Worked by");
-    expect(worked.some((i) => i.chip?.label === "atlas" && i.trailing === "claude")).toBe(true);
-    expect(worked.some((i) => i.text === "reviewed")).toBe(false);
+    const minds = cardsTitled(board, "Minds");
+    expect(minds).toHaveLength(1);
+    expect(minds[0]?.title).toBe("atlas");
   });
 
   test("every terminal status produces a schema-valid board", () => {

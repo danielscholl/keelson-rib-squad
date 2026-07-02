@@ -1,13 +1,17 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { RunSummary } from "../runs-store.ts";
+import { stripMd } from "./coordinator.ts";
 
 // Pure: the archived coordinator runs for a scope -> a canvas `board` (the Runs
-// history panel). No runs renders a calm idle board; otherwise one row per run
-// (newest first, capped) tagged with its terminal status. Validated against
-// canvasViewSchema in tests; the collector never parses (validation lives at the
-// binding edge via expectView).
+// history panel). No runs renders a calm idle board; otherwise one card per run
+// (newest first, capped) tagged with its terminal status and carrying a View verb
+// that opens the run's full drill-down board. Validated against canvasViewSchema in
+// tests; the collector never parses (validation lives at the binding edge via
+// expectView).
 
-type Section = CanvasBoardView["sections"][number];
+// Open one archived run as a drill-down canvas. Shared with onAction so the action
+// type can't drift from its handler; the payload carries the run's id.
+export const VIEW_RUN_ACTION = "view-run";
 
 const TASK_CAP = 160;
 // The archive can grow unbounded; the panel shows only the most recent runs (the
@@ -49,12 +53,24 @@ export function buildRunsBoard(runs: readonly RunSummary[]): CanvasBoardView {
     },
     sections: [
       {
-        kind: "rows",
+        kind: "cards",
         items: shown.map((r) => ({
-          glyph: statusTone(r.status),
-          chip: { label: r.status, tone: statusTone(r.status) },
-          text: truncate(r.task, TASK_CAP) || "(no task)",
-          trailing: `r${r.round} · ${shortTime(r.updatedAt)}`,
+          title: stripMd(truncate(r.task, TASK_CAP)) || "(no task)",
+          dot: statusTone(r.status),
+          pill: { label: r.status, tone: statusTone(r.status) },
+          fields: [
+            { label: "rounds", value: `r${r.round}` },
+            { label: "when", value: shortTime(r.updatedAt) },
+          ],
+          actions: [
+            {
+              type: VIEW_RUN_ACTION,
+              label: "View",
+              glyph: "→",
+              inline: true,
+              payload: { id: r.id },
+            },
+          ],
         })),
       },
     ],

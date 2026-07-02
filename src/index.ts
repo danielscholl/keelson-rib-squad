@@ -2,21 +2,24 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  CanvasBoardView,
   Project,
   Rib,
   RibAction,
   RibActionResult,
   RibAuthStatus,
   RibContext,
+  SnapshotManager,
   ToolContext,
   ToolDefinition,
 } from "@keelson/shared";
 import { asNonEmptyString, DEFAULT_PROJECT_NAME, errText, expectView, z } from "@keelson/shared";
 import { listAgents, resolveAgent } from "./agents.ts";
 import { APPROVE_CAST_ACTION, CAST_PROPOSE_ACTION, DISCARD_CAST_ACTION } from "./boards/cast.ts";
-import { COORDINATE_ACTION, DISPATCH_ACTION } from "./boards/coordinator.ts";
+import { buildRunDetailBoard, COORDINATE_ACTION, DISPATCH_ACTION } from "./boards/coordinator.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
 import { ASSIGN_CODE_ACTION, RETIRE_ALL_ACTION, SELECT_PROJECT_ACTION } from "./boards/roster.ts";
+import { VIEW_RUN_ACTION } from "./boards/runs.ts";
 import { clearProposal, proposeCast, readProposal, writeProposal } from "./cast.ts";
 import {
   assignThemedIdentity,
@@ -33,6 +36,7 @@ import {
   COORDINATOR_KEY,
   DECISIONS_KEY,
   ROSTER_KEY,
+  RUN_DETAIL_KEY,
   SQUAD_RUNS_KEY,
   SQUAD_SURFACE_ID,
 } from "./keys.ts";
@@ -57,7 +61,7 @@ import {
   squadDataHome,
 } from "./paths.ts";
 import { squadPolicies } from "./policies.ts";
-import { listRuns, type RunSummary } from "./runs-store.ts";
+import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   readSelectedProject,
   type SelectedProject,
@@ -78,6 +82,11 @@ let refreshWorkflow: RibContext["refreshWorkflow"];
 let runAgentTurn: RibContext["runAgentTurn"];
 let getProjects: RibContext["getProjects"];
 let getProviders: RibContext["getProviders"];
+// The run-detail drill-down: an imperatively-registered snapshot whose composer reads
+// the board the last View action selected. Cleared (and unregistered) in dispose.
+let snapshots: SnapshotManager | undefined;
+let unregisterRunDetail: (() => void) | undefined;
+let runDetailBoard: CanvasBoardView | undefined;
 
 // Absolute path to the roster collector, resolved at module load so the workflow
 // node runs the right file regardless of the run's (nominal) cwd. fileURLToPath
@@ -1110,6 +1119,7 @@ const rib: Rib = {
     { key: CAST_KEY, canvasKind: "view", title: "Proposed squad" },
     { key: COORDINATOR_KEY, canvasKind: "view", title: "Run loop" },
     { key: SQUAD_RUNS_KEY, canvasKind: "view", title: "Runs" },
+    { key: RUN_DETAIL_KEY, canvasKind: "view", title: "Run" },
   ],
 
   // The Squad nav tab. The roster sits in the header (the members you author); each
@@ -1452,6 +1462,15 @@ const rib: Rib = {
     runAgentTurn = ctx.runAgentTurn;
     getProjects = ctx.getProjects;
     getProviders = ctx.getProviders;
+    // The run-detail key composes from module state the View action sets; registered
+    // here (the only hook with the ctx) and unregistered in dispose so a re-boot
+    // re-registers cleanly against the new manager.
+    snapshots = ctx.getSnapshotManager?.();
+    unregisterRunDetail?.();
+    unregisterRunDetail = snapshots?.register(
+      RUN_DETAIL_KEY,
+      () => runDetailBoard ?? buildRunDetailBoard(undefined, "none"),
+    );
     // Seed the picker's project list so it has options on first render.
     snapshotProjects();
     return [
@@ -1514,6 +1533,8 @@ const rib: Rib = {
         return assignCodeAction(action);
       case RECORD_DECISION_ACTION:
         return recordDecisionAction(action);
+      case VIEW_RUN_ACTION:
+        return viewRunAction(action);
       default:
         return { ok: false, error: `unknown action '${action.type}'` };
     }
@@ -1547,6 +1568,10 @@ const rib: Rib = {
     runAgentTurn = undefined;
     getProjects = undefined;
     getProviders = undefined;
+    unregisterRunDetail?.();
+    unregisterRunDetail = undefined;
+    snapshots = undefined;
+    runDetailBoard = undefined;
   },
 };
 
@@ -1968,6 +1993,28 @@ const MAX_DECISION_CHARS = 4000;
 // governed write happens server-side in squad-decide's memory writeback block, so
 // there is no rib hook to refresh the panel on completion — the Decisions region
 // carries no cadence and re-runs on open/focus (client SWR), surfacing the new row.
+// View one archived run: load its ledger from the selected scope, publish the
+// drill-down board under the run-detail key, and hand the SPA an open-canvas effect
+// pointing at it. Every failure mode renders as a board (not-found) or an error
+// string — never a throw.
+async function viewRunAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const id = asNonEmptyString(payload.id);
+  if (!id) return { ok: false, error: "view-run needs the run's id" };
+  if (!snapshots) {
+    return { ok: false, error: "run drill-down unavailable: no snapshot seam on this harness" };
+  }
+  const home = squadDataHome();
+  const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
+  const ledger = await loadRun(scopeDataHome(home, scopeId), id);
+  runDetailBoard = buildRunDetailBoard(ledger, id);
+  await snapshots.recompose(RUN_DETAIL_KEY);
+  return {
+    ok: true,
+    data: { effect: "open-canvas", key: RUN_DETAIL_KEY, title: `Run ${id}` },
+  };
+}
+
 function recordDecisionAction(action: RibAction): RibActionResult {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const summary = asNonEmptyString(payload.summary);
