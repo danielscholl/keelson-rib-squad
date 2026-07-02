@@ -52,14 +52,14 @@ Into an installed Keelson (the managed home at `~/.keelson`):
 
 ```bash
 keelson rib add https://github.com/danielscholl/keelson-rib-squad
-keelson start
+keelson restart
 ```
 
 To remove it later, uninstall by its rib id and restart:
 
 ```bash
 keelson rib remove squad
-keelson stop && keelson start
+keelson restart
 ```
 
 ## Requirements
