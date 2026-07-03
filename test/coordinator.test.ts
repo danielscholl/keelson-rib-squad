@@ -224,6 +224,20 @@ describe("deriveCodeFinding", () => {
     );
   });
 
+  test("strips smart-apostrophe narration openers", () => {
+    const finding = deriveCodeFinding(
+      "I’ll ground this in the helper first.\n\nMinted findings now carry the outcome line.",
+    );
+
+    expect(finding).toBe("Minted findings now carry the outcome line.");
+  });
+
+  test("does not treat the word Ill- as an I'll contraction", () => {
+    expect(deriveCodeFinding("Ill-defined behavior removed from the fold path.")).toBe(
+      "Ill-defined behavior removed from the fold path.",
+    );
+  });
+
   test("falls back to touched summary when all text is narration", () => {
     expect(
       deriveCodeFinding("On it — I'll make the change.", {
