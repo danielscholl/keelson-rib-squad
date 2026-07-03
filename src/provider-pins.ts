@@ -24,6 +24,15 @@ export function validateProviderPin(
   const provider = pin.provider?.trim();
   const model = pin.model?.trim();
   if (!provider) return { pin: {} };
+  // Reserved ids are never assignable, registry or not — the static denylist
+  // must hold even on an older harness without getProviders.
+  if (NON_ASSIGNABLE_PROVIDER_IDS.has(provider)) {
+    const dropped = model ? `provider/model "${provider}" / "${model}"` : `provider "${provider}"`;
+    return {
+      pin: {},
+      note: `dropped ${dropped} for ${subject}: provider is not assignable to squad members`,
+    };
+  }
   if (providers === undefined) {
     return { pin: { provider, ...(model ? { model } : {}) } };
   }

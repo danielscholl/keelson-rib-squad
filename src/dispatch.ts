@@ -146,7 +146,9 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
   let synthesis: string | undefined;
   let synthesisUsage: TokenUsage | undefined;
   if (!wantSynthesis) {
-    if (oks.length === 0) {
+    if (oks.length === 0 && opts.abortSignal?.aborted) {
+      notes.push("synthesis skipped — dispatch aborted");
+    } else if (oks.length === 0) {
       notes.push(`no usable member reply — ${perMember.length} member turn(s) failed`);
     } else {
       notes.push("synthesis skipped (disabled)");

@@ -221,6 +221,25 @@ describe("dispatchFanout", () => {
     expect(outcome.notes).not.toContain("synthesis skipped (disabled)");
   });
 
+  test("an aborted single-member wave notes the abort, not a member failure", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const controller = new AbortController();
+    controller.abort();
+    const runAgentTurn = (_req: RibAgentTurnRequest): RibAgentTurn =>
+      fakeTurn(Promise.resolve({ status: "aborted", text: "" }));
+
+    const outcome = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "T",
+      abortSignal: controller.signal,
+    });
+
+    expect(outcome.notes).toContain("synthesis skipped — dispatch aborted");
+    expect(outcome.notes.some((n) => n.includes("member turn(s) failed"))).toBe(false);
+  });
+
   test("synthesis prompt carries every ok member's text", async () => {
     const members = await Promise.all([seed("a", "Alpha"), seed("b", "Beta"), seed("c", "Gamma")]);
     const task = "Plan the launch";
