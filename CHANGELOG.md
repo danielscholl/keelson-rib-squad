@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.10.0...v0.10.1) (2026-07-03)
+
+
+### Fixed
+
+* **cast:** keep provenance and self-name lines out of charter excerpts ([#134](https://github.com/danielscholl/keelson-rib-squad/issues/134)) ([6218e27](https://github.com/danielscholl/keelson-rib-squad/commit/6218e2733e32c578bd53f2a4b9a5d4414ff28816))
+* **cast:** scan excerpt candidates lazily and ignore run worktrees ([#136](https://github.com/danielscholl/keelson-rib-squad/issues/136)) ([9dd3b09](https://github.com/danielscholl/keelson-rib-squad/commit/9dd3b09b455f3dbd2f68f0b777199bebc09754da))
+* **coordinator:** defer full verify matrix to done-gate ([#137](https://github.com/danielscholl/keelson-rib-squad/issues/137)) ([a3d4e50](https://github.com/danielscholl/keelson-rib-squad/commit/a3d4e509b78f87608166c8876561e779b7ff86c7))
+* **coordinator:** mint code findings from turn outcomes ([#139](https://github.com/danielscholl/keelson-rib-squad/issues/139)) ([6ea523f](https://github.com/danielscholl/keelson-rib-squad/commit/6ea523f7ec6c2af28514c3c3389f43a14477cd37))
+* **tools:** clarify member tool scope selectors ([#138](https://github.com/danielscholl/keelson-rib-squad/issues/138)) ([3dd3c80](https://github.com/danielscholl/keelson-rib-squad/commit/3dd3c80700366c1322dd73c937e4459ef4fd4ae3))
+
 ## [0.10.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.9.0...v0.10.0) (2026-07-03)
 
 
