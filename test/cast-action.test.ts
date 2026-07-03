@@ -68,6 +68,7 @@ async function selectProject(id: string, name: string, rootPath: string): Promis
 function bootRib(
   projects: ReturnType<typeof project>[],
   reply = ROSTER_REPLY,
+  providers?: { id: string; displayName: string }[],
 ): readonly ToolDefinition[] {
   const ctx = {
     getExec: () => ({
@@ -83,6 +84,7 @@ function bootRib(
     refreshWorkflow: async (name: string) => {
       refreshed.push(name);
     },
+    ...(providers !== undefined ? { getProviders: () => providers } : {}),
   } as unknown as RibContext;
   return rib.registerTools?.(ctx) ?? [];
 }
@@ -107,6 +109,12 @@ async function runTool(
 function proposeCastTool(tools: readonly ToolDefinition[]): ToolDefinition {
   const tool = tools.find((t) => t.name === "squad_propose_cast");
   if (!tool) throw new Error("squad_propose_cast tool not registered");
+  return tool;
+}
+
+function emitMemberTool(tools: readonly ToolDefinition[]): ToolDefinition {
+  const tool = tools.find((t) => t.name === "squad_emit_member");
+  if (!tool) throw new Error("squad_emit_member tool not registered");
   return tool;
 }
 
@@ -239,6 +247,58 @@ describe("squad_propose_cast tool (runs the confined scan)", () => {
     expect(lastReq?.prompt).toContain("ship the OSDU search rib");
   });
 
+  test("drops an unregistered provider pin from the persisted proposal and records a note", async () => {
+    const reply = JSON.stringify({
+      members: [
+        {
+          name: "Atlas",
+          role: "Engineer",
+          charter: "# Atlas",
+          provider: "ghost",
+          model: "ghost-max",
+        },
+      ],
+    });
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")], reply, [
+      { id: "copilot", displayName: "Copilot" },
+    ]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+
+    const out = await runTool(proposeCastTool(tools), {});
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+
+    expect(out.isError).toBe(false);
+    expect(proposal?.members[0]?.provider).toBeUndefined();
+    expect(proposal?.members[0]?.model).toBeUndefined();
+    expect(proposal?.notes.join("\n")).toContain('dropped provider/model "ghost" / "ghost-max"');
+    expect(proposal?.notes.join("\n")).toContain("provider is not registered for squad members");
+  });
+
+  test("keeps a registered provider/model pin in the persisted proposal", async () => {
+    const reply = JSON.stringify({
+      members: [
+        {
+          name: "Atlas",
+          role: "Engineer",
+          charter: "# Atlas",
+          provider: "copilot",
+          model: "gpt-5.5",
+        },
+      ],
+    });
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")], reply, [
+      { id: "copilot", displayName: "Copilot" },
+    ]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+
+    await runTool(proposeCastTool(tools), {});
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+
+    expect(proposal?.members[0]?.provider).toBe("copilot");
+    expect(proposal?.members[0]?.model).toBe("gpt-5.5");
+    expect(proposal?.notes.join("\n")).not.toContain("dropped provider");
+  });
+
   test("scans AND places under the SELECTION scope, never mis-placed", async () => {
     const tools = bootRib([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
     await selectProject("p1", "alpha", "/repo/a");
@@ -262,6 +322,28 @@ describe("squad_propose_cast tool (runs the confined scan)", () => {
     expect(lastReq?.cwd).toBe("/repo/workspace");
     // The proposal lands under the flat/default scope (the home root).
     expect(await readProposal(home)).toBeDefined();
+  });
+});
+
+describe("squad_emit_member tool", () => {
+  test("drops an unregistered provider pin from the emitted member and returns a note", async () => {
+    const tools = bootRib([], ROSTER_REPLY, [{ id: "copilot", displayName: "Copilot" }]);
+
+    const out = await runTool(emitMemberTool(tools), {
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      provider: "ghost",
+      model: "ghost-max",
+    });
+    const result = JSON.parse(out.content) as { note?: string };
+    const members = await readMembers(scopeMembersDir(home, "default"));
+
+    expect(out.isError).toBe(false);
+    expect(members[0]?.provider).toBeUndefined();
+    expect(members[0]?.model).toBeUndefined();
+    expect(result.note).toContain('dropped provider/model "ghost" / "ghost-max"');
+    expect(result.note).toContain("provider is not registered for squad members");
   });
 });
 

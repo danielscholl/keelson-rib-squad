@@ -1747,6 +1747,14 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     if (result.dispatch) {
       const d = result.dispatch;
       const oks = d.perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0);
+      const failures = d.perMember
+        .filter((r) => r.status !== "ok" || r.text.trim().length === 0)
+        .map(
+          (r) =>
+            `[${r.name}] (turn failed: ${
+              r.status === "ok" ? "empty response" : (r.error ?? r.status)
+            })`,
+        );
       // Prefer the synthesis; when it is absent/failed, attribute EVERY member's reply
       // rather than keeping only the first (a failed multi-member synthesis must not
       // silently discard members #2..N).
@@ -1755,6 +1763,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         (oks.length > 1
           ? oks.map((r) => `[${r.name}] ${r.text.trim()}`).join("\n\n")
           : oks[0]?.text.trim()) ||
+        (d.perMember.length > 0 && failures.length === d.perMember.length
+          ? failures.join("\n\n")
+          : undefined) ||
         "(no synthesis)";
       // Surface dispatch notes (cost-cap truncation, synthesis skip/failure) so they
       // reach the next round's prompt instead of being silently dropped.

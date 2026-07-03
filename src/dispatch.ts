@@ -142,11 +142,15 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
     return { slug: member.slug, name: member.name, ...outcome };
   });
 
-  const oks = perMember.filter((r) => r.status === "ok");
+  const oks = perMember.filter((r) => r.status === "ok" && r.text.trim().length > 0);
   let synthesis: string | undefined;
   let synthesisUsage: TokenUsage | undefined;
   if (!wantSynthesis) {
-    notes.push("synthesis skipped (disabled)");
+    if (oks.length === 0) {
+      notes.push(`no usable member reply — ${perMember.length} member turn(s) failed`);
+    } else {
+      notes.push("synthesis skipped (disabled)");
+    }
   } else if (oks.length === 0) {
     notes.push("synthesis skipped — no member returned a usable result");
   } else if (opts.abortSignal?.aborted) {

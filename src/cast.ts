@@ -2,6 +2,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { RibAgentTurn, RibAgentTurnResult, RibContext } from "@keelson/shared";
 import { errText, z } from "@keelson/shared";
+import { assignableProviders, validateProviderPin } from "./provider-pins.ts";
 import { normalizeIdentitySlot } from "./types.ts";
 
 // Auto-cast: inspect a project and propose the team best suited to it. This is the
@@ -93,18 +94,11 @@ export interface ProposeCastOptions {
 const SCAN_SYSTEM =
   "You are a staffing architect for a Keelson Squad — a small team of persistent AI agents an operator talks to directly. You inspect a real software project and propose the team best suited to the work in it. You read the repository to staff it well; you never modify it.";
 
-// Registered providers a member must never be assigned to: "workflow" is the always-on
-// provider backing workflow-linked conversations (echo-only for chat), and "stub" is the
-// test echo provider. getProviders() lists every registration, so the cast filters these
-// out before offering the catalog to the scan — mirroring the host's own non-stub /
-// non-workflow default selection.
-const NON_ASSIGNABLE_PROVIDER_IDS = new Set(["workflow", "stub"]);
-
 function scanPrompt(
   projectName: string,
   mission: string | undefined,
   maxMembers: number,
-  providers: readonly { id: string; displayName: string }[],
+  providers: readonly { id: string; displayName?: string }[],
 ): string {
   const missionBlock = mission
     ? `\nThe operator's mission for this squad:\n---\n${mission}\n---\n`
@@ -148,15 +142,13 @@ export async function proposeCast(opts: ProposeCastOptions): Promise<ProposeCast
   }
   const maxMembers = Math.max(1, opts.maxMembers ?? MAX_CAST_MEMBERS);
   const mission = opts.mission?.trim() || undefined;
-  const assignableProviders = (opts.providers ?? []).filter(
-    (p) => !NON_ASSIGNABLE_PROVIDER_IDS.has(p.id),
-  );
+  const availableProviders = assignableProviders(opts.providers ?? []);
 
   const outcome = await runScanTurn(
     opts.runAgentTurn,
     {
       system: SCAN_SYSTEM,
-      prompt: scanPrompt(opts.project.name, mission, maxMembers, assignableProviders),
+      prompt: scanPrompt(opts.project.name, mission, maxMembers, availableProviders),
       cwd: root,
       allowedDirectories: [root],
       allowedTools: [...SCAN_TOOLS],
@@ -178,7 +170,11 @@ export async function proposeCast(opts: ProposeCastOptions): Promise<ProposeCast
   }
 
   const notes: string[] = [];
-  let members = parsed.data.members.map(normalizeMember);
+  const normalized = parsed.data.members.map((m) => normalizeMember(m, opts.providers));
+  for (const { note } of normalized) {
+    if (note) notes.push(note);
+  }
+  let members = normalized.map((m) => m.member);
   if (members.length > maxMembers) {
     notes.push(`proposed ${members.length} members — capped to ${maxMembers}`);
     members = members.slice(0, maxMembers);
@@ -199,22 +195,24 @@ export async function proposeCast(opts: ProposeCastOptions): Promise<ProposeCast
   };
 }
 
-function normalizeMember(m: z.infer<typeof castMemberSchema>): CastProposalMember {
+function normalizeMember(
+  m: z.infer<typeof castMemberSchema>,
+  providers: ProposeCastOptions["providers"],
+): { member: CastProposalMember; note?: string } {
   const tools = m.tools
     ? [...new Set(m.tools.map((t) => t.trim()).filter((t) => t.length > 0))]
     : [];
-  const model = m.model?.trim();
-  const provider = m.provider?.trim();
+  const { pin, note } = validateProviderPin(m.name.trim(), m, providers);
   return {
-    name: m.name.trim(),
-    role: m.role.trim(),
-    charter: m.charter,
-    ...(tools.length > 0 ? { tools } : {}),
-    // A provider may stand alone (pin the vendor, default model); a model needs its
-    // provider — the same coherence rule the store keeps. Lenient: an incoherent
-    // model-without-provider proposal drops the model rather than rejecting.
-    ...(provider ? { provider } : {}),
-    ...(provider && model ? { model } : {}),
+    member: {
+      name: m.name.trim(),
+      role: m.role.trim(),
+      charter: m.charter,
+      ...(tools.length > 0 ? { tools } : {}),
+      ...(pin.provider ? { provider: pin.provider } : {}),
+      ...(pin.provider && pin.model ? { model: pin.model } : {}),
+    },
+    ...(note ? { note } : {}),
   };
 }
 

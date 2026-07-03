@@ -63,6 +63,7 @@ import {
   squadDataHome,
 } from "./paths.ts";
 import { squadPolicies } from "./policies.ts";
+import { validateProviderPin } from "./provider-pins.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   readSelectedProject,
@@ -362,8 +363,19 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
       try {
         const home = squadDataHome();
         const scopeId = selectedScopeId(await readSelectedProject(home));
-        const model = rawModel?.trim();
-        const provider = rawProvider?.trim();
+        let providers: ReturnType<NonNullable<RibContext["getProviders"]>> | undefined;
+        if (getProviders) {
+          try {
+            providers = getProviders();
+          } catch {
+            providers = [];
+          }
+        }
+        const validated = validateProviderPin(
+          name,
+          { provider: rawProvider, model: rawModel },
+          providers,
+        );
         const dedupedTools = tools
           ? [...new Set(tools.map((t) => t.trim()).filter((t) => t.length > 0))]
           : [];
@@ -377,8 +389,10 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
             role,
             charter,
             createdAt: new Date().toISOString(),
-            ...(provider ? { provider } : {}),
-            ...(provider && model ? { model } : {}),
+            ...(validated.pin.provider ? { provider: validated.pin.provider } : {}),
+            ...(validated.pin.provider && validated.pin.model
+              ? { model: validated.pin.model }
+              : {}),
             ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
           },
           existing.length,
@@ -388,7 +402,15 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
         // promptly instead of waiting on cadence. Fail-soft (the seam resolves on
         // error and is absent on an older harness) — never throw.
         await refresh?.("squad-roster");
-        emitResult(ctx, JSON.stringify({ ok: true, slug: record.slug, name: record.name }));
+        emitResult(
+          ctx,
+          JSON.stringify({
+            ok: true,
+            slug: record.slug,
+            name: record.name,
+            ...(validated.note ? { note: validated.note } : {}),
+          }),
+        );
       } catch (e) {
         emitResult(ctx, `squad_emit_member failed: ${errText(e)}`, true);
       }
@@ -1116,9 +1138,9 @@ async function proposeCastForSelection(
     };
   }
   // A provider-listing hiccup must not block casting — degrade to unpinned members.
-  let providers: ReturnType<NonNullable<RibContext["getProviders"]>> = [];
+  let providers: ReturnType<NonNullable<RibContext["getProviders"]>> | undefined;
   try {
-    providers = getProviders?.() ?? [];
+    if (getProviders) providers = getProviders();
   } catch {
     providers = [];
   }
@@ -1126,7 +1148,7 @@ async function proposeCastForSelection(
     runAgentTurn,
     project: { id: scanProject.id, name: scanProject.name, rootPath: scanProject.rootPath },
     ...(mission ? { mission: mission.slice(0, MAX_MISSION_CHARS) } : {}),
-    providers,
+    ...(providers !== undefined ? { providers } : {}),
   });
   if (!result.ok) return { ok: false, error: result.error };
   const scopeId = selectedScopeId(selection);
@@ -1961,7 +1983,9 @@ async function approveCastAction(): Promise<RibActionResult> {
     for (let i = 0; i < proposal.members.length; i++) {
       const m = proposal.members[i]!;
       records.push({
-        slug: m.slug?.trim() || slugify(m.name),
+        // A drifted or hand-edited proposal slug must not fail the whole approve —
+        // slugify passes safe slugs through unchanged.
+        slug: slugify(m.slug?.trim() || m.name),
         name: m.name,
         role: m.role,
         charter: m.charter,
