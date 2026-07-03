@@ -567,7 +567,11 @@ const CODE_FINDING_NARRATION_RE =
 const SHORT_ACKNOWLEDGMENT_RE =
   /^(?:on it|sure|okay|ok|got it|alright|will do|sounds good)[.!—-]*$/i;
 
-function touchedFinding(touched?: { files: number; insertions: number; deletions: number }): string {
+function touchedFinding(touched?: {
+  files: number;
+  insertions: number;
+  deletions: number;
+}): string {
   if (!touched) return "(no reported outcome)";
   return `touched ${touched.files} file${touched.files === 1 ? "" : "s"} (+${touched.insertions} −${touched.deletions})`;
 }

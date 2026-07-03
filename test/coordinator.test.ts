@@ -183,9 +183,7 @@ describe("deriveCodeFinding", () => {
       "On it — I'll find the helper and patch it.\n\nUpdated the coordinator to mint findings from the code turn outcome.",
     );
 
-    expect(finding).toBe(
-      "Updated the coordinator to mint findings from the code turn outcome.",
-    );
+    expect(finding).toBe("Updated the coordinator to mint findings from the code turn outcome.");
   });
 
   test("returns a single outcome-only paragraph verbatim", () => {
