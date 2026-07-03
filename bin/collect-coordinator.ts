@@ -8,8 +8,10 @@ import { buildCoordinatorBoard } from "../src/boards/coordinator.ts";
  * yields the "idle" board, never a throw.
  */
 import { loadLedger } from "../src/coordinator.ts";
-import { scopeDataHome, squadDataHome } from "../src/paths.ts";
+import { readMembers } from "../src/member-store.ts";
+import { scopeDataHome, scopeMembersDir, squadDataHome } from "../src/paths.ts";
 import { readSelectedProject, selectedScopeId } from "../src/scope.ts";
+import { identityTonesByMember } from "../src/types.ts";
 
 async function main() {
   // The squad-coordinator bash node bakes the resolved data home in as argv[2] (the same path
@@ -18,7 +20,10 @@ async function main() {
   const home = process.argv[2]?.trim() || squadDataHome();
   const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
   const ledger = await loadLedger(scopeDataHome(home, scopeId)).catch(() => undefined);
-  process.stdout.write(JSON.stringify(buildCoordinatorBoard(ledger)));
+  const members = await readMembers(scopeMembersDir(home, scopeId)).catch(() => []);
+  process.stdout.write(
+    JSON.stringify(buildCoordinatorBoard(ledger, identityTonesByMember(members))),
+  );
 }
 
 await main();

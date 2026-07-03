@@ -74,7 +74,7 @@ import {
 } from "./scope.ts";
 import { GENESIS_STARTERS } from "./starters.ts";
 import type { TurnOutcome } from "./turn-runner.ts";
-import { identitySlotForIndex, type Member } from "./types.ts";
+import { identitySlotForIndex, identityTonesByMember, type Member } from "./types.ts";
 
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
 // dispose. refreshWorkflow re-runs a bound collector (squad-roster, squad-cast)
@@ -302,12 +302,14 @@ async function themedProposal(
   proposal: CastProposalRecord,
 ): Promise<CastProposalRecord> {
   const members: CastProposalMember[] = [];
+  const renames: [from: string, to: string][] = [];
   for (let i = 0; i < proposal.members.length; i++) {
     const m = proposal.members[i]!;
     const id = await assignThemedIdentity(dataHome, {
       proposedName: m.name,
       role: m.role,
     });
+    if (id.originalName !== id.name) renames.push([id.originalName, id.name]);
     members.push({
       slug: id.slug,
       name: id.name,
@@ -323,7 +325,14 @@ async function themedProposal(
       identitySlot: identitySlotForIndex(i),
     });
   }
-  return { ...proposal, members };
+  // Notes minted before theming (e.g. a dropped provider pin) name the scan's
+  // working members; the panel only ever shows themed names, so speak those.
+  let notes = proposal.notes;
+  for (const [from, to] of renames) {
+    const pattern = new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
+    notes = notes.map((n) => n.replace(pattern, to));
+  }
+  return { ...proposal, members, notes };
 }
 
 async function retireProposalNames(dataHome: string, proposal: CastProposalRecord): Promise<void> {
@@ -2095,7 +2104,8 @@ async function viewRunAction(action: RibAction): Promise<RibActionResult> {
     const home = squadDataHome();
     const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
     const ledger = await loadRun(scopeDataHome(home, scopeId), id);
-    runDetailBoard = buildRunDetailBoard(ledger, id);
+    const members = await readMembers(scopeMembersDir(home, scopeId)).catch(() => []);
+    runDetailBoard = buildRunDetailBoard(ledger, id, identityTonesByMember(members));
     await snapshots.recompose(RUN_DETAIL_KEY);
     return {
       ok: true,

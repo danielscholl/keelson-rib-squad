@@ -66,6 +66,32 @@ describe("stripMd", () => {
       "rename foo_bar and run --filter '*' typecheck",
     );
   });
+
+  test("unwraps boundary-delimited _phrase_ italics but keeps in-word underscores", async () => {
+    const { stripMd } = await import("../../src/boards/coordinator.ts");
+    expect(stripMd("_Cast from The Usual Suspects._ Personality.")).toBe(
+      "Cast from The Usual Suspects. Personality.",
+    );
+    expect(stripMd("keep snake_case and __init__ files sane")).toBe(
+      "keep snake_case and init files sane",
+    );
+  });
+});
+
+describe("charterDisplay", () => {
+  test("drops the self H1 name and the cast-provenance sentence, strips markdown", async () => {
+    const { charterDisplay } = await import("../../src/boards/coordinator.ts");
+    expect(
+      charterDisplay(
+        "Keyser",
+        "# Keyser\n\n_Cast from The Usual Suspects._ Personality. **Quietly** commanding.",
+      ),
+    ).toBe("Personality. Quietly commanding.");
+    // A charter that never mentions its member is returned intact (markdown aside).
+    expect(charterDisplay("Edie", "## Mission\n\nReview everything.")).toBe(
+      "Mission Review everything.",
+    );
+  });
 });
 
 describe("buildCoordinatorBoard idle", () => {
@@ -78,10 +104,17 @@ describe("buildCoordinatorBoard idle", () => {
 });
 
 describe("identityTone / outcomeTone helpers", () => {
-  test("coordinator and absent speaker tone brand; a slug is stable", () => {
-    expect(identityTone("coordinator")).toBe("brand");
-    expect(identityTone(undefined)).toBe("brand");
-    expect(identityTone("atlas")).toBe(identityTone("atlas"));
+  test("coordinator keeps brand; members resolve through the tones map, else neutral", () => {
+    const tones = new Map([
+      ["atlas", "id-blue" as const],
+      ["edie", "id-olive" as const],
+    ]);
+    expect(identityTone("coordinator", tones)).toBe("brand");
+    expect(identityTone(undefined, tones)).toBe("brand");
+    expect(identityTone("atlas", tones)).toBe("id-blue");
+    expect(identityTone("Atlas ", tones)).toBe("id-blue");
+    expect(identityTone("retired-member", tones)).toBe("neutral");
+    expect(identityTone("atlas")).toBe("neutral");
   });
 
   test("outcomeTone reads a verify entry's verdict from its text", () => {
@@ -319,7 +352,7 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(r3[0]?.glyph).toBe("ok");
   });
 
-  test("the round rail renders one grid cell per round with outcome-toned badges", () => {
+  test("the round rail tones member cells by identity; gate red and re-plan stay status", () => {
     const board = buildCoordinatorBoard(
       ledger({
         round: 3,
@@ -331,16 +364,28 @@ describe("buildCoordinatorBoard active layout", () => {
         inFlight: { round: 3, action: "coding", speaker: "atlas" },
         status: "active",
       }),
+      new Map([["atlas", "id-teal" as const]]),
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     const rail = board.sections.find((s) => s.kind === "grid");
     if (rail?.kind !== "grid") throw new Error("no round rail");
     const byLabel = new Map(rail.cells.map((c) => [c.label, c.badge]));
-    expect(byLabel.get("R0")?.tone).toBe("accent");
+    expect(byLabel.get("R0")?.tone).toBe("id-teal");
     expect(byLabel.get("R0")?.text).toContain("atlas");
     expect(byLabel.get("R1")?.tone).toBe("error");
     expect(byLabel.get("R2")?.tone).toBe("caution");
     expect(byLabel.get("R3")?.text).toContain("now");
+    // Without a tones map the member cell folds to neutral — never a hash.
+    const bare = buildCoordinatorBoard(
+      ledger({
+        round: 1,
+        transcript: [entry({ round: 0, kind: "code", speaker: "atlas", text: "edited" })],
+        status: "active",
+      }),
+    );
+    const bareRail = bare.sections.find((s) => s.kind === "grid");
+    if (bareRail?.kind !== "grid") throw new Error("no round rail");
+    expect(bareRail.cells[0]?.badge.tone).toBe("neutral");
   });
 
   test("a ledger row expands to the full entry: instruction, text, and tool trace in detail", () => {

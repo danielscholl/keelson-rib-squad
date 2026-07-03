@@ -103,7 +103,9 @@ describe("buildCastBoard with a proposal", () => {
     const row = memberRows(board).find((r) => r.chip?.label === "Atlas");
     expect(row?.text).toBe("Build and ship the search rib.");
     expect(row?.text).not.toBe("Engineer");
-    expect(row?.detail).toContain("Atlas Role Engineer Mission Build and ship the search rib.");
+    // The member's own H1 name is dropped from the disclosed body — the card
+    // never re-introduces its own member.
+    expect(row?.detail).toBe("Role Engineer Mission Build and ship the search rib.");
     expect(row?.detail).not.toContain("**");
     expect(row?.detail).not.toContain("`");
   });
@@ -122,6 +124,39 @@ describe("buildCastBoard with a proposal", () => {
     );
     const row = memberRows(board).find((r) => r.chip?.label === "Atlas");
     expect(row?.text).toBe("Build.");
-    expect(row?.detail).toBe("Atlas Mission Build.");
+    expect(row?.detail).toBe("Mission Build.");
+  });
+
+  test("member rows wear the persisted identity tone; the cast-provenance line is dropped", () => {
+    const board = buildCastBoard(
+      proposal({
+        members: [
+          {
+            name: "Keyser",
+            role: "Tech Lead",
+            charter:
+              "# Keyser\n\n_Cast from The Usual Suspects._\n\n## Mission\n\nGuard the seams.",
+            identitySlot: 0,
+          },
+          {
+            name: "Edie",
+            role: "Reviewer",
+            charter: "# Edie\n\n## Mission\n\nReview everything.",
+            identitySlot: 4,
+          },
+        ],
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const keyser = memberRows(board).find((r) => r.chip?.label === "Keyser");
+    expect(keyser?.chip?.tone).toBe("id-blue");
+    expect(keyser?.glyph).toBe("id-blue");
+    expect(keyser?.detail).toBe("Mission Guard the seams.");
+    expect(keyser?.detail).not.toContain("_");
+    const edie = memberRows(board).find((r) => r.chip?.label === "Edie");
+    expect(edie?.chip?.tone).toBe("id-olive");
+    // A proposal member with no slot (an older stored proposal) folds to neutral.
+    const slotless = memberRows(buildCastBoard(proposal()))[0];
+    expect(slotless?.chip?.tone).toBe("neutral");
   });
 });

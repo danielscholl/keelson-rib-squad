@@ -1,10 +1,9 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import { themeLabel } from "../casting/themes.ts";
-import { stableHash } from "../genesis.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
-import type { Member } from "../types.ts";
+import { identityToneForSlot, type Member } from "../types.ts";
 import { CAST_PROPOSE_ACTION } from "./cast.ts";
-import { stripMd } from "./coordinator.ts";
+import { charterDisplay, stripMd } from "./coordinator.ts";
 
 type Section = CanvasBoardView["sections"][number];
 
@@ -25,16 +24,6 @@ export const ASSIGN_CODE_ACTION = "assign-code";
 const CODE_CAPABILITY = "code";
 function memberCanCode(member: Member): boolean {
   return (member.tools ?? []).includes(CODE_CAPABILITY);
-}
-
-// Identity dots draw only from non-status tones — a member hashed to ok/warn/error
-// would masquerade as an outcome. Matches the Run-loop board's identity pool.
-const DOT_TONES = ["brand", "accent", "info", "neutral"] as const satisfies readonly CanvasTone[];
-
-// stableHash returns a base-36 string; parsing it back at radix 36 recovers the
-// integer to mod across the ramp, so distinct slugs spread across the tones.
-function dotFor(slug: string): CanvasTone {
-  return DOT_TONES[Number.parseInt(stableHash(slug), 36) % DOT_TONES.length]!;
 }
 
 // The Squad pulse: team size, the active/inactive split, and how many members can
@@ -100,7 +89,7 @@ function pulseSection(pulse: RosterPulse): Section {
   };
 }
 
-// One member -> one card: a hashed identity dot, the role in a single pill, the
+// One member -> one card: the member's persisted identity tone as the dot, the role in a single pill, the
 // ensemble (when cast) + charter (and model when set) as fields, a personality
 // sub-line on the reason row, and its verbs — Enter (the primary, inline), an
 // "Assign a code task…" for code-capable members, Set model, and Retire (destructive
@@ -114,7 +103,7 @@ function cardFor(member: Member) {
   if (member.model) fields.push({ label: "model", value: member.model });
   return {
     title: member.name.trim() || "(unnamed)",
-    dot: dotFor(member.slug),
+    dot: identityToneForSlot(member.identitySlot),
     pill: { label: member.role.trim() || "Member" },
     fields,
     // The character's personality as a sub-line, only when the member was cast.
@@ -339,13 +328,5 @@ function truncate(text: string, max = 120): string {
 }
 
 function rosterCharterExcerpt(member: Member): string {
-  const name = member.name.trim();
-  const withoutSelfHeading = name
-    ? member.charter.replace(new RegExp(`^#\\s+${escapeRegExp(name)}\\s*(?:\\n|$)`, "i"), "")
-    : member.charter;
-  return truncate(stripMd(withoutSelfHeading));
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return truncate(charterDisplay(member.name, member.charter));
 }
