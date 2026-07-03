@@ -140,11 +140,11 @@ describe("cast-propose action (launches the cast-scan workflow)", () => {
     );
     expect(res?.ok).toBe(true);
     if (res?.ok) {
-      // No stay: the cast run focuses the Workflows tab so its progress/failure shows.
       expect(res.data).toEqual({
         effect: "run-workflow",
         workflow: "squad-cast-scan",
         args: { mission: "ship the search rib" },
+        stay: true,
       });
     }
     // The action only launches — it does NOT scan in-process (no agent turn fired).
@@ -161,6 +161,7 @@ describe("cast-propose action (launches the cast-scan workflow)", () => {
         effect: "run-workflow",
         workflow: "squad-cast-scan",
         args: {},
+        stay: true,
       });
     }
   });

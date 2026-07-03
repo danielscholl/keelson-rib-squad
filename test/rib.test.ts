@@ -291,7 +291,8 @@ describe("rib-squad", () => {
     // The cast collector is cheap, but the panel only changes on propose/approve/
     // discard — no heartbeat (it would just re-render the idle board).
     expect(region?.cadenceMs).toBeUndefined();
-    expect(region?.collapsed).toBe(true);
+    expect(region).toBeDefined();
+    expect(region?.collapsed).not.toBe(true);
   });
 
   it("contributes squad-cast: a bound deterministic cast collector", () => {

@@ -43,10 +43,6 @@ export function buildCastBoard(proposal: CastProposalRecord | undefined): Canvas
   };
 }
 
-// One proposed member -> one card: name as the title, role in the pill, the
-// capability tags and charter as fields, and a charter excerpt on the reason line.
-// The tags are the load-bearing #14 detail — they ride the card so the operator
-// sees how each member would be routed before approving.
 function cardFor(member: CastProposalRecord["members"][number]) {
   const fields: { label: string; value: string }[] = [
     { label: "tools", value: member.tools?.length ? member.tools.join(", ") : "text-only" },
@@ -114,7 +110,7 @@ function idleBoard(): CanvasBoardView {
         items: [
           {
             glyph: "neutral",
-            text: 'No squad proposed yet. Use "Cast a squad" on the roster to inspect a project and auto-compose the team best suited to it.',
+            text: "No proposal yet. Cast a squad from the roster; the proposed team appears here before anything is created.",
           },
         ],
       },

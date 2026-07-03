@@ -1180,10 +1180,9 @@ const rib: Rib = {
                 workflow: "squad-cast",
                 title: "Proposed squad",
                 // NO cadenceMs: the cast collector only changes on propose/approve/
-                // discard. squad_propose_cast refreshes it after a scan; collapsed by
-                // default so an empty panel doesn't clutter the row.
+                // discard. squad_propose_cast refreshes it after a scan.
                 collapsible: true,
-                collapsed: true,
+                collapsed: false,
                 glyph: { char: "✦", tone: "brand" },
               },
             ],
@@ -1732,9 +1731,8 @@ function resolveRunScope(
 // The scan itself lives in squad_propose_cast (read-only, bounded to the project root
 // inside proposeCast); this action only validates and launches. Casting is
 // selection-driven — the selection's project, or the workspace default project for the
-// flat/default scope (no free-text override, the #80 footgun). No `stay`: the run
-// focuses the Workflows tab so its progress and any scan failure are visible; the
-// Proposed squad panel refreshes for review when the operator returns.
+// flat/default scope (no free-text override, the #80 footgun). stay:true keeps the
+// operator on Squad while the Proposed squad panel refreshes for review.
 async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   if (!runAgentTurn) {
@@ -1767,6 +1765,7 @@ async function castProposeAction(action: RibAction): Promise<RibActionResult> {
       effect: "run-workflow",
       workflow: "squad-cast-scan",
       args: mission ? { mission: mission.slice(0, MAX_MISSION_CHARS) } : {},
+      stay: true,
     },
   };
 }

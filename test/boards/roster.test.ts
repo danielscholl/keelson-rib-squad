@@ -42,9 +42,14 @@ describe("buildRosterBoard cold start", () => {
     expect(board.header?.status?.label).toBe("0 members");
   });
 
-  test("the author-archetype actions mirror GENESIS_STARTERS in order", () => {
+  test("the secondary authoring group mirrors GENESIS_STARTERS in order", () => {
     const board = buildRosterBoard([]);
-    const authors = actionItems(board).filter((i) => i.type === "author-archetype");
+    const section = board.sections.find(
+      (s) => s.kind === "actions" && s.title === "or seat one member yourself",
+    );
+    expect(section?.kind).toBe("actions");
+    const authors =
+      section?.kind === "actions" ? section.items.filter((i) => i.type === "author-archetype") : [];
     expect(authors).toHaveLength(GENESIS_STARTERS.length);
     expect(authors.map((a) => a.payload)).toEqual(GENESIS_STARTERS.map((s) => ({ slug: s.slug })));
     expect(authors.map((a) => a.label)).toEqual(
@@ -72,18 +77,42 @@ describe("buildRosterBoard cold start", () => {
     expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "actions", "rows"]);
   });
 
-  test("leads with a cast-a-squad CTA carrying just a mission field (selection-driven scope)", () => {
+  test("leads with framing copy then the hero cast action with a verb label", () => {
     const board = buildRosterBoard([]);
-    const cast = actionItems(board).find((i) => i.type === "cast-propose");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const intro = board.sections[0];
+    expect(intro?.kind).toBe("rows");
+    expect(intro?.kind === "rows" ? intro.items[0]?.text : "").toContain(
+      "One scan of the repo composes the team",
+    );
+    const hero = board.sections[1];
+    expect(hero?.kind).toBe("actions");
+    expect(hero?.title).toBe("Cast a squad from this repo");
+    const cast = hero?.kind === "actions" ? hero.items[0] : undefined;
+    expect(cast?.type).toBe("cast-propose");
+    expect(cast?.label).toBe("Cast a squad");
     expect(cast).toBeDefined();
     // No free-text "project" field — casting follows the project picker selection (#80).
     expect(cast?.fields?.map((f) => f.name)).toEqual(["mission"]);
     expect(cast?.fields?.find((f) => f.name === "mission")?.multiline).toBe(true);
+    expect(cast?.inline).toBe(true);
     // The cast section leads the manual author section (the defining capability first).
     const actionTitles = board.sections
       .filter((s) => s.kind === "actions")
       .map((s) => (s.kind === "actions" ? s.title : undefined));
-    expect(actionTitles).toEqual(["Cast a squad", "Author a member"]);
+    expect(actionTitles).toEqual(["Cast a squad from this repo", "or seat one member yourself"]);
+  });
+
+  test("renders the three-step journey strip beneath authoring", () => {
+    const board = buildRosterBoard([]);
+    const journey = board.sections.find((s) => s.kind === "rows" && s.title === "Squad journey");
+    expect(journey?.kind).toBe("rows");
+    expect(journey?.kind === "rows" ? journey.items.map((i) => i.text) : []).toEqual([
+      "1 Cast: the scan proposes a team, you approve or discard it",
+      "2 Meet: each member becomes a chat agent you can enter",
+      "3 Run: give the squad a task and the rounds stream in the Run loop panel",
+    ]);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 });
 
@@ -231,8 +260,8 @@ describe("buildRosterBoard persistent verbs", () => {
     expect(titles).toContain("Add a member");
     expect(titles).toContain("Manage");
     // Cast + the archetype quick-picks are cold-start scaffolding, not steady state.
-    expect(titles).not.toContain("Cast a squad");
-    expect(titles).not.toContain("Author a member");
+    expect(titles).not.toContain("Cast a squad from this repo");
+    expect(titles).not.toContain("or seat one member yourself");
     const items = actionItems(board);
     expect(items.some((i) => i.type === "cast-propose")).toBe(false);
     expect(items.filter((i) => i.type === "author-archetype")).toHaveLength(0);
