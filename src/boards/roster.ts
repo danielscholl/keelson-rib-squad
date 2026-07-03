@@ -188,9 +188,6 @@ function cardFor(member: Member) {
   };
 }
 
-// The defining verb: scan the SELECTED project and propose the team best suited to
-// it. Scope follows the project picker — casting always targets the selected project,
-// so the team lands in the same scope a no-arg run reads. Mission is optional.
 // The framing line above the hero: copy belongs here, not on the action label —
 // the button stays a verb.
 function introSection(): Section {
@@ -205,6 +202,9 @@ function introSection(): Section {
   };
 }
 
+// The defining verb: scan the SELECTED project and propose the team best suited to
+// it. Scope follows the project picker — casting always targets the selected project,
+// so the team lands in the same scope a no-arg run reads. Mission is optional.
 function castSection(): Section {
   return {
     kind: "actions",
