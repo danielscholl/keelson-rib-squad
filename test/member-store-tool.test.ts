@@ -73,7 +73,8 @@ describe("member store tools", () => {
 
     expect(emitted.isError).toBe(false);
     expect(listed.isError).toBe(false);
-    expect(parsed.members).toEqual([expect.objectContaining({ originalName: "Atlas" })]);
+    const atlas = JSON.parse(emitted.content) as { slug: string };
+    expect(parsed.members).toEqual([expect.objectContaining({ slug: atlas.slug })]);
     expect(await readMembers(scopeMembersDir(home, "default"))).toEqual([]);
     expect(refreshed).toContain("squad-roster");
   });
@@ -88,7 +89,7 @@ describe("member store tools", () => {
     });
     const tools = bootTools([project("beta", "beta", "/repo/beta")]);
 
-    await invoke(tool(tools, "squad_emit_member"), {
+    const emitted = await invoke(tool(tools, "squad_emit_member"), {
       name: "Beacon",
       role: "Reviewer",
       charter: "# Beacon",
@@ -97,7 +98,8 @@ describe("member store tools", () => {
     const parsed = JSON.parse(listed.content) as { members: { slug: string; name: string }[] };
 
     expect(listed.isError).toBe(false);
-    expect(parsed.members).toEqual([expect.objectContaining({ originalName: "Beacon" })]);
+    const beacon = JSON.parse(emitted.content) as { slug: string };
+    expect(parsed.members).toEqual([expect.objectContaining({ slug: beacon.slug })]);
     expect(await readMembers(scopeMembersDir(home, "beta"))).toHaveLength(1);
   });
 
@@ -131,12 +133,13 @@ describe("member store tools", () => {
       project: "alpha",
     });
     const alpha = JSON.parse(emittedAlpha.content) as { slug: string };
-    await invoke(tool(tools, "squad_emit_member"), {
+    const emittedBeta = await invoke(tool(tools, "squad_emit_member"), {
       name: "Beacon",
       role: "Reviewer",
       charter: "# Beacon",
       project: "beta",
     });
+    const beta = JSON.parse(emittedBeta.content) as { slug: string };
 
     const retired = await invoke(tool(tools, "squad_retire_member"), {
       slug: alpha.slug,
@@ -146,7 +149,7 @@ describe("member store tools", () => {
     expect(retired.isError).toBe(false);
     expect(await readMembers(scopeMembersDir(home, "alpha"))).toEqual([]);
     expect(await readMembers(scopeMembersDir(home, "beta"))).toEqual([
-      expect.objectContaining({ originalName: "Beacon" }),
+      expect.objectContaining({ slug: beta.slug }),
     ]);
   });
 });
