@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   CanvasBoardView,
@@ -66,6 +66,7 @@ import { squadPolicies } from "./policies.ts";
 import { validateProviderPin } from "./provider-pins.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
+  listScopeMembersDirs,
   readSelectedProject,
   type SelectedProject,
   selectedScopeId,
@@ -351,15 +352,19 @@ const memberEmitSchema = z.object({
   role: z.string().min(1),
   charter: z.string().min(1),
   model: z.string().optional(),
+  project: z.string().optional(),
   provider: z.string().optional(),
   tools: z.array(z.string()).optional(),
 });
 
-function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefinition {
+function makeEmitMemberTool(
+  refresh?: RibContext["refreshWorkflow"],
+  projectsSeam?: RibContext["getProjects"],
+): ToolDefinition {
   return {
     name: "squad_emit_member",
     description:
-      "Internal write-seam for the squad-genesis workflow: persist an authored member (charter.md + record) under members/<slug>. The workflow's prompt turn authors { name, role, charter, optional model/provider pin, optional capability tools }; this tool only writes, failing closed on a slug collision. To create a member, run the squad-genesis workflow (e.g. /workflow run squad-genesis <brief>) rather than calling this directly.",
+      "Internal write-seam for the squad-genesis workflow: persist an authored member (charter.md + record) under members/<slug>. The workflow's prompt turn authors { name, role, charter, optional model/provider pin, optional capability tools }; this tool only writes, failing closed on a slug collision. `project` (optional id/name) selects the scope like squad_coordinate; with none it uses the selected scope (set via the `select-project` board action, payload `{ scopeId }`, or the SPA ProjectChip). To create a member, run the squad-genesis workflow (e.g. /workflow run squad-genesis <brief>) rather than calling this directly.",
     inputSchema: memberEmitSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -371,7 +376,17 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
       const { name, role, charter, tools, model: rawModel, provider: rawProvider } = parsed.data;
       try {
         const home = squadDataHome();
-        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_emit_member: ${resolution.error}`, true);
+          return;
+        }
+        const { scopeId } = resolution;
         let providers: ReturnType<NonNullable<RibContext["getProviders"]>> | undefined;
         if (getProviders) {
           try {
@@ -427,16 +442,33 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
   };
 }
 
-function makeListMembersTool(): ToolDefinition {
+const memberListSchema = z.object({ project: z.string().optional() });
+
+function makeListMembersTool(projectsSeam?: RibContext["getProjects"]): ToolDefinition {
   return {
     name: "squad_list_members",
     description:
-      "List the squad's members (the roster): each member's slug, name, role, charter, status, and any pinned model/provider and capability tools. Read-only. NOT for creating a member (run the squad-genesis workflow) or retiring one (squad_retire_member).",
-    inputSchema: z.object({}),
-    async execute(_input, ctx) {
+      "List the squad's members (the roster): each member's slug, name, role, charter, status, and any pinned model/provider and capability tools. `project` (optional id/name) selects the scope like squad_coordinate; with none it uses the selected scope (set via the `select-project` board action, payload `{ scopeId }`, or the SPA ProjectChip). Read-only. NOT for creating a member (run the squad-genesis workflow) or retiring one (squad_retire_member).",
+    inputSchema: memberListSchema,
+    async execute(input, ctx) {
+      const parsed = memberListSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_list_members: ${parsed.error.message}`, true);
+        return;
+      }
       try {
         const home = squadDataHome();
-        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_list_members: ${resolution.error}`, true);
+          return;
+        }
+        const { scopeId } = resolution;
         const members = await readMembers(scopeMembersDir(home, scopeId));
         emitResult(ctx, JSON.stringify({ members }));
       } catch (e) {
@@ -446,13 +478,16 @@ function makeListMembersTool(): ToolDefinition {
   };
 }
 
-const memberRetireSchema = z.object({ slug: z.string().min(1) });
+const memberRetireSchema = z.object({ project: z.string().optional(), slug: z.string().min(1) });
 
-function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefinition {
+function makeRetireMemberTool(
+  refresh?: RibContext["refreshWorkflow"],
+  projectsSeam?: RibContext["getProjects"],
+): ToolDefinition {
   return {
     name: "squad_retire_member",
     description:
-      "Retire a member: permanently remove a member's record and charter.md from the roster. `slug` is the member's identifier (see squad_list_members). Fails closed if no such member exists.",
+      "Retire a member: permanently remove a member's record and charter.md from the roster. `slug` is the member's identifier (see squad_list_members). `project` (optional id/name) selects the scope like squad_coordinate; with none it uses the selected scope (set via the `select-project` board action, payload `{ scopeId }`, or the SPA ProjectChip). Fails closed if no such member exists.",
     inputSchema: memberRetireSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -461,10 +496,21 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
         emitResult(ctx, `squad_retire_member: ${parsed.error.message}`, true);
         return;
       }
-      const home = squadDataHome();
-      const scopeId = selectedScopeId(await readSelectedProject(home));
-      const scopedHome = scopeDataHome(home, scopeId);
+      let scopedHome: string | undefined;
       try {
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_retire_member: ${resolution.error}`, true);
+          return;
+        }
+        const { scopeId } = resolution;
+        scopedHome = scopeDataHome(home, scopeId);
         await retireMember(scopeMembersDir(home, scopeId), parsed.data.slug);
         // Free the cast name so the ensemble can reuse it (fail-soft, never throws).
         await retireCastingName(scopedHome, parsed.data.slug);
@@ -474,7 +520,7 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
         // retireMember throws when the dir is already gone — but a registry entry can
         // linger with no dir (a phantom reservation from a failed scaffold). Free it
         // here too, or that character name is consumed forever.
-        await retireCastingName(scopedHome, parsed.data.slug);
+        if (scopedHome) await retireCastingName(scopedHome, parsed.data.slug);
         emitResult(ctx, `squad_retire_member failed: ${errText(e)}`, true);
       }
     },
@@ -597,6 +643,26 @@ function summarizeDispatch(outcome: DispatchOutcome): string {
   return lines.join("\n");
 }
 
+async function activeMemberScopeLocations(home: string): Promise<string | undefined> {
+  try {
+    const summaries: string[] = [];
+    for (const membersRoot of await listScopeMembersDirs(home)) {
+      const activeCount = (await readMembers(membersRoot)).filter(
+        (m) => m.status === "active",
+      ).length;
+      if (activeCount === 0) continue;
+      const scope =
+        membersRoot === scopeMembersDir(home, DEFAULT_SCOPE_ID)
+          ? DEFAULT_SCOPE_ID
+          : basename(dirname(membersRoot));
+      summaries.push(`${scope} (${activeCount})`);
+    }
+    return summaries.length > 0 ? summaries.join(", ") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Code mode as a tool: dispatch a confined coding turn to a code-capable member that
 // actually edits the selected project's repo (write rail, bounded to the project
 // root). The RAI floor (contributePolicies) hard-denies merging/force-pushing from
@@ -654,11 +720,16 @@ function makeCodeTool(
         const membersRoot = scopeMembersDir(home, scopeId);
         const member = (await readMembers(membersRoot)).find((m) => m.slug === slug);
         if (!member) {
-          emitResult(ctx, `squad_code: unknown member "${slug}"`, true);
+          const locations = await activeMemberScopeLocations(home);
+          emitResult(
+            ctx,
+            `squad_code: unknown member "${slug}" in scope "${scopeId}"${locations ? `; active members live in: ${locations}` : ""}`,
+            true,
+          );
           return;
         }
         if (member.status !== "active") {
-          emitResult(ctx, `squad_code: member "${slug}" is not active`, true);
+          emitResult(ctx, `squad_code: member "${slug}" is not active in scope "${scopeId}"`, true);
           return;
         }
         if (!memberCanCode(member)) {
@@ -929,7 +1000,12 @@ function makeCoordinateTool(
         const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
         const roster = wanted ? active.filter((m) => wanted.has(m.slug)) : active;
         if (roster.length === 0) {
-          emitResult(ctx, "squad_coordinate: no matching active members to coordinate", true);
+          const locations = await activeMemberScopeLocations(home);
+          emitResult(
+            ctx,
+            `squad_coordinate: no matching active members to coordinate in scope "${scopeId}"${locations ? `; active members live in: ${locations}` : ""}`,
+            true,
+          );
           return;
         }
         // Resolve the done-gate verify commands: the operator's explicit list wins; otherwise
@@ -1564,9 +1640,9 @@ const rib: Rib = {
     // Seed the picker's project list so it has options on first render.
     snapshotProjects();
     return [
-      makeEmitMemberTool(ctx.refreshWorkflow),
-      makeListMembersTool(),
-      makeRetireMemberTool(ctx.refreshWorkflow),
+      makeEmitMemberTool(ctx.refreshWorkflow, ctx.getProjects),
+      makeListMembersTool(ctx.getProjects),
+      makeRetireMemberTool(ctx.refreshWorkflow, ctx.getProjects),
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),

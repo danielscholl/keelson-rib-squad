@@ -102,6 +102,17 @@ describe("rib-squad", () => {
     ]);
   });
 
+  it("documents scope selectors on member store tools", () => {
+    const tools = rib.registerTools?.(bareCtx) ?? [];
+    for (const name of ["squad_emit_member", "squad_list_members", "squad_retire_member"]) {
+      const description = tools.find((t) => t.name === name)?.description ?? "";
+      expect(description).toContain("`project` (optional id/name) selects the scope");
+      expect(description).toContain("`select-project` board action");
+      expect(description).toContain("payload `{ scopeId }`");
+      expect(description).toContain("SPA ProjectChip");
+    }
+  });
+
   it("contributes the RAI policy floor via contributePolicies", () => {
     const policies = rib.contributePolicies?.(bareCtx) ?? [];
     expect(policies.map((p) => p.id)).toContain("rai-floor");

@@ -8,6 +8,7 @@ import type {
   RecallResponse,
   RibContext,
   RibExec,
+  ToolDefinition,
   WritebackRequest,
   WritebackResponse,
 } from "@keelson/shared";
@@ -27,7 +28,14 @@ import {
   saveLedger,
 } from "../src/coordinator.ts";
 import type { DispatchOutcome } from "../src/dispatch.ts";
-import { DEFAULT_SCOPE_ID, scopeDataHome } from "../src/paths.ts";
+import rib from "../src/index.ts";
+import { scaffoldMember } from "../src/member-store.ts";
+import {
+  DEFAULT_SCOPE_ID,
+  scopeDataHome,
+  scopeMembersDir,
+  setSquadDataHome,
+} from "../src/paths.ts";
 import type { Member } from "../src/types.ts";
 
 const NOW = "2026-06-27T00:00:00.000Z";
@@ -75,6 +83,30 @@ function fakeDispatch(synthesis = "did the work") {
     return { task: instruction, perMember: [], synthesis, notes: [] };
   };
   return { fn, calls };
+}
+
+function project(id: string, name: string, rootPath: string) {
+  return { id, name, rootPath, createdAt: NOW };
+}
+
+function registeredTool(tools: readonly ToolDefinition[], name: string): ToolDefinition {
+  const found = tools.find((t) => t.name === name);
+  if (!found) throw new Error(`${name} not registered`);
+  return found;
+}
+
+function captureTool(): { ctx: unknown; out: () => { content: string; isError: boolean } } {
+  let content = "";
+  let isError = false;
+  return {
+    ctx: {
+      emit: (e: { content?: string; isError?: boolean }) => {
+        content = e.content ?? "";
+        isError = Boolean(e.isError);
+      },
+    },
+    out: () => ({ content, isError }),
+  };
 }
 
 // A memory seam that captures every writeback (so a test can assert what the loop recorded)
@@ -248,6 +280,55 @@ describe("ledger persistence", () => {
     // Saving under the default-scoped home is byte-for-byte the legacy bare-home path.
     await saveLedger(scopeDataHome(home, DEFAULT_SCOPE_ID), ledger);
     expect(await loadLedger(home)).toEqual(ledger);
+  });
+});
+
+describe("squad_coordinate tool diagnostics", () => {
+  let home: string;
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "squad-coord-tool-"));
+    setSquadDataHome(home);
+  });
+  afterEach(async () => {
+    rib.dispose?.();
+    setSquadDataHome(undefined);
+    await rm(home, { recursive: true, force: true });
+  });
+
+  test("no-members error names the resolved scope and populated scopes", async () => {
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    await scaffoldMember(scopeMembersDir(home, "beta"), {
+      slug: "vera",
+      name: "Vera",
+      role: "Reviewer",
+      charter: "# Vera",
+      status: "active",
+      createdAt: NOW,
+    });
+    const ctx = {
+      getDataDir: () => home,
+      getProjects: () => [project("alpha", "alpha", "/repo/alpha")],
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+    } as unknown as RibContext;
+    const tools = rib.registerTools?.(ctx) ?? [];
+    const capture = captureTool();
+
+    await registeredTool(tools, "squad_coordinate").execute(
+      { task: "ship it", project: "alpha" },
+      capture.ctx as never,
+    );
+
+    expect(capture.out().isError).toBe(true);
+    expect(capture.out().content).toContain('scope "alpha"');
+    expect(capture.out().content).toContain("default (1)");
+    expect(capture.out().content).toContain("beta (1)");
   });
 });
 
