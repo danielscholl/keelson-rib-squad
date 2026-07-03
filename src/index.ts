@@ -351,11 +351,15 @@ const memberEmitSchema = z.object({
   role: z.string().min(1),
   charter: z.string().min(1),
   model: z.string().optional(),
+  project: z.string().optional(),
   provider: z.string().optional(),
   tools: z.array(z.string()).optional(),
 });
 
-function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefinition {
+function makeEmitMemberTool(
+  refresh?: RibContext["refreshWorkflow"],
+  projectsSeam?: RibContext["getProjects"],
+): ToolDefinition {
   return {
     name: "squad_emit_member",
     description:
@@ -371,7 +375,17 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
       const { name, role, charter, tools, model: rawModel, provider: rawProvider } = parsed.data;
       try {
         const home = squadDataHome();
-        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_emit_member: ${resolution.error}`, true);
+          return;
+        }
+        const { scopeId } = resolution;
         let providers: ReturnType<NonNullable<RibContext["getProviders"]>> | undefined;
         if (getProviders) {
           try {
@@ -427,16 +441,33 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
   };
 }
 
-function makeListMembersTool(): ToolDefinition {
+const memberListSchema = z.object({ project: z.string().optional() });
+
+function makeListMembersTool(projectsSeam?: RibContext["getProjects"]): ToolDefinition {
   return {
     name: "squad_list_members",
     description:
       "List the squad's members (the roster): each member's slug, name, role, charter, status, and any pinned model/provider and capability tools. Read-only. NOT for creating a member (run the squad-genesis workflow) or retiring one (squad_retire_member).",
-    inputSchema: z.object({}),
-    async execute(_input, ctx) {
+    inputSchema: memberListSchema,
+    async execute(input, ctx) {
+      const parsed = memberListSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_list_members: ${parsed.error.message}`, true);
+        return;
+      }
       try {
         const home = squadDataHome();
-        const scopeId = selectedScopeId(await readSelectedProject(home));
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_list_members: ${resolution.error}`, true);
+          return;
+        }
+        const { scopeId } = resolution;
         const members = await readMembers(scopeMembersDir(home, scopeId));
         emitResult(ctx, JSON.stringify({ members }));
       } catch (e) {
@@ -446,9 +477,12 @@ function makeListMembersTool(): ToolDefinition {
   };
 }
 
-const memberRetireSchema = z.object({ slug: z.string().min(1) });
+const memberRetireSchema = z.object({ project: z.string().optional(), slug: z.string().min(1) });
 
-function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefinition {
+function makeRetireMemberTool(
+  refresh?: RibContext["refreshWorkflow"],
+  projectsSeam?: RibContext["getProjects"],
+): ToolDefinition {
   return {
     name: "squad_retire_member",
     description:
@@ -461,10 +495,21 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
         emitResult(ctx, `squad_retire_member: ${parsed.error.message}`, true);
         return;
       }
-      const home = squadDataHome();
-      const scopeId = selectedScopeId(await readSelectedProject(home));
-      const scopedHome = scopeDataHome(home, scopeId);
+      let scopedHome: string | undefined;
       try {
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_retire_member: ${resolution.error}`, true);
+          return;
+        }
+        const { scopeId } = resolution;
+        scopedHome = scopeDataHome(home, scopeId);
         await retireMember(scopeMembersDir(home, scopeId), parsed.data.slug);
         // Free the cast name so the ensemble can reuse it (fail-soft, never throws).
         await retireCastingName(scopedHome, parsed.data.slug);
@@ -474,7 +519,7 @@ function makeRetireMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefi
         // retireMember throws when the dir is already gone — but a registry entry can
         // linger with no dir (a phantom reservation from a failed scaffold). Free it
         // here too, or that character name is consumed forever.
-        await retireCastingName(scopedHome, parsed.data.slug);
+        if (scopedHome) await retireCastingName(scopedHome, parsed.data.slug);
         emitResult(ctx, `squad_retire_member failed: ${errText(e)}`, true);
       }
     },
@@ -1564,9 +1609,9 @@ const rib: Rib = {
     // Seed the picker's project list so it has options on first render.
     snapshotProjects();
     return [
-      makeEmitMemberTool(ctx.refreshWorkflow),
-      makeListMembersTool(),
-      makeRetireMemberTool(ctx.refreshWorkflow),
+      makeEmitMemberTool(ctx.refreshWorkflow, ctx.getProjects),
+      makeListMembersTool(ctx.getProjects),
+      makeRetireMemberTool(ctx.refreshWorkflow, ctx.getProjects),
       makeRememberTool(),
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
