@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   CanvasBoardView,
@@ -67,6 +67,7 @@ import { validateProviderPin } from "./provider-pins.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   readSelectedProject,
+  listScopeMembersDirs,
   type SelectedProject,
   selectedScopeId,
   writeProjectsSnapshot,
@@ -642,6 +643,22 @@ function summarizeDispatch(outcome: DispatchOutcome): string {
   return lines.join("\n");
 }
 
+async function activeMemberScopeLocations(home: string): Promise<string | undefined> {
+  try {
+    const summaries: string[] = [];
+    for (const membersRoot of await listScopeMembersDirs(home)) {
+      const activeCount = (await readMembers(membersRoot)).filter((m) => m.status === "active").length;
+      if (activeCount === 0) continue;
+      const scope =
+        membersRoot === scopeMembersDir(home, DEFAULT_SCOPE_ID) ? DEFAULT_SCOPE_ID : basename(dirname(membersRoot));
+      summaries.push(`${scope} (${activeCount})`);
+    }
+    return summaries.length > 0 ? summaries.join(", ") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Code mode as a tool: dispatch a confined coding turn to a code-capable member that
 // actually edits the selected project's repo (write rail, bounded to the project
 // root). The RAI floor (contributePolicies) hard-denies merging/force-pushing from
@@ -699,11 +716,16 @@ function makeCodeTool(
         const membersRoot = scopeMembersDir(home, scopeId);
         const member = (await readMembers(membersRoot)).find((m) => m.slug === slug);
         if (!member) {
-          emitResult(ctx, `squad_code: unknown member "${slug}"`, true);
+          const locations = await activeMemberScopeLocations(home);
+          emitResult(
+            ctx,
+            `squad_code: unknown member "${slug}" in scope "${scopeId}"${locations ? `; active members live in: ${locations}` : ""}`,
+            true,
+          );
           return;
         }
         if (member.status !== "active") {
-          emitResult(ctx, `squad_code: member "${slug}" is not active`, true);
+          emitResult(ctx, `squad_code: member "${slug}" is not active in scope "${scopeId}"`, true);
           return;
         }
         if (!memberCanCode(member)) {
@@ -974,7 +996,12 @@ function makeCoordinateTool(
         const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
         const roster = wanted ? active.filter((m) => wanted.has(m.slug)) : active;
         if (roster.length === 0) {
-          emitResult(ctx, "squad_coordinate: no matching active members to coordinate", true);
+          const locations = await activeMemberScopeLocations(home);
+          emitResult(
+            ctx,
+            `squad_coordinate: no matching active members to coordinate in scope "${scopeId}"${locations ? `; active members live in: ${locations}` : ""}`,
+            true,
+          );
           return;
         }
         // Resolve the done-gate verify commands: the operator's explicit list wins; otherwise
