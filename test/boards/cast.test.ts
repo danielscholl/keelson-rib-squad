@@ -127,6 +127,23 @@ describe("buildCastBoard with a proposal", () => {
     expect(row?.detail).toBe("Mission Build.");
   });
 
+  test("a leading provenance line never becomes the excerpt, even without a Mission section", () => {
+    const board = buildCastBoard(
+      proposal({
+        members: [
+          {
+            name: "Keyser",
+            role: "Tech Lead",
+            charter: "# Keyser\n\n_Cast from The Usual Suspects._\n\nGuard the seams.",
+          },
+        ],
+      }),
+    );
+    const row = memberRows(board).find((r) => r.chip?.label === "Keyser");
+    expect(row?.text).toBe("Guard the seams.");
+    expect(row?.detail).toBe("Guard the seams.");
+  });
+
   test("member rows wear the persisted identity tone; the cast-provenance line is dropped", () => {
     const board = buildCastBoard(
       proposal({

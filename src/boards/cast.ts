@@ -1,7 +1,7 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { CastProposalRecord } from "../cast.ts";
 import { identityToneForSlot } from "../types.ts";
-import { charterDisplay, stripMd } from "./coordinator.ts";
+import { charterDisplay } from "./coordinator.ts";
 
 // The verbs the Proposed-squad board offers. Shared with onAction so the action
 // types can't drift from their handlers. cast-propose lives on the roster
@@ -53,7 +53,7 @@ function membersSection(proposal: CastProposalRecord): CanvasBoardView["sections
 
 function rowFor(member: CastProposalRecord["members"][number]) {
   const charter = charterDisplay(member.name, member.charter);
-  const excerpt = charterExcerpt(member.charter);
+  const excerpt = charterExcerpt(member.name, member.charter);
   const tools = member.tools?.length ? member.tools.join(", ") : "text-only";
   const trailing = [member.role.trim() || "Member", tools, member.model]
     .filter(Boolean)
@@ -128,15 +128,15 @@ function idleBoard(): CanvasBoardView {
 // A charter preview for the card. Prefers the first line of the "## Mission"
 // section (higher signal — what the member is FOR) over the charter's first
 // substantive line, which is the one-word "## Role" body. Falls back to the first
-// non-heading line when there's no Mission section.
-function charterExcerpt(charter: string, max = 200): string {
+// non-heading line when there's no Mission section. Candidate lines get the same
+// charterDisplay cleanup as the detail body, so a provenance-only or self-name
+// line never becomes the excerpt.
+function charterExcerpt(name: string, charter: string, max = 200): string {
   const lines = charter.split("\n").map((l) => l.trim());
   const missionIdx = lines.findIndex((l) => /^##\s+mission\b/i.test(l));
-  const line =
-    (missionIdx >= 0
-      ? lines.slice(missionIdx + 1).find((l) => l.length > 0 && !l.startsWith("#"))
-      : undefined) ?? lines.find((l) => l.length > 0 && !l.startsWith("#"));
-  const text = stripMd(line ?? "");
+  const scoped = missionIdx >= 0 ? lines.slice(missionIdx + 1) : [];
+  const candidates = [...scoped, ...lines].filter((l) => l.length > 0 && !l.startsWith("#"));
+  const text = candidates.map((l) => charterDisplay(name, l)).find((t) => t.length > 0) ?? "";
   if (!text) return "";
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }

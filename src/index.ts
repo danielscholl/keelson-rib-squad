@@ -330,7 +330,7 @@ async function themedProposal(
   let notes = proposal.notes;
   for (const [from, to] of renames) {
     const pattern = new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
-    notes = notes.map((n) => n.replace(pattern, to));
+    notes = notes.map((n) => n.replace(pattern, () => to));
   }
   return { ...proposal, members, notes };
 }
