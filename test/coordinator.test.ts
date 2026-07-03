@@ -17,6 +17,7 @@ import {
   type CoordinatorEntry,
   type CoordinatorLedger,
   collectIncompleteCommitPaths,
+  deriveCodeFinding,
   failStuckTasks,
   loadLedger,
   MAX_CHANGE_QUALITY_FAILURES,
@@ -173,6 +174,51 @@ describe("actionLabel", () => {
     expect(actionLabel({ kind: "execute", mode: "dispatch", instruction: "x" })).toBe("working");
     expect(actionLabel({ kind: "end", reason: "done" })).toBe("working");
     expect(actionLabel({ kind: "replan", reason: "stalled" })).toBe("working");
+  });
+});
+
+describe("deriveCodeFinding", () => {
+  test("returns the outcome paragraph after opening narration", () => {
+    const finding = deriveCodeFinding(
+      "On it — I'll find the helper and patch it.\n\nUpdated the coordinator to mint findings from the code turn outcome.",
+    );
+
+    expect(finding).toBe(
+      "Updated the coordinator to mint findings from the code turn outcome.",
+    );
+  });
+
+  test("returns a single outcome-only paragraph verbatim", () => {
+    expect(deriveCodeFinding("Updated the parser and added coverage.")).toBe(
+      "Updated the parser and added coverage.",
+    );
+  });
+
+  test("falls back to touched summary when all text is narration", () => {
+    expect(
+      deriveCodeFinding("On it — I'll make the change.", {
+        files: 2,
+        insertions: 7,
+        deletions: 2,
+      }),
+    ).toBe("touched 2 files (+7 −2)");
+  });
+
+  test("falls back to no reported outcome without touched summary", () => {
+    expect(deriveCodeFinding("On it — I'll make the change.")).toBe("(no reported outcome)");
+  });
+
+  test("falls back to touched summary for empty and no-output text", () => {
+    const touched = { files: 2, insertions: 7, deletions: 2 };
+
+    expect(deriveCodeFinding("", touched)).toBe("touched 2 files (+7 −2)");
+    expect(deriveCodeFinding("(no output)", touched)).toBe("touched 2 files (+7 −2)");
+  });
+
+  test("uses singular file count in touched summary", () => {
+    expect(deriveCodeFinding("Okay.", { files: 1, insertions: 1, deletions: 0 })).toBe(
+      "touched 1 file (+1 −0)",
+    );
   });
 });
 
