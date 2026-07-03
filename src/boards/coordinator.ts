@@ -213,11 +213,12 @@ function sectionsFor(ledger: CoordinatorLedger, ledgerRounds = LEDGER_ROUNDS_SHO
 
 function activeSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
   const sections: Section[] = [pulseSection(ledger)];
+  const findings = visibleFindings(ledger);
   pushIf(sections, roundRailSection(ledger));
   sections.push(goalSection(ledger.task));
   if (ledger.plan.length > 0) sections.push(planSection(ledger.plan));
   if (ledger.inFlight) sections.push(...nowSections(ledger.inFlight));
-  if (ledger.facts.length > 0) sections.push(findingsSection(ledger.facts));
+  if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   if (ledger.failedSteps?.length) sections.push(abandonedSection(ledger.failedSteps));
   if (ledger.teamGaps?.length) sections.push(teamGapsSection(ledger.teamGaps));
@@ -229,17 +230,19 @@ function activeSections(ledger: CoordinatorLedger, ledgerRounds: number): Sectio
 
 function doneSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
   const sections: Section[] = [];
+  const findings = visibleFindings(ledger);
   if (ledger.summary?.trim()) sections.push(standupSection(ledger.summary));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript));
-  if (ledger.facts.length > 0) sections.push(findingsSection(ledger.facts));
+  if (findings.length > 0) sections.push(findingsSection(findings));
   sections.push(goalSection(ledger.task));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
   return sections;
 }
 
 function maxRoundsSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
+  const findings = visibleFindings(ledger);
   const tail = ledger.verification?.passed
     ? "The artifact is independently green; review and accept."
     : "Review where it stalled.";
@@ -249,7 +252,7 @@ function maxRoundsSections(ledger: CoordinatorLedger, ledgerRounds: number): Sec
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript));
-  if (ledger.facts.length > 0) sections.push(findingsSection(ledger.facts));
+  if (findings.length > 0) sections.push(findingsSection(findings));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
   return sections;
 }
@@ -294,6 +297,7 @@ function gaveUpSections(ledger: CoordinatorLedger, ledgerRounds: number): Sectio
 // tones neutral so an early or calm run doesn't shout.
 function pulseSection(ledger: CoordinatorLedger): Section {
   const toned = (n: number, tone: CanvasTone): CanvasTone => (n > 0 ? tone : "neutral");
+  const findingsCount = visibleFindings(ledger).length;
   const tokens = ledger.transcript.reduce(
     (sum, e) => sum + (e.usage ? e.usage.inputTokens + e.usage.outputTokens : 0),
     0,
@@ -302,7 +306,7 @@ function pulseSection(ledger: CoordinatorLedger): Section {
     kind: "stats",
     items: [
       { label: "Round", value: roundStatValue(ledger), tone: roundStatTone(ledger) },
-      { label: "Findings", value: ledger.facts.length, tone: toned(ledger.facts.length, "brand") },
+      { label: "Findings", value: findingsCount, tone: toned(findingsCount, "brand") },
       { label: "Stalls", value: ledger.stallCount, tone: toned(ledger.stallCount, "caution") },
       { label: "Re-plans", value: ledger.resetCount, tone: toned(ledger.resetCount, "caution") },
       ...(tokens > 0
@@ -416,10 +420,20 @@ function findingsSection(facts: readonly string[]): Section {
     title: "Findings",
     items: facts.slice(-MAX_FINDINGS).map((fact) => ({
       glyph: "brand" as CanvasTone,
-      text: stripMd(truncate(fact, STEP_CAP)) || "(no detail)",
-      ...detailWhenTruncated(fact, STEP_CAP),
+      text: stripMd(truncate(normalizeSpeakerPrefixes(fact), STEP_CAP)) || "(no detail)",
+      ...detailWhenTruncated(normalizeSpeakerPrefixes(fact), STEP_CAP),
     })),
   };
+}
+
+function visibleFindings(ledger: CoordinatorLedger): string[] {
+  const speakers = knownSpeakerLabels(ledger.transcript);
+  return ledger.facts.filter((fact) => !isHiddenFinding(fact, speakers));
+}
+
+function isHiddenFinding(fact: string, speakers: ReadonlySet<string>): boolean {
+  const body = stripKnownSpeakerLabels(normalizeSpeakerPrefixes(stripMd(fact)), speakers);
+  return body === "(no synthesis)" || /^I will\b/i.test(body);
 }
 
 function abandonedSection(failedSteps: readonly string[]): Section {
@@ -605,6 +619,7 @@ function ledgerSections(
   roundsShown = LEDGER_ROUNDS_SHOWN,
 ): Section[] {
   if (transcript.length === 0) return [];
+  const speakers = knownSpeakerLabels(transcript);
   const rounds: number[] = [];
   const byRound = new Map<number, CoordinatorEntry[]>();
   for (const e of transcript) {
@@ -623,7 +638,7 @@ function ledgerSections(
     return {
       kind: "rows",
       title: i === 0 ? `Ledger · R${r}${roundCaption(entries)}` : `R${r}${roundCaption(entries)}`,
-      items: entries.map((e) => ledgerRow(e)),
+      items: entries.map((e) => ledgerRow(e, speakers)),
     };
   });
 
@@ -657,15 +672,22 @@ function roundCaption(entries: readonly CoordinatorEntry[]): string {
   return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
 }
 
-function ledgerRow(e: CoordinatorEntry): RowItem {
+function ledgerRow(e: CoordinatorEntry, speakers: ReadonlySet<string>): RowItem {
   const speaker = e.speaker?.trim() || "coordinator";
+  const text = normalizeSpeakerPrefixes(e.text);
   return {
-    glyph: outcomeTone(e),
+    glyph: isQuietLedgerEntry(e, speakers) ? "neutral" : outcomeTone(e),
     chip: { label: speaker, tone: identityTone(e.speaker?.trim() || undefined) },
-    text: stripMd(truncate(firstLine(e.text), LEDGER_ROW_CAP)) || "(no detail)",
+    text: stripMd(truncate(firstLine(text), LEDGER_ROW_CAP)) || "(no detail)",
     trailing: transcriptTrailing(e),
     ...entryDetail(e),
   };
+}
+
+function isQuietLedgerEntry(e: CoordinatorEntry, speakers: ReadonlySet<string>): boolean {
+  if (e.kind !== "dispatch" && e.kind !== "code" && e.kind !== "workflow") return false;
+  const body = stripKnownSpeakerLabels(normalizeSpeakerPrefixes(stripMd(e.text)), speakers);
+  return body === "(no synthesis)" || body.startsWith("(no synthesis) ") || /^I will\b/i.test(body);
 }
 
 // The expandable body behind a ledger row: the instruction the turn ran under, the
@@ -674,7 +696,7 @@ function ledgerRow(e: CoordinatorEntry): RowItem {
 function entryDetail(e: CoordinatorEntry): { detail: string } | Record<string, never> {
   const parts: string[] = [];
   if (e.instruction?.trim()) parts.push(`instruction: ${e.instruction.trim()}`);
-  const body = e.text.trim();
+  const body = normalizeSpeakerPrefixes(e.text).trim();
   if (body) parts.push(body);
   if (e.tools?.length) {
     const lines = e.tools.map(
@@ -686,9 +708,47 @@ function entryDetail(e: CoordinatorEntry): { detail: string } | Record<string, n
   const detail = parts.join("\n\n").trim();
   // A detail identical to (or shorter than) the preview adds a caret with nothing
   // behind it — only rows with more to show get the disclosure.
-  const preview = stripMd(truncate(firstLine(e.text), LEDGER_ROW_CAP));
+  const preview = stripMd(truncate(firstLine(normalizeSpeakerPrefixes(e.text)), LEDGER_ROW_CAP));
   if (!detail || (stripMd(detail) === preview && !e.instruction && !e.tools?.length)) return {};
   return { detail: truncate(detail, DETAIL_CAP) };
+}
+
+function normalizeSpeakerPrefixes(text: string): string {
+  return text.replace(/(^|\n)((?:\[[^\]\n]{1,80}\]\s*)+)/g, (match, lineStart, prefixes) => {
+    const names = [...String(prefixes).matchAll(/\[([^\]\n]{1,80})\]/g)]
+      .map((m) => m[1]?.trim())
+      .filter((name): name is string => !!name);
+    const label = names.at(-1);
+    return label ? `${lineStart}${label}: ` : match;
+  });
+}
+
+// The labels that can legitimately prefix a fact or entry: the run's own transcript
+// speakers plus the producer's wrapper labels. Restricting the strip to these keeps a
+// colon-prefixed finding ("Risk: …", "src/foo.ts: …") from being mistaken for a
+// speaker label and its body hidden as narration.
+function knownSpeakerLabels(transcript: readonly CoordinatorEntry[]): Set<string> {
+  const labels = new Set(["team", "coordinator", "gate", "verify"]);
+  for (const e of transcript) {
+    const speaker = e.speaker?.trim().toLowerCase();
+    if (!speaker) continue;
+    labels.add(speaker);
+    for (const part of speaker.split(",")) {
+      const token = part.trim();
+      if (token) labels.add(token);
+    }
+  }
+  return labels;
+}
+
+function stripKnownSpeakerLabels(text: string, speakers: ReadonlySet<string>): string {
+  let body = text.trim();
+  while (true) {
+    const m = /^([^:\n]{1,80}):\s*/.exec(body);
+    const label = m?.[1]?.trim().toLowerCase();
+    if (!m || !label || !speakers.has(label)) return body;
+    body = body.slice(m[0].length).trimStart();
+  }
 }
 
 function firstLine(text: string): string {
