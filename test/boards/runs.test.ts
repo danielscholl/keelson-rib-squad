@@ -74,6 +74,23 @@ describe("buildRunDetailBoard", () => {
     expect(titles).toContain("Minds");
   });
 
+  test("shows every round of the ledger — the archive drill-down never stubs", () => {
+    const transcript = Array.from({ length: 8 }, (_, r) => ({
+      round: r,
+      kind: "coordinator" as const,
+      text: `round ${r} thinking`,
+    }));
+    const board = buildRunDetailBoard(ledger({ round: 8, transcript }), "r1");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const rows = board.sections
+      .filter((s) => s.kind === "rows")
+      .flatMap((s) => (s.kind === "rows" ? s.items : []));
+    expect(rows.some((r) => r.text.includes("earlier"))).toBe(false);
+    for (let r = 0; r < 8; r++) {
+      expect(rows.some((row) => row.text.includes(`round ${r} thinking`))).toBe(true);
+    }
+  });
+
   test("an unknown run renders a calm not-found board", () => {
     const board = buildRunDetailBoard(undefined, "missing-id");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);

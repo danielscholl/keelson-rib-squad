@@ -118,7 +118,9 @@ export function buildCoordinatorBoard(ledger: CoordinatorLedger | undefined): Ca
 
 // One archived run rendered as its own drill-down board — the same sections the live
 // Run-loop shows for that status, minus the task composer (a history drawer is for
-// reading, not queuing work). Absent ledger renders a calm not-found board.
+// reading, not queuing work) and with every round of the ledger: this view IS the
+// full record the live board's older-rounds stub points at. Absent ledger renders a
+// calm not-found board.
 export function buildRunDetailBoard(
   ledger: CoordinatorLedger | undefined,
   id: string,
@@ -142,7 +144,7 @@ export function buildRunDetailBoard(
     view: "board",
     title: "Run",
     header: { status: statusPill(ledger.status), chip: id },
-    sections: sectionsFor(ledger),
+    sections: sectionsFor(ledger, Number.POSITIVE_INFINITY),
   };
 }
 
@@ -186,19 +188,19 @@ export function taskComposerSection(): Section {
   };
 }
 
-function sectionsFor(ledger: CoordinatorLedger): Section[] {
+function sectionsFor(ledger: CoordinatorLedger, ledgerRounds = LEDGER_ROUNDS_SHOWN): Section[] {
   switch (ledger.status) {
     case "active":
-      return activeSections(ledger);
+      return activeSections(ledger, ledgerRounds);
     case "done":
-      return doneSections(ledger);
+      return doneSections(ledger, ledgerRounds);
     case "max-rounds":
-      return maxRoundsSections(ledger);
+      return maxRoundsSections(ledger, ledgerRounds);
     case "verification-failed":
     case "change-quality-failed":
-      return failedSections(ledger);
+      return failedSections(ledger, ledgerRounds);
     case "gave-up":
-      return gaveUpSections(ledger);
+      return gaveUpSections(ledger, ledgerRounds);
     default:
       return [
         {
@@ -209,7 +211,7 @@ function sectionsFor(ledger: CoordinatorLedger): Section[] {
   }
 }
 
-function activeSections(ledger: CoordinatorLedger): Section[] {
+function activeSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
   const sections: Section[] = [pulseSection(ledger)];
   pushIf(sections, roundRailSection(ledger));
   sections.push(goalSection(ledger.task));
@@ -221,11 +223,11 @@ function activeSections(ledger: CoordinatorLedger): Section[] {
   if (ledger.teamGaps?.length) sections.push(teamGapsSection(ledger.teamGaps));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript));
-  sections.push(...ledgerSections(ledger.transcript));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
   return sections;
 }
 
-function doneSections(ledger: CoordinatorLedger): Section[] {
+function doneSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
   const sections: Section[] = [];
   if (ledger.summary?.trim()) sections.push(standupSection(ledger.summary));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
@@ -233,11 +235,11 @@ function doneSections(ledger: CoordinatorLedger): Section[] {
   pushIf(sections, mindsSection(ledger.transcript));
   if (ledger.facts.length > 0) sections.push(findingsSection(ledger.facts));
   sections.push(goalSection(ledger.task));
-  sections.push(...ledgerSections(ledger.transcript));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
   return sections;
 }
 
-function maxRoundsSections(ledger: CoordinatorLedger): Section[] {
+function maxRoundsSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
   const tail = ledger.verification?.passed
     ? "The artifact is independently green; review and accept."
     : "Review where it stalled.";
@@ -248,11 +250,11 @@ function maxRoundsSections(ledger: CoordinatorLedger): Section[] {
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript));
   if (ledger.facts.length > 0) sections.push(findingsSection(ledger.facts));
-  sections.push(...ledgerSections(ledger.transcript));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
   return sections;
 }
 
-function failedSections(ledger: CoordinatorLedger): Section[] {
+function failedSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
   const sections: Section[] = [];
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   sections.push(
@@ -263,11 +265,11 @@ function failedSections(ledger: CoordinatorLedger): Section[] {
   );
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript));
-  sections.push(...ledgerSections(ledger.transcript));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
   return sections;
 }
 
-function gaveUpSections(ledger: CoordinatorLedger): Section[] {
+function gaveUpSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
   const sections: Section[] = [];
   if (ledger.summary?.trim()) {
     sections.push({
@@ -283,7 +285,7 @@ function gaveUpSections(ledger: CoordinatorLedger): Section[] {
     });
   }
   pushIf(sections, mindsSection(ledger.transcript));
-  sections.push(...ledgerSections(ledger.transcript));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
   return sections;
 }
 
@@ -596,8 +598,12 @@ function verificationSection(v: VerificationRecord): Section {
 // The Ledger: the transcript grouped by round, newest first. The most recent rounds
 // render every entry (expandable to the full stored text + instruction + tool trace);
 // older rounds compress to a one-line stub instead of silently vanishing — the current
-// board's worst honesty gap (r11 hid 17 of its 29 entries).
-function ledgerSections(transcript: readonly CoordinatorEntry[]): Section[] {
+// board's worst honesty gap (r11 hid 17 of its 29 entries). The run-detail board
+// passes Infinity so the archive drill-down really is the full record.
+function ledgerSections(
+  transcript: readonly CoordinatorEntry[],
+  roundsShown = LEDGER_ROUNDS_SHOWN,
+): Section[] {
   if (transcript.length === 0) return [];
   const rounds: number[] = [];
   const byRound = new Map<number, CoordinatorEntry[]>();
@@ -609,8 +615,8 @@ function ledgerSections(transcript: readonly CoordinatorEntry[]): Section[] {
     byRound.get(e.round)?.push(e);
   }
   rounds.sort((a, b) => b - a);
-  const shown = rounds.slice(0, LEDGER_ROUNDS_SHOWN);
-  const older = rounds.slice(LEDGER_ROUNDS_SHOWN);
+  const shown = rounds.slice(0, roundsShown);
+  const older = rounds.slice(roundsShown);
 
   const sections: Section[] = shown.map((r, i) => {
     const entries = byRound.get(r) ?? [];
