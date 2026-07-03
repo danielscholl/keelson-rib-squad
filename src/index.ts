@@ -66,8 +66,8 @@ import { squadPolicies } from "./policies.ts";
 import { validateProviderPin } from "./provider-pins.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
-  readSelectedProject,
   listScopeMembersDirs,
+  readSelectedProject,
   type SelectedProject,
   selectedScopeId,
   writeProjectsSnapshot,
@@ -364,7 +364,7 @@ function makeEmitMemberTool(
   return {
     name: "squad_emit_member",
     description:
-      "Internal write-seam for the squad-genesis workflow: persist an authored member (charter.md + record) under members/<slug>. The workflow's prompt turn authors { name, role, charter, optional model/provider pin, optional capability tools }; this tool only writes, failing closed on a slug collision. To create a member, run the squad-genesis workflow (e.g. /workflow run squad-genesis <brief>) rather than calling this directly.",
+      "Internal write-seam for the squad-genesis workflow: persist an authored member (charter.md + record) under members/<slug>. The workflow's prompt turn authors { name, role, charter, optional model/provider pin, optional capability tools }; this tool only writes, failing closed on a slug collision. `project` (optional id/name) selects the scope like squad_coordinate; with none it uses the selected scope (set via the `select-project` board action, payload `{ scopeId }`, or the SPA ProjectChip). To create a member, run the squad-genesis workflow (e.g. /workflow run squad-genesis <brief>) rather than calling this directly.",
     inputSchema: memberEmitSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -448,7 +448,7 @@ function makeListMembersTool(projectsSeam?: RibContext["getProjects"]): ToolDefi
   return {
     name: "squad_list_members",
     description:
-      "List the squad's members (the roster): each member's slug, name, role, charter, status, and any pinned model/provider and capability tools. Read-only. NOT for creating a member (run the squad-genesis workflow) or retiring one (squad_retire_member).",
+      "List the squad's members (the roster): each member's slug, name, role, charter, status, and any pinned model/provider and capability tools. `project` (optional id/name) selects the scope like squad_coordinate; with none it uses the selected scope (set via the `select-project` board action, payload `{ scopeId }`, or the SPA ProjectChip). Read-only. NOT for creating a member (run the squad-genesis workflow) or retiring one (squad_retire_member).",
     inputSchema: memberListSchema,
     async execute(input, ctx) {
       const parsed = memberListSchema.safeParse(input);
@@ -487,7 +487,7 @@ function makeRetireMemberTool(
   return {
     name: "squad_retire_member",
     description:
-      "Retire a member: permanently remove a member's record and charter.md from the roster. `slug` is the member's identifier (see squad_list_members). Fails closed if no such member exists.",
+      "Retire a member: permanently remove a member's record and charter.md from the roster. `slug` is the member's identifier (see squad_list_members). `project` (optional id/name) selects the scope like squad_coordinate; with none it uses the selected scope (set via the `select-project` board action, payload `{ scopeId }`, or the SPA ProjectChip). Fails closed if no such member exists.",
     inputSchema: memberRetireSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -647,10 +647,14 @@ async function activeMemberScopeLocations(home: string): Promise<string | undefi
   try {
     const summaries: string[] = [];
     for (const membersRoot of await listScopeMembersDirs(home)) {
-      const activeCount = (await readMembers(membersRoot)).filter((m) => m.status === "active").length;
+      const activeCount = (await readMembers(membersRoot)).filter(
+        (m) => m.status === "active",
+      ).length;
       if (activeCount === 0) continue;
       const scope =
-        membersRoot === scopeMembersDir(home, DEFAULT_SCOPE_ID) ? DEFAULT_SCOPE_ID : basename(dirname(membersRoot));
+        membersRoot === scopeMembersDir(home, DEFAULT_SCOPE_ID)
+          ? DEFAULT_SCOPE_ID
+          : basename(dirname(membersRoot));
       summaries.push(`${scope} (${activeCount})`);
     }
     return summaries.length > 0 ? summaries.join(", ") : undefined;

@@ -30,7 +30,12 @@ import {
 import type { DispatchOutcome } from "../src/dispatch.ts";
 import rib from "../src/index.ts";
 import { scaffoldMember } from "../src/member-store.ts";
-import { DEFAULT_SCOPE_ID, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
+import {
+  DEFAULT_SCOPE_ID,
+  scopeDataHome,
+  scopeMembersDir,
+  setSquadDataHome,
+} from "../src/paths.ts";
 import type { Member } from "../src/types.ts";
 
 const NOW = "2026-06-27T00:00:00.000Z";
