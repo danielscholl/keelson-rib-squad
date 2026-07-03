@@ -135,8 +135,10 @@ function charterExcerpt(name: string, charter: string, max = 200): string {
   const lines = charter.split("\n").map((l) => l.trim());
   const missionIdx = lines.findIndex((l) => /^##\s+mission\b/i.test(l));
   const scoped = missionIdx >= 0 ? lines.slice(missionIdx + 1) : [];
-  const candidates = [...scoped, ...lines].filter((l) => l.length > 0 && !l.startsWith("#"));
-  const text = candidates.map((l) => charterDisplay(name, l)).find((t) => t.length > 0) ?? "";
-  if (!text) return "";
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  for (const line of [...scoped, ...lines]) {
+    if (line.length === 0 || line.startsWith("#")) continue;
+    const text = charterDisplay(name, line);
+    if (text) return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  }
+  return "";
 }

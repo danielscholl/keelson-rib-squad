@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.log
 .DS_Store
+# Per-run isolation worktrees from fix-issue runs (each carries its own biome.json).
+.worktrees/
