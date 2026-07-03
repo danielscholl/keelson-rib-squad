@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/danielscholl/keelson-rib-squad/compare/v0.10.1...v0.10.2) (2026-07-03)
+
+
+### Fixed
+
+* **coordinator:** require an apostrophe in narration contractions ([#140](https://github.com/danielscholl/keelson-rib-squad/issues/140)) ([d49c55f](https://github.com/danielscholl/keelson-rib-squad/commit/d49c55f727ce6d85286347b5542b16feea7fe315))
+
 ## [0.10.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.10.0...v0.10.1) (2026-07-03)
 
 
