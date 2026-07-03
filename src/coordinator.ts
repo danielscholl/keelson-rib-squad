@@ -562,6 +562,44 @@ function cap(text: string, n: number): string {
   return text.length > n ? `${text.slice(0, n)}…` : text;
 }
 
+const CODE_FINDING_NARRATION_RE =
+  /^(?:on it|i'?ll\b|i will\b|let me\b|sure\b|okay\b|ok\b|got it\b|first,?\b|now,?\b|next,?\b|alright\b|here'?s the plan|let's\b)/i;
+const SHORT_ACKNOWLEDGMENT_RE =
+  /^(?:on it|sure|okay|ok|got it|alright|will do|sounds good)[.!—-]*$/i;
+
+function touchedFinding(touched?: { files: number; insertions: number; deletions: number }): string {
+  if (!touched) return "(no reported outcome)";
+  return `touched ${touched.files} file${touched.files === 1 ? "" : "s"} (+${touched.insertions} −${touched.deletions})`;
+}
+
+function isCodeNarration(paragraph: string): boolean {
+  return CODE_FINDING_NARRATION_RE.test(paragraph) || SHORT_ACKNOWLEDGMENT_RE.test(paragraph);
+}
+
+export function deriveCodeFinding(
+  text: string,
+  touched?: { files: number; insertions: number; deletions: number },
+): string {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed === "(no output)") return touchedFinding(touched);
+
+  const paragraphs = trimmed
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
+
+  let firstSubstantive = 0;
+  while (
+    firstSubstantive < paragraphs.length &&
+    isCodeNarration(paragraphs[firstSubstantive] ?? "")
+  ) {
+    firstSubstantive += 1;
+  }
+
+  // Findings summarize the outcome, not the opening greeting.
+  return paragraphs.slice(firstSubstantive).at(-1) ?? touchedFinding(touched);
+}
+
 // Tail of a command's output — failures surface at the end, so keep the last N chars.
 function tailCap(text: string, n: number): string {
   const t = text.trimEnd();
