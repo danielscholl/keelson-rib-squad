@@ -1036,6 +1036,53 @@ describe("runCoordinator loop", () => {
       'done\n{"action":"done","summary":"shipped"}',
     ]);
 
+  test("default code arm defers the full matrix only when verify is configured", async () => {
+    const withVerifySeen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const withVerify = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(
+        [
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
+          "edited files",
+          'done\n{"action":"done","summary":"shipped"}',
+        ],
+        withVerifySeen,
+      ),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: fakeExec(0, "all good"),
+      verify: ["bun run test"],
+    });
+    expect(withVerify.status).toBe("done");
+    const withVerifyCodePrompt = withVerifySeen.find((req) => req.cwd === "/repo")?.prompt;
+    expect(withVerifyCodePrompt).toMatch(/do not run.*full.*matrix/i);
+    expect(withVerifyCodePrompt).toMatch(/verify gate owns it/i);
+    expect(withVerifyCodePrompt).toMatch(/commit your work early/i);
+
+    const withoutVerifySeen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const withoutVerify = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(
+        [
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
+          "edited files",
+          'done\n{"action":"done","summary":"shipped"}',
+        ],
+        withoutVerifySeen,
+      ),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      verify: [],
+    });
+    expect(withoutVerify.status).toBe("done");
+    const withoutVerifyCodePrompt = withoutVerifySeen.find((req) => req.cwd === "/repo")?.prompt;
+    expect(withoutVerifyCodePrompt).not.toMatch(/full check\/test matrix/i);
+    expect(withoutVerifyCodePrompt).not.toMatch(/verify gate owns it/i);
+    expect(withoutVerifyCodePrompt).not.toMatch(/commit your work early/i);
+  });
+
   test("verification gate: a configured check must pass before done (green → done)", async () => {
     const res = await runCoordinator({
       ...base(),
