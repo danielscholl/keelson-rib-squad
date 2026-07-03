@@ -81,6 +81,33 @@ describe("runCodeTurn", () => {
     expect(captured?.prompt).toMatch(/do not .*push|merge/i);
   });
 
+  test("adds review-gate verify guidance when full verification is deferred", async () => {
+    await runCodeTurn({
+      runAgentTurn: capturingRun(),
+      membersRoot: home,
+      member: member({ slug: "atlas", name: "Atlas", tools: ["code"] }),
+      project: { name: "keelson", rootPath: "/repo/keelson" },
+      task: "add a --verbose flag",
+      deferFullVerify: true,
+    });
+    expect(captured?.prompt).toMatch(/do not run.*full.*matrix/i);
+    expect(captured?.prompt).toMatch(/verify gate owns it|review gate/i);
+    expect(captured?.prompt).toMatch(/commit your work early/i);
+  });
+
+  test("omits review-gate verify guidance by default", async () => {
+    await runCodeTurn({
+      runAgentTurn: capturingRun(),
+      membersRoot: home,
+      member: member({ slug: "atlas", name: "Atlas", tools: ["code"] }),
+      project: { name: "keelson", rootPath: "/repo/keelson" },
+      task: "add a --verbose flag",
+    });
+    expect(captured?.prompt).not.toMatch(/full check\/test matrix/i);
+    expect(captured?.prompt).not.toMatch(/verify gate owns it/i);
+    expect(captured?.prompt).not.toMatch(/commit your work early/i);
+  });
+
   test("pins the member's provider/model when both are set", async () => {
     await runCodeTurn({
       runAgentTurn: capturingRun(),

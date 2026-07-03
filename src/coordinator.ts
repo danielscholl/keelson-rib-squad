@@ -1072,6 +1072,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             member,
             project: { name: project.name, rootPath: project.rootPath },
             task: withTeamMemory(instruction, recalled),
+            deferFullVerify: verify.length > 0,
             ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
             ...(onTool ? { onTool } : {}),
           });
