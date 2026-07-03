@@ -411,6 +411,34 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.facts.some((f) => f.includes("built it"))).toBe(true);
   });
 
+  test("folds member turn failures when every dispatch reply is unusable", async () => {
+    const dispatch = async (_members: Member[], instruction: string): Promise<DispatchOutcome> => ({
+      task: instruction,
+      perMember: [
+        {
+          slug: "atlas",
+          name: "atlas",
+          status: "error",
+          text: "",
+          error: "provider exploded",
+        },
+      ],
+      notes: [],
+    });
+
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
+        'done\n{"action":"done","summary":"shipped"}',
+      ]),
+      dispatch,
+    });
+    const entry = res.ledger.transcript.find((e) => e.kind === "dispatch");
+    expect(entry?.text).toContain("turn failed");
+    expect(entry?.text).toContain("provider exploded");
+  });
+
   test("marks the turn in flight before the execute arm and clears it on the final ledger", async () => {
     // The marker is persisted just BEFORE the execute arm runs, so the injected dispatch seam
     // (awaited by the loop) can read the saved ledger and observe the in-flight state.

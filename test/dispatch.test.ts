@@ -204,6 +204,23 @@ describe("dispatchFanout", () => {
     expect(bySlug.c?.status).toBe("ok");
   });
 
+  test("single-member wave with no usable reply records a failure note instead of synthesis skip", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const runAgentTurn = (_req: RibAgentTurnRequest): RibAgentTurn =>
+      fakeTurn(Promise.resolve({ status: "error", text: "", error: "member blew up" }));
+
+    const outcome = await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "T",
+    });
+
+    expect(outcome.perMember[0]?.status).toBe("error");
+    expect(outcome.notes).toContain("no usable member reply — 1 member turn(s) failed");
+    expect(outcome.notes).not.toContain("synthesis skipped (disabled)");
+  });
+
   test("synthesis prompt carries every ok member's text", async () => {
     const members = await Promise.all([seed("a", "Alpha"), seed("b", "Beta"), seed("c", "Gamma")]);
     const task = "Plan the launch";
