@@ -1,11 +1,46 @@
 // The Squad domain model. Rib-internal types — only canvas boards cross the wire,
 // so these stay plain TS (no Zod). None exist in @keelson/shared.
 
+import type { CanvasTone } from "@keelson/shared";
+
 export type MemberSlug = string;
 
 export type MemberStatus = "active" | "inactive";
 
 export const IDENTITY_SLOT_COUNT = 5;
+
+// The host's reserved identity tones, in slot order. A member keeps one hue for
+// life (assigned at cast, persisted on the record); anything without a valid
+// slot folds to neutral + name — never a hash, never a status hue.
+export const IDENTITY_SLOT_TONES: readonly CanvasTone[] = [
+  "id-blue",
+  "id-amber",
+  "id-teal",
+  "id-rose",
+  "id-olive",
+];
+
+export function identityToneForSlot(slot: number | undefined): CanvasTone {
+  return typeof slot === "number" &&
+    Number.isInteger(slot) &&
+    slot >= 0 &&
+    slot < IDENTITY_SLOT_COUNT
+    ? IDENTITY_SLOT_TONES[slot]!
+    : "neutral";
+}
+
+// Speaker-label → identity tone for the run boards, keyed by slug and by
+// lowercased display name (ledger entries carry either).
+export function identityTonesByMember(members: readonly Member[]): Map<string, CanvasTone> {
+  const map = new Map<string, CanvasTone>();
+  for (const m of members) {
+    const tone = identityToneForSlot(m.identitySlot);
+    map.set(m.slug.toLowerCase(), tone);
+    const name = m.name.trim().toLowerCase();
+    if (name) map.set(name, tone);
+  }
+  return map;
+}
 
 export function identitySlotForIndex(index: number): number {
   const slot = Math.trunc(index);

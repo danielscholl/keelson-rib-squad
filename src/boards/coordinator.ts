@@ -33,18 +33,15 @@ const LEDGER_ROUNDS_SHOWN = 3;
 const MAX_RAIL_ROUNDS = 16;
 const NOW_TRACE_SHOWN = 3;
 
-// Identity hues draw only from non-status tones: a member must never hash into
-// caution/ok/error and masquerade as a warning or a pass (status stays reserved
-// for outcomes). Coordinator keeps brand.
-const IDENTITY_TONES: readonly CanvasTone[] = ["accent", "info", "neutral", "brand"];
+// Speaker label → the member's persisted identity tone (id-blue…id-olive, from
+// the record's identitySlot). Coordinator keeps brand; a speaker with no living
+// member record (retired, multi-speaker labels, pre-slot ledgers) folds to
+// neutral + name — never a hash, never a status hue.
+export type IdentityTones = ReadonlyMap<string, CanvasTone>;
 
-export function identityTone(speaker: string | undefined): CanvasTone {
+export function identityTone(speaker: string | undefined, tones?: IdentityTones): CanvasTone {
   if (!speaker || speaker === "coordinator") return "brand";
-  let hash = 0;
-  for (let i = 0; i < speaker.length; i++) {
-    hash = (hash * 31 + speaker.charCodeAt(i)) | 0;
-  }
-  return IDENTITY_TONES[Math.abs(hash) % IDENTITY_TONES.length] ?? "brand";
+  return tones?.get(speaker.trim().toLowerCase()) ?? "neutral";
 }
 
 export function outcomeTone(e: CoordinatorEntry): CanvasTone {
@@ -84,16 +81,31 @@ export function transcriptTrailing(e: CoordinatorEntry): string {
 }
 
 // Markdown control characters leak into one-line previews as noise (##, **, `code`);
-// strip them for row text. Deliberately conservative: only paired emphasis markers
-// (** __), backticks, and heading hashes go — a single * or _ stays, so identifiers
-// like foo_bar and glob args like --filter '*' survive. Detail bodies keep raw text.
+// strip them for row text. Deliberately conservative: paired emphasis markers
+// (** __), boundary-delimited _phrase_ spans, backticks, and heading hashes go —
+// a bare _ inside a word stays, so identifiers like foo_bar and glob args like
+// --filter '*' survive. Detail bodies keep raw text.
 export function stripMd(text: string): string {
   return text
     .replace(/```[a-zA-Z]*\n?/g, "")
     .replace(/\*\*|__|`/g, "")
+    .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,;:!?])/gm, "$1$2")
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// A charter body ready for a board: markdown stripped, the member's own H1 name
+// dropped from the head (a card never needs to re-introduce its own member), and
+// the cast-provenance sentence removed — the board's cast field already says it.
+export function charterDisplay(name: string, charter: string): string {
+  let text = stripMd(charter);
+  const trimmedName = name.trim();
+  if (trimmedName) {
+    const escaped = trimmedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`^${escaped}\\b[\\s.:—–-]*`, "i"), "");
+  }
+  return text.replace(/^Cast from [^.]{1,80}\.\s*/i, "");
 }
 
 function formatTokens(n: number): string {
@@ -102,11 +114,14 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-export function buildCoordinatorBoard(ledger: CoordinatorLedger | undefined): CanvasBoardView {
+export function buildCoordinatorBoard(
+  ledger: CoordinatorLedger | undefined,
+  tones?: IdentityTones,
+): CanvasBoardView {
   if (!ledger) return idleBoard();
   // Head every non-active board with the task composer so assigning work is one
   // field away; an ACTIVE run omits it (you're watching, not queuing another).
-  const base = sectionsFor(ledger);
+  const base = sectionsFor(ledger, undefined, tones);
   const sections = ledger.status === "active" ? base : [taskComposerSection(), ...base];
   return {
     view: "board",
@@ -124,6 +139,7 @@ export function buildCoordinatorBoard(ledger: CoordinatorLedger | undefined): Ca
 export function buildRunDetailBoard(
   ledger: CoordinatorLedger | undefined,
   id: string,
+  tones?: IdentityTones,
 ): CanvasBoardView {
   if (!ledger) {
     return {
@@ -144,7 +160,7 @@ export function buildRunDetailBoard(
     view: "board",
     title: "Run",
     header: { status: statusPill(ledger.status), chip: id },
-    sections: sectionsFor(ledger, Number.POSITIVE_INFINITY),
+    sections: sectionsFor(ledger, Number.POSITIVE_INFINITY, tones),
   };
 }
 
@@ -188,19 +204,23 @@ export function taskComposerSection(): Section {
   };
 }
 
-function sectionsFor(ledger: CoordinatorLedger, ledgerRounds = LEDGER_ROUNDS_SHOWN): Section[] {
+function sectionsFor(
+  ledger: CoordinatorLedger,
+  ledgerRounds = LEDGER_ROUNDS_SHOWN,
+  tones?: IdentityTones,
+): Section[] {
   switch (ledger.status) {
     case "active":
-      return activeSections(ledger, ledgerRounds);
+      return activeSections(ledger, ledgerRounds, tones);
     case "done":
-      return doneSections(ledger, ledgerRounds);
+      return doneSections(ledger, ledgerRounds, tones);
     case "max-rounds":
-      return maxRoundsSections(ledger, ledgerRounds);
+      return maxRoundsSections(ledger, ledgerRounds, tones);
     case "verification-failed":
     case "change-quality-failed":
-      return failedSections(ledger, ledgerRounds);
+      return failedSections(ledger, ledgerRounds, tones);
     case "gave-up":
-      return gaveUpSections(ledger, ledgerRounds);
+      return gaveUpSections(ledger, ledgerRounds, tones);
     default:
       return [
         {
@@ -211,37 +231,49 @@ function sectionsFor(ledger: CoordinatorLedger, ledgerRounds = LEDGER_ROUNDS_SHO
   }
 }
 
-function activeSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
+function activeSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
   const sections: Section[] = [pulseSection(ledger)];
   const findings = visibleFindings(ledger);
-  pushIf(sections, roundRailSection(ledger));
+  pushIf(sections, roundRailSection(ledger, tones));
   sections.push(goalSection(ledger.task));
   if (ledger.plan.length > 0) sections.push(planSection(ledger.plan));
-  if (ledger.inFlight) sections.push(...nowSections(ledger.inFlight));
+  if (ledger.inFlight) sections.push(...nowSections(ledger.inFlight, tones));
   if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   if (ledger.failedSteps?.length) sections.push(abandonedSection(ledger.failedSteps));
   if (ledger.teamGaps?.length) sections.push(teamGapsSection(ledger.teamGaps));
   pushIf(sections, gateHistorySection(ledger.transcript));
-  pushIf(sections, mindsSection(ledger.transcript));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
 
-function doneSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
+function doneSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
   const sections: Section[] = [];
   const findings = visibleFindings(ledger);
   if (ledger.summary?.trim()) sections.push(standupSection(ledger.summary));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
-  pushIf(sections, mindsSection(ledger.transcript));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
   if (findings.length > 0) sections.push(findingsSection(findings));
   sections.push(goalSection(ledger.task));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
 
-function maxRoundsSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
+function maxRoundsSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
   const findings = visibleFindings(ledger);
   const tail = ledger.verification?.passed
     ? "The artifact is independently green; review and accept."
@@ -251,13 +283,17 @@ function maxRoundsSections(ledger: CoordinatorLedger, ledgerRounds: number): Sec
   ];
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
-  pushIf(sections, mindsSection(ledger.transcript));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
   if (findings.length > 0) sections.push(findingsSection(findings));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
 
-function failedSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
+function failedSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
   const sections: Section[] = [];
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   sections.push(
@@ -267,12 +303,16 @@ function failedSections(ledger: CoordinatorLedger, ledgerRounds: number): Sectio
     ),
   );
   pushIf(sections, gateHistorySection(ledger.transcript));
-  pushIf(sections, mindsSection(ledger.transcript));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
 
-function gaveUpSections(ledger: CoordinatorLedger, ledgerRounds: number): Section[] {
+function gaveUpSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
   const sections: Section[] = [];
   if (ledger.summary?.trim()) {
     sections.push({
@@ -287,8 +327,8 @@ function gaveUpSections(ledger: CoordinatorLedger, ledgerRounds: number): Sectio
       ],
     });
   }
-  pushIf(sections, mindsSection(ledger.transcript));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
 
@@ -333,7 +373,7 @@ function roundStatTone(ledger: CoordinatorLedger): CanvasTone {
 // dominant event and toned by outcome — a red gate stands out, the coding grind reads
 // as a run of accent cells, the in-flight round marks itself. Absent until the
 // transcript has at least one entry.
-function roundRailSection(ledger: CoordinatorLedger): Section | undefined {
+function roundRailSection(ledger: CoordinatorLedger, tones?: IdentityTones): Section | undefined {
   if (ledger.transcript.length === 0 && !ledger.inFlight) return undefined;
   const byRound = new Map<number, CoordinatorEntry[]>();
   for (const e of ledger.transcript) {
@@ -351,22 +391,35 @@ function roundRailSection(ledger: CoordinatorLedger): Section | undefined {
       continue;
     }
     if (entries.length === 0) continue;
-    cells.push({ label: `R${r}`, badge: roundBadge(entries) });
+    cells.push({ label: `R${r}`, badge: roundBadge(entries, tones) });
   }
   if (cells.length === 0) return undefined;
   return { kind: "grid", title: "Rounds", cells };
 }
 
-function roundBadge(entries: readonly CoordinatorEntry[]): { text: string; tone?: CanvasTone } {
+function roundBadge(
+  entries: readonly CoordinatorEntry[],
+  tones?: IdentityTones,
+): { text: string; tone?: CanvasTone } {
   const gateRed = entries.some((e) => e.kind === "verify" && outcomeTone(e) === "error");
   if (gateRed) return { text: "gate ✕", tone: "error" };
   if (entries.some((e) => e.kind === "replan")) return { text: "re-plan", tone: "caution" };
+  // A member's rail cell wears that member's identity hue — who acted each
+  // round, at a glance; red stays reserved for the gate above.
   const code = entries.find((e) => e.kind === "code");
-  if (code) return { text: code.speaker ? `${code.speaker} ⌥` : "code", tone: "accent" };
+  if (code) {
+    return code.speaker
+      ? { text: `${code.speaker} ⌥`, tone: identityTone(code.speaker, tones) }
+      : { text: "code", tone: "accent" };
+  }
   const verified = entries.some((e) => e.kind === "verify" && outcomeTone(e) === "ok");
   if (verified) return { text: "verified ✓", tone: "ok" };
   const dispatch = entries.find((e) => e.kind === "dispatch" || e.kind === "workflow");
-  if (dispatch) return { text: dispatch.speaker ?? "team", tone: "info" };
+  if (dispatch) {
+    return dispatch.speaker
+      ? { text: dispatch.speaker, tone: identityTone(dispatch.speaker, tones) }
+      : { text: "team", tone: "info" };
+  }
   return { text: "plan", tone: "neutral" };
 }
 
@@ -464,7 +517,7 @@ function teamGapsSection(teamGaps: readonly string[]): Section {
 // "What's happening now": the one turn currently executing — its card, then (when the
 // live relay has streamed any) the tail of its tool trace, so the operator watches the
 // mind work instead of a frozen instruction. Active layout is the only caller.
-function nowSections(inFlight: InFlightTurn): Section[] {
+function nowSections(inFlight: InFlightTurn, tones?: IdentityTones): Section[] {
   const sections: Section[] = [
     {
       kind: "cards",
@@ -472,7 +525,7 @@ function nowSections(inFlight: InFlightTurn): Section[] {
       items: [
         {
           title: inFlight.speaker ?? "coordinator",
-          dot: identityTone(inFlight.speaker),
+          dot: identityTone(inFlight.speaker, tones),
           pill: { label: inFlight.action, tone: "accent" },
           fields: [
             { label: "round", value: `R${inFlight.round}` },
@@ -533,7 +586,10 @@ function gateHistorySection(transcript: readonly CoordinatorEntry[]): Section | 
 // One lane per mind: who worked, on what provider, how many turns, what it cost, and
 // its latest act — the "Worked by" list grown into the identity panel the operator
 // actually asks questions of. Coordinator/gate entries stay out (they're the harness).
-function mindsSection(transcript: readonly CoordinatorEntry[]): Section | undefined {
+function mindsSection(
+  transcript: readonly CoordinatorEntry[],
+  tones?: IdentityTones,
+): Section | undefined {
   const bySpeaker = new Map<
     string,
     { turns: number; tokens: number; providers: Set<string>; last: CoordinatorEntry }
@@ -560,7 +616,7 @@ function mindsSection(transcript: readonly CoordinatorEntry[]): Section | undefi
     title: "Minds",
     items: [...bySpeaker.entries()].map(([speaker, agg]) => ({
       title: speaker,
-      dot: identityTone(speaker),
+      dot: identityTone(speaker, tones),
       ...(agg.providers.size > 0 ? { pill: { label: [...agg.providers].join("+") } } : {}),
       fields: [
         { label: "turns", value: agg.turns },
@@ -620,6 +676,7 @@ function verificationSection(v: VerificationRecord): Section {
 function ledgerSections(
   transcript: readonly CoordinatorEntry[],
   roundsShown = LEDGER_ROUNDS_SHOWN,
+  tones?: IdentityTones,
 ): Section[] {
   if (transcript.length === 0) return [];
   const speakers = knownSpeakerLabels(transcript);
@@ -641,7 +698,7 @@ function ledgerSections(
     return {
       kind: "rows",
       title: i === 0 ? `Ledger · R${r}${roundCaption(entries)}` : `R${r}${roundCaption(entries)}`,
-      items: entries.map((e) => ledgerRow(e, speakers)),
+      items: entries.map((e) => ledgerRow(e, speakers, tones)),
     };
   });
 
@@ -675,12 +732,16 @@ function roundCaption(entries: readonly CoordinatorEntry[]): string {
   return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
 }
 
-function ledgerRow(e: CoordinatorEntry, speakers: ReadonlySet<string>): RowItem {
+function ledgerRow(
+  e: CoordinatorEntry,
+  speakers: ReadonlySet<string>,
+  tones?: IdentityTones,
+): RowItem {
   const speaker = e.speaker?.trim() || "coordinator";
   const text = normalizeSpeakerPrefixes(e.text);
   return {
     glyph: isQuietLedgerEntry(e, speakers) ? "neutral" : outcomeTone(e),
-    chip: { label: speaker, tone: identityTone(e.speaker?.trim() || undefined) },
+    chip: { label: speaker, tone: identityTone(e.speaker?.trim() || undefined, tones) },
     text: stripMd(truncate(firstLine(text), LEDGER_ROW_CAP)) || "(no detail)",
     trailing: transcriptTrailing(e),
     ...entryDetail(e),

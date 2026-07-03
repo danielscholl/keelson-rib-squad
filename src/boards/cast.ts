@@ -1,6 +1,7 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { CastProposalRecord } from "../cast.ts";
-import { stripMd } from "./coordinator.ts";
+import { identityToneForSlot } from "../types.ts";
+import { charterDisplay, stripMd } from "./coordinator.ts";
 
 // The verbs the Proposed-squad board offers. Shared with onAction so the action
 // types can't drift from their handlers. cast-propose lives on the roster
@@ -51,15 +52,18 @@ function membersSection(proposal: CastProposalRecord): CanvasBoardView["sections
 }
 
 function rowFor(member: CastProposalRecord["members"][number]) {
-  const charter = stripMd(member.charter);
+  const charter = charterDisplay(member.name, member.charter);
   const excerpt = charterExcerpt(member.charter);
   const tools = member.tools?.length ? member.tools.join(", ") : "text-only";
   const trailing = [member.role.trim() || "Member", tools, member.model]
     .filter(Boolean)
     .join(" · ");
+  // The identity assigned at propose time is the identity the member keeps on
+  // the roster and in the run boards — the seat the operator approves.
+  const tone = identityToneForSlot(member.identitySlot);
   return {
-    glyph: "brand" as CanvasTone,
-    chip: { label: member.name.trim() || "(unnamed)", tone: "brand" as CanvasTone },
+    glyph: tone,
+    chip: { label: member.name.trim() || "(unnamed)", tone },
     text: excerpt || "(no charter)",
     trailing,
     ...(charter ? { detail: charter } : {}),

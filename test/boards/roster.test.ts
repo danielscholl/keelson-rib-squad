@@ -124,18 +124,15 @@ describe("buildRosterBoard populated", () => {
     expect(two.header?.status?.label).toBe("2 members");
   });
 
-  test("each card dot is a canvas tone; dotFor is deterministic and can differ", () => {
-    const board = buildRosterBoard([member({ slug: "a" }), member({ slug: "tester", name: "T" })]);
-    for (const card of cards(board)) {
-      expect(card.dot).toBeDefined();
-      expect(TONES).toContain(card.dot as CanvasTone);
-    }
-    const again = buildRosterBoard([member({ slug: "a" })]);
-    expect(cards(again)[0]?.dot).toBe(cards(board)[0]?.dot);
-    const spread = buildRosterBoard(
-      ["a", "b", "c", "d", "e", "f", "g", "h"].map((slug) => member({ slug })),
-    );
-    expect(new Set(cards(spread).map((c) => c.dot)).size).toBeGreaterThan(1);
+  test("each card dot is the member's persisted identity tone; no slot folds to neutral", () => {
+    const board = buildRosterBoard([
+      member({ slug: "a", identitySlot: 0 }),
+      member({ slug: "b", name: "Bo", identitySlot: 1 }),
+      member({ slug: "c", name: "Cy", identitySlot: 4 }),
+      member({ slug: "d", name: "Dee" }),
+    ]);
+    expect(cards(board).map((c) => c.dot)).toEqual(["id-blue", "id-amber", "id-olive", "neutral"]);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 
   test("exactly one pill per card carrying the role, with a 'Member' fallback", () => {
