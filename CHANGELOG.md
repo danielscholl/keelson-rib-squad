@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.9.0...v0.10.0) (2026-07-03)
+
+
+### Added
+
+* **boards:** render persisted identity slots as reserved id tones ([#132](https://github.com/danielscholl/keelson-rib-squad/issues/132)) ([bbea68c](https://github.com/danielscholl/keelson-rib-squad/commit/bbea68cff4d0307cf03dcf6689d7e44b8ed7618b))
+
 ## [0.9.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.8.0...v0.9.0) (2026-07-03)
 
 
