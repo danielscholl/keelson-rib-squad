@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { assertSafeSlug } from "./genesis.ts";
-import type { Member, MemberStatus } from "./types.ts";
+import { type Member, type MemberStatus, normalizeIdentitySlot } from "./types.ts";
 
 // File-based member persistence. One directory per member under the data home's
 // members/ root; `member.json` is the structured record the roster reads and
@@ -26,6 +26,7 @@ export interface MemberRecord {
   personality?: string;
   backstory?: string;
   originalName?: string;
+  identitySlot?: number;
   createdAt: string;
 }
 
@@ -148,6 +149,7 @@ export async function listMemberRecords(
         ...(typeof rec.originalName === "string" && rec.originalName
           ? { originalName: rec.originalName }
           : {}),
+        identitySlot: normalizeIdentitySlot(rec.identitySlot),
       });
     } catch {
       // skip non-member dirs / unreadable records
@@ -175,6 +177,7 @@ export async function readMembers(membersRoot: string): Promise<Member[]> {
     ...(r.personality ? { personality: r.personality } : {}),
     ...(r.backstory ? { backstory: r.backstory } : {}),
     ...(r.originalName ? { originalName: r.originalName } : {}),
+    ...(typeof r.identitySlot === "number" ? { identitySlot: r.identitySlot } : {}),
   }));
 }
 

@@ -5,6 +5,23 @@ export type MemberSlug = string;
 
 export type MemberStatus = "active" | "inactive";
 
+export const IDENTITY_SLOT_COUNT = 5;
+
+export function identitySlotForIndex(index: number): number {
+  const slot = Math.trunc(index);
+  if (!Number.isFinite(slot)) return 0;
+  return Math.min(Math.max(0, slot), IDENTITY_SLOT_COUNT - 1);
+}
+
+export function normalizeIdentitySlot(value: unknown, fallbackIndex = 0): number {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value < IDENTITY_SLOT_COUNT
+    ? value
+    : identitySlotForIndex(fallbackIndex);
+}
+
 export interface Member {
   slug: MemberSlug;
   name: string;
@@ -31,4 +48,5 @@ export interface Member {
   personality?: string;
   backstory?: string;
   originalName?: string;
+  identitySlot?: number;
 }

@@ -156,6 +156,22 @@ describe("readMembers", () => {
     expect(members.find((m) => m.slug === "nora")?.role).toBe("");
   });
 
+  test("identity slots read back within the 0-4 domain with default 0", async () => {
+    await scaffoldMember(root, record({ identitySlot: 3 }));
+    await Bun.write(
+      join(root, "bad-slot", "member.json"),
+      JSON.stringify({ name: "Bad", charter: "# Bad", identitySlot: 99 }),
+    );
+    await Bun.write(
+      join(root, "missing-slot", "member.json"),
+      JSON.stringify({ name: "Miss", charter: "# Miss" }),
+    );
+    const members = await readMembers(root);
+    expect(members.find((m) => m.slug === "scout")?.identitySlot).toBe(3);
+    expect(members.find((m) => m.slug === "bad-slot")?.identitySlot).toBe(0);
+    expect(members.find((m) => m.slug === "missing-slot")?.identitySlot).toBe(0);
+  });
+
   test("the read-back members build a valid roster board", async () => {
     await scaffoldMember(root, record());
     const board = buildRosterBoard(await readMembers(root));
