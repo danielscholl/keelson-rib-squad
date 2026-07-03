@@ -1844,7 +1844,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       ledger = {
         ...ledger,
         facts: foldFacts(ledger.facts, [
-          cap(`[${decided.step.speaker ?? "member"} edited code] ${text}`, FACT_CAP),
+          cap(
+            `[${decided.step.speaker ?? "member"} edited code] ${deriveCodeFinding(text, touched)}`,
+            FACT_CAP,
+          ),
         ]),
         transcript: append(ledger.transcript, {
           round: ledger.round,
