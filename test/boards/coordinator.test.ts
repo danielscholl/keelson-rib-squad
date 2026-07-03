@@ -197,6 +197,79 @@ describe("buildCoordinatorBoard active layout", () => {
     ).toBe(true);
   });
 
+  test("keeps no-op and member preamble turns out of Findings while leaving quiet ledger rows", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        facts: [
+          "[team] [atlas] uses bun",
+          "[team] [atlas] I will inspect the target",
+          "[team] [atlas] (no synthesis)",
+        ],
+        transcript: [
+          entry({
+            round: 0,
+            kind: "dispatch",
+            speaker: "atlas",
+            text: "[team] [atlas] I will inspect the target",
+          }),
+          entry({
+            round: 1,
+            kind: "dispatch",
+            speaker: "team",
+            text: "[team] [atlas] (no synthesis)",
+          }),
+        ],
+      }),
+    );
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(statsItems(board).find((i) => i.label === "Findings")?.value).toBe(1);
+    const findings = rowsTitled(board, "Findings");
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.text).toBe("atlas: uses bun");
+
+    const ledgerRows = board.sections
+      .filter(
+        (s) => s.kind === "rows" && (s.title?.startsWith("Ledger") || /^R\d/.test(s.title ?? "")),
+      )
+      .flatMap((s) => (s.kind === "rows" ? (s.items as RowItem[]) : []));
+    expect(ledgerRows.some((row) => row.text === "atlas: I will inspect the target")).toBe(true);
+    expect(ledgerRows.some((row) => row.text === "atlas: (no synthesis)")).toBe(true);
+    expect(ledgerRows.some((row) => row.text.includes("[atlas]"))).toBe(false);
+    expect(ledgerRows.filter((row) => row.glyph === "neutral")).toHaveLength(2);
+  });
+
+  test("normalizes bracketed speaker prefixes in visible finding rows", () => {
+    const board = buildCoordinatorBoard(ledger({ facts: ["[team] [atlas] found the seam"] }));
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(rowsTitled(board, "Findings")[0]?.text).toBe("atlas: found the seam");
+  });
+
+  test("keeps colon-prefixed findings visible — only known speaker labels strip", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        facts: [
+          "[team] Risk: I will fail on empty input",
+          "[team] src/foo.ts: I will throw when config is missing",
+          "[team] [atlas] I will inspect the target",
+        ],
+        transcript: [
+          entry({ round: 0, kind: "dispatch", speaker: "atlas", text: "grounded the seams" }),
+        ],
+      }),
+    );
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const findings = rowsTitled(board, "Findings");
+    expect(findings.some((f) => f.text.includes("Risk: I will fail on empty input"))).toBe(true);
+    expect(
+      findings.some((f) => f.text.includes("src/foo.ts: I will throw when config is missing")),
+    ).toBe(true);
+    expect(findings.some((f) => f.text.includes("I will inspect the target"))).toBe(false);
+    expect(statsItems(board).find((i) => i.label === "Findings")?.value).toBe(2);
+  });
+
   test("renders team-gap recommendations when the squad flags a missing specialist", () => {
     const board = buildCoordinatorBoard(ledger({ teamGaps: ["a security reviewer"] }));
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
