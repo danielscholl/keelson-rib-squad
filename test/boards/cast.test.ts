@@ -34,9 +34,9 @@ const proposal = (over: Partial<CastProposalRecord> = {}): CastProposalRecord =>
 function actionItems(board: ReturnType<typeof buildCastBoard>) {
   return board.sections.flatMap((s) => (s.kind === "actions" ? s.items : []));
 }
-function cards(board: ReturnType<typeof buildCastBoard>) {
-  const section = board.sections.find((s) => s.kind === "cards");
-  if (section?.kind !== "cards") throw new Error("no cards section");
+function memberRows(board: ReturnType<typeof buildCastBoard>) {
+  const section = board.sections.find((s) => s.kind === "rows" && s.title === "Members");
+  if (section?.kind !== "rows") throw new Error("no members rows section");
   return section.items;
 }
 
@@ -60,15 +60,15 @@ describe("buildCastBoard with a proposal", () => {
     expect(board.header?.chip).toBe("keelson");
   });
 
-  test("one card per member carrying role + capability tags (text-only fallback)", () => {
-    const items = cards(buildCastBoard(proposal()));
+  test("one row per member carrying final name, role + capability tags (text-only fallback)", () => {
+    const items = memberRows(buildCastBoard(proposal()));
     expect(items).toHaveLength(2);
-    const atlas = items.find((c) => c.title === "Atlas");
-    expect(atlas?.pill?.label).toBe("Backend Engineer");
-    expect(atlas?.fields?.find((f) => f.label === "tools")?.value).toBe("code, read");
-    const vera = items.find((c) => c.title === "Vera");
+    const atlas = items.find((r) => r.chip?.label === "Atlas");
+    expect(atlas?.trailing).toContain("Backend Engineer");
+    expect(atlas?.trailing).toContain("code, read");
+    const vera = items.find((r) => r.chip?.label === "Vera");
     // A member with no capability tags reads as text-only, never blank.
-    expect(vera?.fields?.find((f) => f.label === "tools")?.value).toBe("text-only");
+    expect(vera?.trailing).toContain("text-only");
   });
 
   test("always offers Approve & scaffold and Discard", () => {
@@ -87,7 +87,7 @@ describe("buildCastBoard with a proposal", () => {
     expect(new Set([CAST_PROPOSE_ACTION, APPROVE_CAST_ACTION, DISCARD_CAST_ACTION]).size).toBe(3);
   });
 
-  test("the charter excerpt prefers the Mission line over the one-word Role body (#12)", () => {
+  test("the charter row prefers the Mission line and discloses the full md-stripped charter", () => {
     const board = buildCastBoard(
       proposal({
         members: [
@@ -95,13 +95,33 @@ describe("buildCastBoard with a proposal", () => {
             name: "Atlas",
             role: "Engineer",
             charter:
-              "# Atlas\n\n## Role\n\nEngineer\n\n## Mission\n\nBuild and ship the search rib.",
+              "# Atlas\n\n## Role\n\nEngineer\n\n## Mission\n\n**Build** and ship the `search` rib.",
           },
         ],
       }),
     );
-    const card = cards(board).find((c) => c.title === "Atlas");
-    expect(card?.reason?.text).toBe("Build and ship the search rib.");
-    expect(card?.reason?.text).not.toBe("Engineer");
+    const row = memberRows(board).find((r) => r.chip?.label === "Atlas");
+    expect(row?.text).toBe("Build and ship the search rib.");
+    expect(row?.text).not.toBe("Engineer");
+    expect(row?.detail).toContain("Atlas Role Engineer Mission Build and ship the search rib.");
+    expect(row?.detail).not.toContain("**");
+    expect(row?.detail).not.toContain("`");
+  });
+
+  test("short charters still disclose the full md-stripped charter", () => {
+    const board = buildCastBoard(
+      proposal({
+        members: [
+          {
+            name: "Atlas",
+            role: "Engineer",
+            charter: "# Atlas\n\n## Mission\n\nBuild.",
+          },
+        ],
+      }),
+    );
+    const row = memberRows(board).find((r) => r.chip?.label === "Atlas");
+    expect(row?.text).toBe("Build.");
+    expect(row?.detail).toBe("Atlas Mission Build.");
   });
 });

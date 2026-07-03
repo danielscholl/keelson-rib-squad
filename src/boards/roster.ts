@@ -110,7 +110,7 @@ function cardFor(member: Member) {
   if (member.themeId) {
     fields.push({ label: "cast", value: themeLabel(member.themeId) ?? member.themeId });
   }
-  fields.push({ label: "charter", value: truncate(stripMd(member.charter)) });
+  fields.push({ label: "charter", value: rosterCharterExcerpt(member) });
   if (member.model) fields.push({ label: "model", value: member.model });
   return {
     title: member.name.trim() || "(unnamed)",
@@ -119,7 +119,7 @@ function cardFor(member: Member) {
     fields,
     // The character's personality as a sub-line, only when the member was cast.
     ...(member.personality
-      ? { reason: { label: "personality", text: truncate(member.personality, 160) } }
+      ? { reason: { label: "personality", text: truncate(stripMd(member.personality), 160) } }
       : {}),
     actions: [
       {
@@ -336,4 +336,16 @@ function truncate(text: string, max = 120): string {
   const trimmed = text.trim();
   if (trimmed.length === 0) return "(no charter)";
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+function rosterCharterExcerpt(member: Member): string {
+  const name = member.name.trim();
+  const withoutSelfHeading = name
+    ? member.charter.replace(new RegExp(`^#\\s+${escapeRegExp(name)}\\s*(?:\\n|$)`, "i"), "")
+    : member.charter;
+  return truncate(stripMd(withoutSelfHeading));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

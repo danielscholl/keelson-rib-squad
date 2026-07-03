@@ -11,10 +11,10 @@ import type {
   ToolDefinition,
 } from "@keelson/shared";
 import { DEFAULT_PROJECT_NAME } from "@keelson/shared";
-import { readProposal } from "../src/cast.ts";
+import { readProposal, writeProposal } from "../src/cast.ts";
 import { loadRegistry, saveRegistry } from "../src/casting/registry.ts";
 import rib from "../src/index.ts";
-import { readMembers, scaffoldMember } from "../src/member-store.ts";
+import { listMemberRecords, readMembers, scaffoldMember } from "../src/member-store.ts";
 import { membersDir, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import { writeSelectedProject } from "../src/scope.ts";
 
@@ -218,7 +218,17 @@ describe("squad_propose_cast tool (runs the confined scan)", () => {
     expect(lastReq?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
     // The proposal landed under the selection's scope and the cast panel was refreshed.
     const proposal = await readProposal(scopeDataHome(home, "p1"));
-    expect(proposal?.members.map((m) => m.name)).toEqual(["Atlas", "Vera"]);
+    expect(proposal?.members[0]).toMatchObject({
+      name: "McManus",
+      originalName: "Atlas",
+      slug: "mcmanus",
+      themeId: "usual-suspects",
+      identitySlot: 0,
+    });
+    expect(proposal?.members[1]?.identitySlot).toBe(1);
+    expect(proposal?.members.map((m) => m.name)).not.toEqual(["Atlas", "Vera"]);
+    expect(proposal?.members[0]?.charter.startsWith("# McManus")).toBe(true);
+    expect(proposal?.members[0]?.charter).not.toContain("# Atlas");
     expect(refreshed).toContain("squad-cast");
   });
 
@@ -229,7 +239,7 @@ describe("squad_propose_cast tool (runs the confined scan)", () => {
     expect(lastReq?.prompt).toContain("ship the OSDU search rib");
   });
 
-  test("scans AND places under the SELECTION scope, never mis-placed (#80)", async () => {
+  test("scans AND places under the SELECTION scope, never mis-placed", async () => {
     const tools = bootRib([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
     await selectProject("p1", "alpha", "/repo/a");
     await runTool(proposeCastTool(tools), {});
@@ -256,10 +266,12 @@ describe("squad_propose_cast tool (runs the confined scan)", () => {
 });
 
 describe("approve-cast / discard-cast actions", () => {
-  test("approve themes + scaffolds the proposed members (with tags) and clears the proposal", async () => {
+  test("approve scaffolds the already-themed proposal with tags, slots, and names intact", async () => {
     const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
     await selectProject("p1", "keelson", "/repo/keelson");
     await proposeViaTool(tools);
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+    expect(proposal).toBeDefined();
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(true);
     if (res?.ok) {
@@ -268,12 +280,14 @@ describe("approve-cast / discard-cast actions", () => {
       expect(data.created).toHaveLength(2);
     }
     const members = await readMembers(scopeMembersDir(home, "p1"));
-    // The proposed names became originalName; casting routes the tags through.
+    const records = await listMemberRecords(scopeMembersDir(home, "p1"));
     const atlas = members.find((m) => m.originalName === "Atlas");
     expect(atlas?.tools).toEqual(["code", "read"]);
     expect(atlas?.themeId).toBeDefined();
     expect(atlas?.personality).toBeTruthy();
-    expect(atlas?.name).not.toBe("Atlas");
+    expect(atlas?.name).toBe(proposal?.members.find((m) => m.originalName === "Atlas")?.name);
+    expect(records.find((m) => m.originalName === "Atlas")?.identitySlot).toBe(0);
+    expect(records.find((m) => m.originalName === "Vera")?.identitySlot).toBe(1);
     // The whole roster is cast from ONE ensemble (a coherent squad).
     expect(new Set(members.map((m) => m.themeId)).size).toBe(1);
     // The proposal was consumed; the roster + cast panels refreshed.
@@ -286,6 +300,41 @@ describe("approve-cast / discard-cast actions", () => {
     const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
     expect(res?.ok).toBe(false);
     if (!res?.ok) expect(res?.error).toContain("no proposal");
+  });
+
+  test("approve preserves normalized proposal slots instead of recomputing from names", async () => {
+    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await writeProposal(scopeDataHome(home, "p1"), {
+      projectId: "p1",
+      projectName: "keelson",
+      rootPath: "/repo/keelson",
+      members: [
+        {
+          slug: "first",
+          name: "First",
+          role: "Engineer",
+          charter: "# First",
+          originalName: "Zed",
+          identitySlot: 4,
+        },
+        {
+          slug: "second",
+          name: "Second",
+          role: "Reviewer",
+          charter: "# Second",
+          originalName: "Ana",
+          identitySlot: 42,
+        },
+      ],
+      notes: [],
+      createdAt: "2026-06-27T00:00:00.000Z",
+    });
+    const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
+    expect(res?.ok).toBe(true);
+    const records = await listMemberRecords(scopeMembersDir(home, "p1"));
+    expect(records.find((m) => m.slug === "first")?.identitySlot).toBe(4);
+    expect(records.find((m) => m.slug === "second")?.identitySlot).toBe(1);
   });
 
   test("approve is collision-safe — re-approving the same cast skips existing members", async () => {

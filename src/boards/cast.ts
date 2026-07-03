@@ -1,5 +1,6 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { CastProposalRecord } from "../cast.ts";
+import { stripMd } from "./coordinator.ts";
 
 // The verbs the Proposed-squad board offers. Shared with onAction so the action
 // types can't drift from their handlers. cast-propose lives on the roster
@@ -17,9 +18,7 @@ export const DISCARD_CAST_ACTION = "discard-cast";
 export function buildCastBoard(proposal: CastProposalRecord | undefined): CanvasBoardView {
   if (!proposal) return idleBoard();
 
-  const sections: CanvasBoardView["sections"] = [
-    { kind: "cards", items: proposal.members.map(cardFor) },
-  ];
+  const sections: CanvasBoardView["sections"] = [membersSection(proposal)];
   if (proposal.notes.length > 0) {
     sections.push({
       kind: "rows",
@@ -43,24 +42,28 @@ export function buildCastBoard(proposal: CastProposalRecord | undefined): Canvas
   };
 }
 
-function cardFor(member: CastProposalRecord["members"][number]) {
-  const fields: { label: string; value: string }[] = [
-    { label: "tools", value: member.tools?.length ? member.tools.join(", ") : "text-only" },
-  ];
-  if (member.model) fields.push({ label: "model", value: member.model });
-  const card: {
-    title: string;
-    pill: { label: string };
-    fields: { label: string; value: string }[];
-    reason?: { label: string; text: string };
-  } = {
-    title: member.name.trim() || "(unnamed)",
-    pill: { label: member.role.trim() || "Member" },
-    fields,
+function membersSection(proposal: CastProposalRecord): CanvasBoardView["sections"][number] {
+  return {
+    kind: "rows",
+    title: "Members",
+    items: proposal.members.map(rowFor),
   };
+}
+
+function rowFor(member: CastProposalRecord["members"][number]) {
+  const charter = stripMd(member.charter);
   const excerpt = charterExcerpt(member.charter);
-  if (excerpt) card.reason = { label: "charter", text: excerpt };
-  return card;
+  const tools = member.tools?.length ? member.tools.join(", ") : "text-only";
+  const trailing = [member.role.trim() || "Member", tools, member.model]
+    .filter(Boolean)
+    .join(" · ");
+  return {
+    glyph: "brand" as CanvasTone,
+    chip: { label: member.name.trim() || "(unnamed)", tone: "brand" as CanvasTone },
+    text: excerpt || "(no charter)",
+    trailing,
+    ...(charter ? { detail: charter } : {}),
+  };
 }
 
 // The Approve/Discard verbs. Approve scaffolds the proposed members (collision-safe);
@@ -129,6 +132,7 @@ function charterExcerpt(charter: string, max = 200): string {
     (missionIdx >= 0
       ? lines.slice(missionIdx + 1).find((l) => l.length > 0 && !l.startsWith("#"))
       : undefined) ?? lines.find((l) => l.length > 0 && !l.startsWith("#"));
-  if (!line) return "";
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+  const text = stripMd(line ?? "");
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }

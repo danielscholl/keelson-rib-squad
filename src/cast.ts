@@ -2,6 +2,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { RibAgentTurn, RibAgentTurnResult, RibContext } from "@keelson/shared";
 import { errText, z } from "@keelson/shared";
+import { normalizeIdentitySlot } from "./types.ts";
 
 // Auto-cast: inspect a project and propose the team best suited to it. This is the
 // defining capability — chamber hand-authors each Mind; squad reads the repo and
@@ -42,12 +43,18 @@ export const castProposalSchema = z.object({
 
 // One proposed member, normalized (tools deduped/trimmed). The persisted/board shape.
 export interface CastProposalMember {
+  slug?: string;
   name: string;
   role: string;
   charter: string;
   tools?: string[];
   model?: string;
   provider?: string;
+  themeId?: string;
+  personality?: string;
+  backstory?: string;
+  originalName?: string;
+  identitySlot?: number;
 }
 
 // The pending proposal persisted to cast-proposal.json and rendered by the
@@ -337,7 +344,7 @@ export async function readProposal(dataHome: string): Promise<CastProposalRecord
           typeof (m as CastProposalMember).name === "string" &&
           typeof (m as CastProposalMember).charter === "string",
       )
-      .map(normalizeStoredMember);
+      .map((m, i) => normalizeStoredMember(m, i));
     if (members.length === 0) return undefined;
     return {
       projectId: typeof parsed.projectId === "string" ? parsed.projectId : "",
@@ -356,8 +363,9 @@ export async function readProposal(dataHome: string): Promise<CastProposalRecord
   }
 }
 
-function normalizeStoredMember(m: CastProposalMember): CastProposalMember {
+function normalizeStoredMember(m: CastProposalMember, index: number): CastProposalMember {
   return {
+    ...(typeof m.slug === "string" && m.slug ? { slug: m.slug } : {}),
     name: m.name,
     role: typeof m.role === "string" && m.role ? m.role : "",
     charter: m.charter,
@@ -368,6 +376,13 @@ function normalizeStoredMember(m: CastProposalMember): CastProposalMember {
     ...(typeof m.provider === "string" && m.provider && typeof m.model === "string" && m.model
       ? { model: m.model }
       : {}),
+    ...(typeof m.themeId === "string" && m.themeId ? { themeId: m.themeId } : {}),
+    ...(typeof m.personality === "string" && m.personality ? { personality: m.personality } : {}),
+    ...(typeof m.backstory === "string" && m.backstory ? { backstory: m.backstory } : {}),
+    ...(typeof m.originalName === "string" && m.originalName
+      ? { originalName: m.originalName }
+      : {}),
+    identitySlot: normalizeIdentitySlot(m.identitySlot, index),
   };
 }
 

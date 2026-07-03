@@ -20,6 +20,7 @@ import { buildRunDetailBoard, COORDINATE_ACTION, DISPATCH_ACTION } from "./board
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
 import { ASSIGN_CODE_ACTION, RETIRE_ALL_ACTION, SELECT_PROJECT_ACTION } from "./boards/roster.ts";
 import { VIEW_RUN_ACTION } from "./boards/runs.ts";
+import type { CastProposalMember, CastProposalRecord } from "./cast.ts";
 import { clearProposal, proposeCast, readProposal, writeProposal } from "./cast.ts";
 import {
   assignThemedIdentity,
@@ -31,6 +32,7 @@ import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
 import { type RunCoordinatorResult, runCoordinator } from "./coordinator.ts";
 import { captureDiffUnderReview, type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
+import { slugify } from "./genesis.ts";
 import {
   CAST_KEY,
   COORDINATOR_KEY,
@@ -71,7 +73,7 @@ import {
 } from "./scope.ts";
 import { GENESIS_STARTERS } from "./starters.ts";
 import type { TurnOutcome } from "./turn-runner.ts";
-import type { Member } from "./types.ts";
+import { identitySlotForIndex, type Member } from "./types.ts";
 
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
 // dispose. refreshWorkflow re-runs a bound collector (squad-roster, squad-cast)
@@ -251,27 +253,20 @@ async function themedRecord(
     provider?: string;
     tools?: readonly string[];
   },
+  identitySlot: number,
 ): Promise<MemberRecord> {
   const id = await assignThemedIdentity(dataHome, {
     proposedName: base.name,
     role: base.role,
   });
-  const charter =
-    id.themeId && id.personality
-      ? foldThemedCharter(base.charter, {
-          name: id.name,
-          personality: id.personality,
-          backstory: id.backstory ?? "",
-          themeLabel: themeLabel(id.themeId) ?? id.themeId,
-        })
-      : base.charter;
   return {
     slug: id.slug,
     name: id.name,
     role: base.role,
-    charter,
+    charter: foldedCharter(base.charter, id),
     status: "active",
     createdAt: base.createdAt,
+    identitySlot: identitySlotForIndex(identitySlot),
     ...(id.themeId ? { themeId: id.themeId } : {}),
     ...(id.personality ? { personality: id.personality } : {}),
     ...(id.backstory ? { backstory: id.backstory } : {}),
@@ -280,6 +275,60 @@ async function themedRecord(
     ...(base.provider && base.model ? { model: base.model } : {}),
     ...(base.tools && base.tools.length > 0 ? { tools: [...base.tools] } : {}),
   };
+}
+
+function foldedCharter(
+  charter: string,
+  id: {
+    name: string;
+    themeId?: string;
+    personality?: string;
+    backstory?: string;
+  },
+): string {
+  return id.themeId && id.personality
+    ? foldThemedCharter(charter, {
+        name: id.name,
+        personality: id.personality,
+        backstory: id.backstory ?? "",
+        themeLabel: themeLabel(id.themeId) ?? id.themeId,
+      })
+    : charter;
+}
+
+async function themedProposal(
+  dataHome: string,
+  proposal: CastProposalRecord,
+): Promise<CastProposalRecord> {
+  const members: CastProposalMember[] = [];
+  for (let i = 0; i < proposal.members.length; i++) {
+    const m = proposal.members[i]!;
+    const id = await assignThemedIdentity(dataHome, {
+      proposedName: m.name,
+      role: m.role,
+    });
+    members.push({
+      slug: id.slug,
+      name: id.name,
+      role: m.role,
+      charter: foldedCharter(m.charter, id),
+      ...(m.tools && m.tools.length > 0 ? { tools: m.tools } : {}),
+      ...(m.provider ? { provider: m.provider } : {}),
+      ...(m.provider && m.model ? { model: m.model } : {}),
+      ...(id.themeId ? { themeId: id.themeId } : {}),
+      ...(id.personality ? { personality: id.personality } : {}),
+      ...(id.backstory ? { backstory: id.backstory } : {}),
+      originalName: id.originalName,
+      identitySlot: identitySlotForIndex(i),
+    });
+  }
+  return { ...proposal, members };
+}
+
+async function retireProposalNames(dataHome: string, proposal: CastProposalRecord): Promise<void> {
+  for (const m of proposal.members) {
+    if (m.slug && m.themeId) await retireCastingName(dataHome, m.slug);
+  }
 }
 
 // The genesis write seam: the squad-genesis workflow's prompt node authors the
@@ -318,15 +367,22 @@ function makeEmitMemberTool(refresh?: RibContext["refreshWorkflow"]): ToolDefini
         const dedupedTools = tools
           ? [...new Set(tools.map((t) => t.trim()).filter((t) => t.length > 0))]
           : [];
-        const record = await themedRecord(scopeDataHome(home, scopeId), {
-          name,
-          role,
-          charter,
-          createdAt: new Date().toISOString(),
-          ...(provider ? { provider } : {}),
-          ...(provider && model ? { model } : {}),
-          ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
-        });
+        // An authored member takes the next slot after the existing roster, so
+        // hand-built teams don't stack every member on slot 0.
+        const existing = await readMembers(scopeMembersDir(home, scopeId));
+        const record = await themedRecord(
+          scopeDataHome(home, scopeId),
+          {
+            name,
+            role,
+            charter,
+            createdAt: new Date().toISOString(),
+            ...(provider ? { provider } : {}),
+            ...(provider && model ? { model } : {}),
+            ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
+          },
+          existing.length,
+        );
         await scaffoldMember(scopeMembersDir(home, scopeId), record);
         // Re-run the bound squad-roster collector so the new member appears
         // promptly instead of waiting on cadence. Fail-soft (the seam resolves on
@@ -1074,9 +1130,13 @@ async function proposeCastForSelection(
   });
   if (!result.ok) return { ok: false, error: result.error };
   const scopeId = selectedScopeId(selection);
-  await writeProposal(scopeDataHome(home, scopeId), result.proposal);
+  const scopedHome = scopeDataHome(home, scopeId);
+  const pending = await readProposal(scopedHome);
+  if (pending) await retireProposalNames(scopedHome, pending);
+  const proposal = await themedProposal(scopedHome, result.proposal);
+  await writeProposal(scopedHome, proposal);
   await refreshWorkflow?.("squad-cast");
-  return { ok: true, projectName: scanProject.name, count: result.proposal.members.length };
+  return { ok: true, projectName: scanProject.name, count: proposal.members.length };
 }
 
 const proposeCastSchema = z.object({ mission: z.string().optional() });
@@ -1731,7 +1791,7 @@ function resolveRunScope(
 // The scan itself lives in squad_propose_cast (read-only, bounded to the project root
 // inside proposeCast); this action only validates and launches. Casting is
 // selection-driven — the selection's project, or the workspace default project for the
-// flat/default scope (no free-text override, the #80 footgun). stay:true keeps the
+// flat/default scope (no free-text override footgun). stay:true keeps the
 // operator on Squad while the Proposed squad panel refreshes for review.
 async function castProposeAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
@@ -1887,13 +1947,8 @@ async function retireAllAction(): Promise<RibActionResult> {
   }
 }
 
-// Approve-cast: theme each proposed member (the shared casting intercept) and
-// scaffold them (collision-safe — an existing slug is kept, never clobbered;
-// member-capped with truncation surfaced), clear the proposal, and refresh the
-// roster + cast panels. Reads the persisted proposal as the source of truth, so a
-// stale board button can't approve a discarded proposal. Themed sequentially:
-// each assignThemedIdentity reserves into the registry, so the next member draws a
-// distinct character from the same ensemble.
+// Read the persisted proposal as the source of truth so stale board buttons can't
+// approve a discarded proposal.
 async function approveCastAction(): Promise<RibActionResult> {
   try {
     const home = squadDataHome();
@@ -1903,18 +1958,24 @@ async function approveCastAction(): Promise<RibActionResult> {
     if (!proposal) return { ok: false, error: "no proposal to approve — cast a squad first" };
     const at = new Date().toISOString();
     const records: MemberRecord[] = [];
-    for (const m of proposal.members) {
-      records.push(
-        await themedRecord(scopedHome, {
-          name: m.name,
-          role: m.role,
-          charter: m.charter,
-          createdAt: at,
-          ...(m.provider ? { provider: m.provider } : {}),
-          ...(m.provider && m.model ? { model: m.model } : {}),
-          ...(m.tools && m.tools.length > 0 ? { tools: m.tools } : {}),
-        }),
-      );
+    for (let i = 0; i < proposal.members.length; i++) {
+      const m = proposal.members[i]!;
+      records.push({
+        slug: m.slug?.trim() || slugify(m.name),
+        name: m.name,
+        role: m.role,
+        charter: m.charter,
+        status: "active",
+        createdAt: at,
+        identitySlot: m.identitySlot ?? identitySlotForIndex(i),
+        ...(m.themeId ? { themeId: m.themeId } : {}),
+        ...(m.personality ? { personality: m.personality } : {}),
+        ...(m.backstory ? { backstory: m.backstory } : {}),
+        originalName: m.originalName ?? m.name,
+        ...(m.provider ? { provider: m.provider } : {}),
+        ...(m.provider && m.model ? { model: m.model } : {}),
+        ...(m.tools && m.tools.length > 0 ? { tools: m.tools } : {}),
+      });
     }
     const outcome = await scaffoldRoster(scopeMembersDir(home, scopeId), records);
     await clearProposal(scopedHome);
@@ -1938,7 +1999,10 @@ async function discardCastAction(): Promise<RibActionResult> {
   try {
     const home = squadDataHome();
     const scopeId = selectedScopeId(await readSelectedProject(home));
-    await clearProposal(scopeDataHome(home, scopeId));
+    const scopedHome = scopeDataHome(home, scopeId);
+    const proposal = await readProposal(scopedHome);
+    if (proposal) await retireProposalNames(scopedHome, proposal);
+    await clearProposal(scopedHome);
     await refreshWorkflow?.("squad-cast");
     return { ok: true, data: { discarded: true } };
   } catch (e) {

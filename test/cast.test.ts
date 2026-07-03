@@ -313,6 +313,23 @@ describe("cast proposal store", () => {
     const back = await readProposal(home);
     expect(back?.projectName).toBe("keelson");
     expect(back?.members[0]?.tools).toEqual(["code", "read"]);
+    expect(back?.members[0]?.identitySlot).toBe(0);
+  });
+
+  test("normalizes missing and invalid identity slots to cast-order slots within 0-4", async () => {
+    await writeProposal(home, {
+      ...record(),
+      members: [
+        { name: "A", role: "Engineer", charter: "# A", identitySlot: 3 },
+        { name: "B", role: "Reviewer", charter: "# B", identitySlot: 9 },
+        { name: "C", role: "Tester", charter: "# C", identitySlot: -1 },
+        { name: "D", role: "Docs", charter: "# D" },
+        { name: "E", role: "DevOps", charter: "# E", identitySlot: 4 },
+        { name: "F", role: "Security", charter: "# F" },
+      ],
+    });
+    const back = await readProposal(home);
+    expect(back?.members.map((m) => m.identitySlot)).toEqual([3, 1, 2, 3, 4, 4]);
   });
 
   test("read returns undefined when there is no proposal", async () => {

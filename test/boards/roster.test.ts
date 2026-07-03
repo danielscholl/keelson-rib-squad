@@ -92,7 +92,7 @@ describe("buildRosterBoard cold start", () => {
     expect(cast?.type).toBe("cast-propose");
     expect(cast?.label).toBe("Cast a squad");
     expect(cast).toBeDefined();
-    // No free-text "project" field — casting follows the project picker selection (#80).
+    // No free-text "project" field — casting follows the project picker selection.
     expect(cast?.fields?.map((f) => f.name)).toEqual(["mission"]);
     expect(cast?.fields?.find((f) => f.name === "mission")?.multiline).toBe(true);
     expect(cast?.inline).toBe(true);
@@ -155,6 +155,20 @@ describe("buildRosterBoard populated", () => {
     expect(noCharter?.fields?.find((f) => f.label === "charter")?.value).toBe("(no charter)");
   });
 
+  test("the charter excerpt strips markdown and drops only the leading self-name heading", () => {
+    const card = cards(
+      buildRosterBoard([
+        member({
+          name: "McManus",
+          charter: "# McManus\n\n## Mission\n\n**Ship** the `rib`.\n\n# Keep this heading",
+        }),
+      ]),
+    )[0];
+    const excerpt = card?.fields?.find((f) => f.label === "charter")?.value;
+    expect(excerpt).toBe("Mission Ship the rib. Keep this heading");
+    expect(String(excerpt ?? "").startsWith("McManus")).toBe(false);
+  });
+
   test("each card leads with a non-destructive Enter, then Set model, then a destructive Retire", () => {
     const board = buildRosterBoard([member({ slug: "lead", name: "Lead" })]);
     const actions = cards(board)[0]?.actions ?? [];
@@ -189,7 +203,7 @@ describe("buildRosterBoard populated", () => {
           slug: "mcmanus",
           name: "McManus",
           themeId: "usual-suspects",
-          personality: "Bold and direct; ships fast.",
+          personality: "**Bold** and `direct`; ships fast.",
         }),
       ]),
     )[0];
@@ -197,6 +211,8 @@ describe("buildRosterBoard populated", () => {
     expect(card?.fields?.find((f) => f.label === "cast")?.value).toBe("The Usual Suspects");
     expect(card?.reason?.label).toBe("personality");
     expect(card?.reason?.text).toContain("Bold and direct");
+    expect(card?.reason?.text).not.toContain("**");
+    expect(card?.reason?.text).not.toContain("`");
   });
 
   test("an un-cast member shows no cast field and no personality line", () => {
