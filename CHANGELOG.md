@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.8.0...v0.9.0) (2026-07-03)
+
+
+### Added
+
+* add abort support for synthesis and provider pin validation ([#129](https://github.com/danielscholl/keelson-rib-squad/issues/129)) ([9b51f2f](https://github.com/danielscholl/keelson-rib-squad/commit/9b51f2f688389fec78292e5b87e296c21ad9ad0b))
+* **boards:** recompose the empty casting screen around one primary action ([#126](https://github.com/danielscholl/keelson-rib-squad/issues/126)) ([5c76898](https://github.com/danielscholl/keelson-rib-squad/commit/5c76898a46bf566bdf36c23dd9d82ba4a9ad8725))
+* **cast:** introduce identity slot system for cast proposals ([#127](https://github.com/danielscholl/keelson-rib-squad/issues/127)) ([460ebb4](https://github.com/danielscholl/keelson-rib-squad/commit/460ebb4e18cfe684418c0478c45de0e9e2597da2))
+* **coordinator:** implement findings visibility and speaker prefixes ([#125](https://github.com/danielscholl/keelson-rib-squad/issues/125)) ([0816b51](https://github.com/danielscholl/keelson-rib-squad/commit/0816b5142272f690fe382fbe8eb396d6d3b59ae1))
+* **provider-pins:** introduce provider pin validation and filtering ([#128](https://github.com/danielscholl/keelson-rib-squad/issues/128)) ([d4cfeaf](https://github.com/danielscholl/keelson-rib-squad/commit/d4cfeaff099927eb80115289f1b413afa5a02381))
+
+
+### Fixed
+
+* **boards:** show every ledger round in the run-detail board ([#119](https://github.com/danielscholl/keelson-rib-squad/issues/119)) ([8658835](https://github.com/danielscholl/keelson-rib-squad/commit/865883574e63d388156586ab46f59ce08b661f4c))
+
 ## [0.8.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.7.1...v0.8.0) (2026-07-02)
 
 
