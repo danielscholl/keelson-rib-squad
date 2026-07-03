@@ -64,10 +64,10 @@ export function buildRosterBoard(members: readonly Member[], pulse?: RosterPulse
   if (pulse) sections.push(pulseSection(pulse));
 
   if (members.length === 0) {
-    sections.push(anchorSection());
+    sections.push(introSection());
     sections.push(castSection());
     sections.push(authorSection());
-    sections.push(whatsNextSection());
+    sections.push(journeySection());
   } else {
     sections.push({ kind: "cards", items: members.map(cardFor) });
     sections.push(addMemberSection());
@@ -188,32 +188,34 @@ function cardFor(member: Member) {
   };
 }
 
-// The anchor line for a cold-start roster: one calm sentence naming the two ways to
-// build a squad. Distinct from the persistent create sections below it.
-function anchorSection(): Section {
+// The defining verb: scan the SELECTED project and propose the team best suited to
+// it. Scope follows the project picker — casting always targets the selected project,
+// so the team lands in the same scope a no-arg run reads. Mission is optional.
+// The framing line above the hero: copy belongs here, not on the action label —
+// the button stays a verb.
+function introSection(): Section {
   return {
     kind: "rows",
     items: [
       {
         glyph: "brand",
-        text: "A Squad is a team of members tuned to your project. Cast one to auto-compose the team from the repo, or author members yourself — each becomes a chat agent you can talk to directly.",
+        text: "One scan of the repo composes the team — you approve before anything is created.",
       },
     ],
   };
 }
 
-// The defining verb: scan the SELECTED project and propose the team best suited to
-// it. Scope follows the project picker — casting always targets the selected project,
-// so the team lands in the same scope a no-arg run reads. Mission is optional.
 function castSection(): Section {
   return {
     kind: "actions",
-    title: "Cast a squad",
+    title: "Cast a squad from this repo",
     items: [
       {
         type: CAST_PROPOSE_ACTION,
-        label: "Cast a squad for the selected project",
+        label: "Cast a squad",
         glyph: "✦",
+        tone: "brand" as CanvasTone,
+        inline: true,
         fields: [
           {
             name: "mission",
@@ -232,18 +234,20 @@ function castSection(): Section {
 function authorSection(): Section {
   return {
     kind: "actions",
-    title: "Author a member",
+    title: "or seat one member yourself",
     items: [
       ...GENESIS_STARTERS.map((s) => ({
         type: "author-archetype",
         label: `${s.name} — ${s.tagline}`,
-        glyph: "✦",
+        glyph: "＋",
+        tone: "neutral" as CanvasTone,
         payload: { slug: s.slug },
       })),
       {
         type: "describe-own",
         label: "Describe & author",
         glyph: "✎",
+        tone: "neutral" as CanvasTone,
         fields: [
           {
             name: "brief",
@@ -307,14 +311,22 @@ function manageSection(count: number): Section {
   };
 }
 
-function whatsNextSection(): Section {
+function journeySection(): Section {
   return {
     kind: "rows",
+    title: "Squad journey",
     items: [
       {
         glyph: "neutral",
-        text: "Next: each member you author appears here as a card and as a chat agent you can enter.",
-        trailing: "what's next",
+        text: "1 Cast: the scan proposes a team, you approve or discard it",
+      },
+      {
+        glyph: "neutral",
+        text: "2 Meet: each member becomes a chat agent you can enter",
+      },
+      {
+        glyph: "neutral",
+        text: "3 Run: give the squad a task and the rounds stream in the Run loop panel",
       },
     ],
   };

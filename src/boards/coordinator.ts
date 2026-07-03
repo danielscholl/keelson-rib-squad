@@ -418,11 +418,14 @@ function findingsSection(facts: readonly string[]): Section {
   return {
     kind: "rows",
     title: "Findings",
-    items: facts.slice(-MAX_FINDINGS).map((fact) => ({
-      glyph: "brand" as CanvasTone,
-      text: stripMd(truncate(normalizeSpeakerPrefixes(fact), STEP_CAP)) || "(no detail)",
-      ...detailWhenTruncated(normalizeSpeakerPrefixes(fact), STEP_CAP),
-    })),
+    items: facts.slice(-MAX_FINDINGS).map((fact) => {
+      const normalized = normalizeSpeakerPrefixes(fact);
+      return {
+        glyph: "brand" as CanvasTone,
+        text: stripMd(truncate(normalized, STEP_CAP)) || "(no detail)",
+        ...detailWhenTruncated(normalized, STEP_CAP),
+      };
+    }),
   };
 }
 
@@ -691,8 +694,8 @@ function isQuietLedgerEntry(e: CoordinatorEntry, speakers: ReadonlySet<string>):
 }
 
 // The expandable body behind a ledger row: the instruction the turn ran under, the
-// full stored text, and the captured tool trace — everything the 200-char preview
-// can't hold, straight from the durable entry.
+// full stored text (speaker prefixes normalized for display consistency with the
+// preview), and the captured tool trace — everything the 200-char preview can't hold.
 function entryDetail(e: CoordinatorEntry): { detail: string } | Record<string, never> {
   const parts: string[] = [];
   if (e.instruction?.trim()) parts.push(`instruction: ${e.instruction.trim()}`);
