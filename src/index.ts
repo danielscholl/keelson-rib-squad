@@ -30,7 +30,12 @@ import {
 } from "./casting/registry.ts";
 import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
-import { type RunCoordinatorResult, runCoordinator } from "./coordinator.ts";
+import {
+  LEDGER_STATUS_ACTIVE,
+  loadLedger,
+  type RunCoordinatorResult,
+  runCoordinator,
+} from "./coordinator.ts";
 import { captureDiffUnderReview, type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import { slugify } from "./genesis.ts";
 import {
@@ -91,6 +96,7 @@ let getProviders: RibContext["getProviders"];
 let snapshots: SnapshotManager | undefined;
 let unregisterRunDetail: (() => void) | undefined;
 let runDetailBoard: CanvasBoardView | undefined;
+const activeCoordinateRuns = new Map<string, AbortController>();
 
 // Absolute path to the roster collector, resolved at module load so the workflow
 // node runs the right file regardless of the run's (nominal) cwd. fileURLToPath
@@ -942,6 +948,19 @@ const coordinateSchema = z.object({
   verify: z.array(z.string().min(1).max(300)).max(8).optional(),
 });
 
+const stopSchema = z.object({ project: z.string().optional() });
+
+function relayAbort(parent: AbortSignal | undefined, controller: AbortController): () => void {
+  if (!parent) return () => {};
+  if (parent.aborted) {
+    controller.abort();
+    return () => {};
+  }
+  const abort = () => controller.abort();
+  parent.addEventListener("abort", abort, { once: true });
+  return () => parent.removeEventListener("abort", abort);
+}
+
 function makeCoordinateTool(
   turnSeam: RibContext["runAgentTurn"],
   projectsSeam: RibContext["getProjects"],
@@ -988,6 +1007,23 @@ function makeCoordinateTool(
           return;
         }
         const { scopeId } = resolution;
+        const dataHome = scopeDataHome(home, scopeId);
+        const activeLedger = await loadLedger(dataHome);
+        const activeRun = activeCoordinateRuns.get(scopeId);
+        const liveActiveRun = activeRun && !activeRun.signal.aborted ? activeRun : undefined;
+        if (activeLedger?.status === LEDGER_STATUS_ACTIVE && liveActiveRun) {
+          emitResult(
+            ctx,
+            `squad_coordinate: scope "${scopeId}" already has a live coordinator run at round ${activeLedger.round}; stop it with squad_stop before starting another`,
+            true,
+          );
+          return;
+        }
+        if (activeRun && !liveActiveRun) activeCoordinateRuns.delete(scopeId);
+        const takeoverNote =
+          activeLedger?.status === LEDGER_STATUS_ACTIVE && !liveActiveRun
+            ? `took over stale active coordinator ledger at round ${activeLedger.round} (no live run controller was registered)`
+            : undefined;
         const project = resolution.project
           ? {
               id: resolution.project.id,
@@ -1019,36 +1055,101 @@ function makeCoordinateTool(
         const normalizedManagerProvider = asNonEmptyString(managerProvider);
         const normalizedManagerModel = asNonEmptyString(managerModel);
         const coherentManagerModel = normalizedManagerProvider ? normalizedManagerModel : undefined;
-        const result = await runCoordinator({
-          runAgentTurn: turnSeam,
-          membersRoot,
-          dataHome: scopeDataHome(home, scopeId),
-          roster,
-          task,
-          ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
-          ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
-          abortSignal: ctx.abortSignal,
-          publish: async () => {
-            await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
-          },
-          ...(project ? { project } : {}),
-          ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
-          ...(memorySeam ? { getMemory: memorySeam } : {}),
-          ...(execSeam ? { getExec: execSeam() } : {}),
-          ...(verify.length > 0 ? { verify } : {}),
-          limits: {
-            ...DEFAULT_LIMITS,
-            ...(maxRounds !== undefined ? { maxRounds } : {}),
-            ...(maxStall !== undefined ? { maxStall } : {}),
-            ...(maxResets !== undefined ? { maxResets } : {}),
-          },
-        });
+        const activeRunBeforeStart = activeCoordinateRuns.get(scopeId);
+        if (activeRunBeforeStart && !activeRunBeforeStart.signal.aborted) {
+          const round = activeLedger?.status === LEDGER_STATUS_ACTIVE ? activeLedger.round : 0;
+          emitResult(
+            ctx,
+            `squad_coordinate: scope "${scopeId}" already has a live coordinator run at round ${round}; stop it with squad_stop before starting another`,
+            true,
+          );
+          return;
+        }
+        const controller = new AbortController();
+        const unlinkAbort = relayAbort(ctx.abortSignal, controller);
+        activeCoordinateRuns.set(scopeId, controller);
+        let result: RunCoordinatorResult;
+        try {
+          result = await runCoordinator({
+            runAgentTurn: turnSeam,
+            membersRoot,
+            dataHome,
+            roster,
+            task,
+            ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
+            ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
+            abortSignal: controller.signal,
+            publish: async () => {
+              await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+            },
+            ...(project ? { project } : {}),
+            ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
+            ...(memorySeam ? { getMemory: memorySeam } : {}),
+            ...(execSeam ? { getExec: execSeam() } : {}),
+            ...(verify.length > 0 ? { verify } : {}),
+            ...(takeoverNote ? { takeoverNote } : {}),
+            limits: {
+              ...DEFAULT_LIMITS,
+              ...(maxRounds !== undefined ? { maxRounds } : {}),
+              ...(maxStall !== undefined ? { maxStall } : {}),
+              ...(maxResets !== undefined ? { maxResets } : {}),
+            },
+          });
+        } finally {
+          unlinkAbort();
+          if (activeCoordinateRuns.get(scopeId) === controller)
+            activeCoordinateRuns.delete(scopeId);
+        }
         // Push the Run-loop panel to the run's final state (the same publish path cast uses);
         // best-effort, so a refresh failure never masks the run's own result.
         await refreshWorkflow?.("squad-coordinator").catch(() => {});
         emitResult(ctx, summarizeCoordinator(result), result.status === "error");
       } catch (e) {
         emitResult(ctx, `squad_coordinate failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+function makeStopTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
+  return {
+    name: "squad_stop",
+    description:
+      "Stop the live coordinator run for the resolved squad scope. `project` (optional id/name) resolves scope like squad_coordinate — an unknown project errors; with no project and no selection it stops the default scope. Returns once the stop has been requested. NOT for listing past runs (squad_runs) or starting a run (squad_coordinate).",
+    inputSchema: stopSchema,
+    state_changing: true,
+    async execute(input, ctx) {
+      const parsed = stopSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_stop: ${parsed.error.message}`, true);
+        return;
+      }
+      try {
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_stop: ${resolution.error}`, true);
+          return;
+        }
+        const controller = activeCoordinateRuns.get(resolution.scopeId);
+        if (!controller || controller.signal.aborted) {
+          if (controller?.signal.aborted) activeCoordinateRuns.delete(resolution.scopeId);
+          emitResult(
+            ctx,
+            `squad_stop: no live coordinator run in scope "${resolution.scopeId}"`,
+            true,
+          );
+          return;
+        }
+        controller.abort();
+        emitResult(ctx, `squad_stop: stop requested for scope "${resolution.scopeId}"`);
+      } catch (e) {
+        emitResult(ctx, `squad_stop failed: ${errText(e)}`, true);
       }
     },
   };
@@ -1650,6 +1751,7 @@ const rib: Rib = {
       makeViewDiffTool(ctx.getProjects, ctx.getExec),
       makeProposeCastTool(),
       makeRunsTool(ctx.getProjects),
+      makeStopTool(ctx.getProjects),
       makeCoordinateTool(
         ctx.runAgentTurn,
         ctx.getProjects,

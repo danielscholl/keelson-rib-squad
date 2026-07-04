@@ -168,6 +168,7 @@ export const RUN_STATUS_GAVE_UP = "gave-up" as const;
 export const RUN_STATUS_MAX_ROUNDS = "max-rounds" as const;
 export const RUN_STATUS_VERIFICATION_FAILED = "verification-failed" as const;
 export const RUN_STATUS_CHANGE_QUALITY_FAILED = "change-quality-failed" as const;
+export const RUN_STATUS_ABORTED = "aborted" as const;
 
 export type CoordinatorTerminalStatus =
   | typeof RUN_STATUS_DONE
@@ -175,8 +176,11 @@ export type CoordinatorTerminalStatus =
   | typeof RUN_STATUS_MAX_ROUNDS
   | typeof RUN_STATUS_VERIFICATION_FAILED
   | typeof RUN_STATUS_CHANGE_QUALITY_FAILED;
-export type CoordinatorLedgerStatus = typeof LEDGER_STATUS_ACTIVE | CoordinatorTerminalStatus;
-export type RunCoordinatorStatus = CoordinatorTerminalStatus | "error" | "aborted";
+export type CoordinatorLedgerStatus =
+  | typeof LEDGER_STATUS_ACTIVE
+  | CoordinatorTerminalStatus
+  | typeof RUN_STATUS_ABORTED;
+export type RunCoordinatorStatus = CoordinatorTerminalStatus | "error" | typeof RUN_STATUS_ABORTED;
 
 function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTerminalStatus {
   return (
@@ -544,6 +548,7 @@ export interface RunCoordinatorOptions {
   // Best-effort progress publisher invoked after each ledger persist so the host can push a
   // fresh Run-loop board per round. Undefined leaves persistence byte-for-byte as today.
   publish?: () => void | Promise<void>;
+  takeoverNote?: string;
 }
 
 export interface RunCoordinatorResult {
@@ -1222,6 +1227,18 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
 
   let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now(), limits.maxRounds);
   const exec = opts.getExec;
+  if (opts.takeoverNote) {
+    ledger = {
+      ...ledger,
+      transcript: append(ledger.transcript, {
+        round: ledger.round,
+        kind: "coordinator",
+        text: opts.takeoverNote,
+      }),
+      updatedAt: now(),
+    };
+    await persist(ledger);
+  }
   const runStartTree =
     project && exec
       ? await (async () => {
@@ -1251,7 +1268,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
 
   while (true) {
     if (opts.abortSignal?.aborted) {
-      status = "aborted";
+      status = RUN_STATUS_ABORTED;
       break;
     }
     if (ledger.round >= limits.maxRounds) {
@@ -1313,7 +1330,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     );
     replanRequested = false;
     if (turn.status !== "ok") {
-      status = turn.status === "aborted" ? "aborted" : "error";
+      status = turn.status === "aborted" ? RUN_STATUS_ABORTED : "error";
       ledger = { ...ledger, updatedAt: now() };
       break;
     }
@@ -1785,7 +1802,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     // client stops seeing a "now executing" card for the cancelled turn, while no junk fact or
     // round increment lands, keeping the round budget intact across an abort+resume.
     if (opts.abortSignal?.aborted) {
-      status = "aborted";
+      status = RUN_STATUS_ABORTED;
       ledger = { ...ledger, inFlight: undefined, updatedAt: now() };
       await persist(ledger);
       break;
@@ -1906,7 +1923,16 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     await persist(ledger);
   }
 
-  const finalLedger = ledger;
+  let finalLedger = ledger;
+  if (status === RUN_STATUS_ABORTED && finalLedger.status !== RUN_STATUS_ABORTED) {
+    finalLedger = {
+      ...finalLedger,
+      status: RUN_STATUS_ABORTED,
+      inFlight: undefined,
+      updatedAt: now(),
+    };
+    await persist(finalLedger);
+  }
   if (isTerminalStatus(status)) {
     // Fail-soft archival: persistence of run history must never fail the live run result.
     try {
