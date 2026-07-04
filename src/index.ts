@@ -16,7 +16,12 @@ import type {
 import { asNonEmptyString, DEFAULT_PROJECT_NAME, errText, expectView, z } from "@keelson/shared";
 import { listAgents, resolveAgent } from "./agents.ts";
 import { APPROVE_CAST_ACTION, CAST_PROPOSE_ACTION, DISCARD_CAST_ACTION } from "./boards/cast.ts";
-import { buildRunDetailBoard, COORDINATE_ACTION, DISPATCH_ACTION } from "./boards/coordinator.ts";
+import {
+  buildRunDetailBoard,
+  COORDINATE_ACTION,
+  DISPATCH_ACTION,
+  STOP_COORDINATOR_ACTION,
+} from "./boards/coordinator.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
 import { ASSIGN_CODE_ACTION, RETIRE_ALL_ACTION, SELECT_PROJECT_ACTION } from "./boards/roster.ts";
 import { VIEW_RUN_ACTION } from "./boards/runs.ts";
@@ -1076,6 +1081,7 @@ function makeCoordinateTool(
             dataHome,
             roster,
             task,
+            scopeId,
             ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
             ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
             abortSignal: controller.signal,
@@ -1136,23 +1142,27 @@ function makeStopTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
           emitResult(ctx, `squad_stop: ${resolution.error}`, true);
           return;
         }
-        const controller = activeCoordinateRuns.get(resolution.scopeId);
-        if (!controller || controller.signal.aborted) {
-          if (controller?.signal.aborted) activeCoordinateRuns.delete(resolution.scopeId);
-          emitResult(
-            ctx,
-            `squad_stop: no live coordinator run in scope "${resolution.scopeId}"`,
-            true,
-          );
+        const stopped = stopCoordinateScope(resolution.scopeId);
+        if (!stopped.ok) {
+          emitResult(ctx, `squad_stop: ${stopped.error}`, true);
           return;
         }
-        controller.abort();
         emitResult(ctx, `squad_stop: stop requested for scope "${resolution.scopeId}"`);
       } catch (e) {
         emitResult(ctx, `squad_stop failed: ${errText(e)}`, true);
       }
     },
   };
+}
+
+function stopCoordinateScope(scopeId: string): { ok: true } | { ok: false; error: string } {
+  const controller = activeCoordinateRuns.get(scopeId);
+  if (!controller || controller.signal.aborted) {
+    if (controller?.signal.aborted) activeCoordinateRuns.delete(scopeId);
+    return { ok: false, error: `no live coordinator run in scope "${scopeId}"` };
+  }
+  controller.abort();
+  return { ok: true };
 }
 
 // Auto-detect verify commands from a project's package.json when the operator didn't supply any:
@@ -1797,6 +1807,8 @@ const rib: Rib = {
         return coordinateAction(action);
       case DISPATCH_ACTION:
         return dispatchAction(action);
+      case STOP_COORDINATOR_ACTION:
+        return stopCoordinateAction(action);
       case ASSIGN_CODE_ACTION:
         return assignCodeAction(action);
       case RECORD_DECISION_ACTION:
@@ -1840,6 +1852,7 @@ const rib: Rib = {
     unregisterRunDetail = undefined;
     snapshots = undefined;
     runDetailBoard = undefined;
+    activeCoordinateRuns.clear();
   },
 };
 
@@ -2076,6 +2089,16 @@ function dispatchAction(action: RibAction): RibActionResult {
       args: { task: task.slice(0, MAX_TASK_CHARS) },
     },
   };
+}
+
+function stopCoordinateAction(action: RibAction): RibActionResult {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const scopeId = asNonEmptyString(payload.scopeId);
+  if (!scopeId) return { ok: false, error: "stop-coordinate requires payload { scopeId }" };
+  const stopped = stopCoordinateScope(scopeId);
+  if (!stopped.ok) return { ok: false, error: `squad_stop: ${stopped.error}` };
+  void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+  return { ok: true, data: { stopped: scopeId } };
 }
 
 // Assign a code task: one code-capable member edits the selected project. The card

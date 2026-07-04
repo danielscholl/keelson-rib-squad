@@ -1022,6 +1022,7 @@ describe("runCoordinator loop", () => {
     // seeing a "now executing" card), no junk fact, and no dispatch entry — so a resume re-runs
     // round 0, budget intact.
     const persisted = await loadLedger(home);
+    expect(persisted?.status).toBe("aborted");
     expect(persisted?.inFlight).toBeUndefined();
     expect(persisted?.round).toBe(0);
     expect(persisted?.facts.some((f) => f.includes("(no synthesis)"))).toBe(false);

@@ -98,6 +98,7 @@ describe("rib-squad", () => {
       "squad_remember",
       "squad_retire_member",
       "squad_runs",
+      "squad_stop",
       "squad_view_diff",
     ]);
   });

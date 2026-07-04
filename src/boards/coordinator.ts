@@ -20,6 +20,7 @@ type RowItem = Extract<Section, { kind: "rows" }>["items"][number];
 // to the whole roster and synthesizes.
 export const COORDINATE_ACTION = "coordinate";
 export const DISPATCH_ACTION = "dispatch";
+export const STOP_COORDINATOR_ACTION = "stop-coordinate";
 
 const GOAL_CAP = 280;
 const STEP_CAP = 200;
@@ -221,6 +222,8 @@ function sectionsFor(
       return failedSections(ledger, ledgerRounds, tones);
     case "gave-up":
       return gaveUpSections(ledger, ledgerRounds, tones);
+    case "aborted":
+      return abortedSections(ledger, ledgerRounds, tones);
     default:
       return [
         {
@@ -236,7 +239,7 @@ function activeSections(
   ledgerRounds: number,
   tones?: IdentityTones,
 ): Section[] {
-  const sections: Section[] = [pulseSection(ledger)];
+  const sections: Section[] = [pulseSection(ledger), stopSection(ledger)];
   const findings = visibleFindings(ledger);
   pushIf(sections, roundRailSection(ledger, tones));
   sections.push(goalSection(ledger.task));
@@ -250,6 +253,29 @@ function activeSections(
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
+}
+
+function stopSection(ledger: CoordinatorLedger): Section {
+  return {
+    kind: "actions",
+    title: "Live run",
+    items: [
+      {
+        type: STOP_COORDINATOR_ACTION,
+        label: "Stop run",
+        glyph: "■",
+        tone: "warn",
+        destructive: true,
+        inline: true,
+        payload: { scopeId: ledger.scopeId ?? "default" },
+        confirm: {
+          title: "Stop this coordinator run?",
+          body: `Round ${ledger.round} will be marked aborted. The transcript stays intact.`,
+          confirmLabel: "Stop run",
+        },
+      },
+    ],
+  };
 }
 
 function doneSections(
@@ -327,6 +353,20 @@ function gaveUpSections(
       ],
     });
   }
+
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  return sections;
+}
+
+function abortedSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
+  const sections: Section[] = [
+    advisorySection("neutral", "Stopped by the operator. The transcript is intact."),
+  ];
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
@@ -839,6 +879,8 @@ function statusPill(status: CoordinatorLedger["status"]): { label: string; tone:
       return { label: "verification failed", tone: "error" };
     case "change-quality-failed":
       return { label: "change quality failed", tone: "error" };
+    case "aborted":
+      return { label: "aborted", tone: "neutral" };
     default:
       return { label: "unknown", tone: "neutral" };
   }

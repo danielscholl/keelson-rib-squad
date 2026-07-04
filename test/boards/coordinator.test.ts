@@ -4,6 +4,7 @@ import {
   buildCoordinatorBoard,
   identityTone,
   outcomeTone,
+  STOP_COORDINATOR_ACTION,
   transcriptTrailing,
 } from "../../src/boards/coordinator.ts";
 import type { CoordinatorEntry, CoordinatorLedger } from "../../src/coordinator.ts";
@@ -173,6 +174,17 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status?.label).toBe("active");
     expect(board.header?.chip).toBe("round 3");
+  });
+
+  test("active runs expose a confirmed destructive stop action scoped to the ledger", () => {
+    const board = buildCoordinatorBoard(ledger({ status: "active", round: 3, scopeId: "alpha" }));
+    const section = board.sections.find((s) => s.kind === "actions" && s.title === "Live run");
+    if (section?.kind !== "actions") throw new Error("no live run actions section");
+    const stop = section.items[0];
+    expect(stop?.type).toBe(STOP_COORDINATOR_ACTION);
+    expect(stop?.destructive).toBe(true);
+    expect(stop?.payload).toEqual({ scopeId: "alpha" });
+    expect(stop?.confirm?.confirmLabel).toBe("Stop run");
   });
 
   test("renders an old-shape ledger without a round budget as just the round", () => {
@@ -745,6 +757,21 @@ describe("buildCoordinatorBoard terminal layouts", () => {
       rowsTitled(board, "Summary").some((i) => i.text.includes("could not make progress")),
     ).toBe(true);
     expect(cardsTitled(board, "Minds").length).toBeGreaterThan(0);
+  });
+
+  test("aborted is a calm terminal state with an intact transcript", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "aborted",
+        transcript: [entry({ kind: "dispatch", speaker: "atlas", text: "partially done" })],
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.header?.status).toEqual({ label: "aborted", tone: "neutral" });
+    expect(rowsTitled(board, "Advisory")[0]?.glyph).toBe("neutral");
+    expect(rowsTitled(board, "Ledger · R0 · team").some((i) => i.text.includes("partially done"))).toBe(
+      true,
+    );
   });
 
   test("Minds aggregates one lane per member: provider pill, turn/token counts, last act", () => {

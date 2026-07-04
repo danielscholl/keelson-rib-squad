@@ -5,6 +5,7 @@ import type { CoordinatorLedger } from "./coordinator.ts";
 export type RunSummary = {
   id: string;
   task: string;
+  scopeId?: string;
   status: string;
   round: number;
   createdAt: string;
@@ -38,6 +39,7 @@ function asRunSummary(value: unknown): RunSummary | undefined {
   return {
     id: runId(ledger.createdAt),
     task: ledger.task,
+    ...(ledger.scopeId ? { scopeId: ledger.scopeId } : {}),
     status: ledger.status,
     round: ledger.round,
     createdAt: ledger.createdAt,

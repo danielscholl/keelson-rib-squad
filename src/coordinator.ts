@@ -55,6 +55,7 @@ import { authorWorkflow, screenWorkflowForRun } from "./workflow-authoring.ts";
 // #2 recall/writeback integration is a follow-on (no in-process memory seam today).
 export interface CoordinatorLedger {
   task: string;
+  scopeId?: string;
   projectId?: string;
   // Durable run-delta baseline tree for change-quality checks. Captured once per active
   // ledger and reused across resumed invocations so prior-pass edits cannot evade the gate.
@@ -175,12 +176,12 @@ export type CoordinatorTerminalStatus =
   | typeof RUN_STATUS_GAVE_UP
   | typeof RUN_STATUS_MAX_ROUNDS
   | typeof RUN_STATUS_VERIFICATION_FAILED
-  | typeof RUN_STATUS_CHANGE_QUALITY_FAILED;
+  | typeof RUN_STATUS_CHANGE_QUALITY_FAILED
+  | typeof RUN_STATUS_ABORTED;
 export type CoordinatorLedgerStatus =
   | typeof LEDGER_STATUS_ACTIVE
-  | CoordinatorTerminalStatus
-  | typeof RUN_STATUS_ABORTED;
-export type RunCoordinatorStatus = CoordinatorTerminalStatus | "error" | typeof RUN_STATUS_ABORTED;
+  | CoordinatorTerminalStatus;
+export type RunCoordinatorStatus = CoordinatorTerminalStatus | "error";
 
 function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTerminalStatus {
   return (
@@ -188,7 +189,8 @@ function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTe
     status === RUN_STATUS_GAVE_UP ||
     status === RUN_STATUS_MAX_ROUNDS ||
     status === RUN_STATUS_VERIFICATION_FAILED ||
-    status === RUN_STATUS_CHANGE_QUALITY_FAILED
+    status === RUN_STATUS_CHANGE_QUALITY_FAILED ||
+    status === RUN_STATUS_ABORTED
   );
 }
 
@@ -345,12 +347,14 @@ export async function loadLedger(dataHome: string): Promise<CoordinatorLedger | 
 
 function freshLedger(
   task: string,
+  scopeId: string | undefined,
   projectId: string | undefined,
   at: string,
   roundBudget: number,
 ): CoordinatorLedger {
   return {
     task,
+    ...(scopeId ? { scopeId } : {}),
     ...(projectId ? { projectId } : {}),
     facts: [],
     plan: [],
@@ -370,12 +374,15 @@ function freshLedger(
 async function loadOrInit(
   dataHome: string,
   task: string,
+  scopeId: string | undefined,
   projectId: string | undefined,
   at: string,
   roundBudget: number,
+  forceFresh = false,
 ): Promise<CoordinatorLedger> {
   const existing = await loadLedger(dataHome);
   if (
+    !forceFresh &&
     existing &&
     existing.task === task &&
     existing.status === LEDGER_STATUS_ACTIVE &&
@@ -384,9 +391,9 @@ async function loadOrInit(
     // confines edits to B.
     (existing.projectId ?? undefined) === (projectId ?? undefined)
   ) {
-    return existing;
+    return existing.scopeId || !scopeId ? existing : { ...existing, scopeId };
   }
-  return freshLedger(task, projectId, at, roundBudget);
+  return freshLedger(task, scopeId, projectId, at, roundBudget);
 }
 
 // --- the coordinator turn ------------------------------------------------------
@@ -499,6 +506,7 @@ export interface RunCoordinatorOptions {
   dataHome: string;
   roster: Member[];
   task: string;
+  scopeId?: string;
   // Optional manager pin for the coordinator/planner turn. Mirrors member pin semantics:
   // provider may stand alone; model is sent only when provider is also set.
   managerModel?: string;
@@ -1225,7 +1233,15 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     entry: CoordinatorEntry,
   ): CoordinatorEntry[] => appendEntry(transcript, entry.at ? entry : { ...entry, at: now() });
 
-  let ledger = await loadOrInit(opts.dataHome, opts.task, project?.id, now(), limits.maxRounds);
+  let ledger = await loadOrInit(
+    opts.dataHome,
+    opts.task,
+    opts.scopeId,
+    project?.id,
+    now(),
+    limits.maxRounds,
+    Boolean(opts.takeoverNote),
+  );
   const exec = opts.getExec;
   if (opts.takeoverNote) {
     ledger = {

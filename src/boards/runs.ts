@@ -1,6 +1,6 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { RunSummary } from "../runs-store.ts";
-import { stripMd } from "./coordinator.ts";
+import { STOP_COORDINATOR_ACTION, stripMd } from "./coordinator.ts";
 
 // Pure: the archived coordinator runs for a scope -> a canvas `board` (the Runs
 // history panel). No runs renders a calm idle board; otherwise one card per run
@@ -12,6 +12,10 @@ import { stripMd } from "./coordinator.ts";
 // Open one archived run as a drill-down canvas. Shared with onAction so the action
 // type can't drift from its handler; the payload carries the run's id.
 export const VIEW_RUN_ACTION = "view-run";
+
+type CardAction = NonNullable<
+  Extract<CanvasBoardView["sections"][number], { kind: "cards" }>["items"][number]["actions"]
+>[number];
 
 const TASK_CAP = 160;
 // The archive can grow unbounded; the panel shows only the most recent runs (the
@@ -26,6 +30,8 @@ function statusTone(status: string): CanvasTone {
       return "ok";
     case "active":
       return "info";
+    case "aborted":
+      return "neutral";
     case "gave-up":
       return "warn";
     case "max-rounds":
@@ -62,19 +68,40 @@ export function buildRunsBoard(runs: readonly RunSummary[]): CanvasBoardView {
             { label: "rounds", value: `r${r.round}` },
             { label: "when", value: shortTime(r.updatedAt) },
           ],
-          actions: [
-            {
-              type: VIEW_RUN_ACTION,
-              label: "View",
-              glyph: "→",
-              inline: true,
-              payload: { id: r.id },
-            },
-          ],
+          actions: runActions(r),
         })),
       },
     ],
   };
+}
+
+function runActions(r: RunSummary): CardAction[] {
+  const actions: CardAction[] = [
+    {
+      type: VIEW_RUN_ACTION,
+      label: "View",
+      glyph: "→",
+      inline: true,
+      payload: { id: r.id },
+    },
+  ];
+  if (r.status === "active") {
+    actions.push({
+      type: STOP_COORDINATOR_ACTION,
+      label: "Stop",
+      glyph: "■",
+      tone: "warn",
+      destructive: true,
+      inline: true,
+      payload: { scopeId: r.scopeId ?? "default" },
+      confirm: {
+        title: "Stop this coordinator run?",
+        body: `Round ${r.round} will be marked aborted. The transcript stays intact.`,
+        confirmLabel: "Stop run",
+      },
+    });
+  }
+  return actions;
 }
 
 function idleBoard(): CanvasBoardView {
