@@ -1170,11 +1170,137 @@ describe("runCoordinator loop", () => {
       return { ok: true as const, data: "", exitCode: 0 };
     },
   });
+  const fakeTouchedTreeExec = (opts: {
+    codeNumstat?: string;
+    runNumstat?: string;
+    status?: string;
+    unstagedStat?: string;
+    stagedStat?: string;
+    failWriteTreeCall?: number;
+  }): RibExec => {
+    const trees = ["baseline-tree", "before-tree", "after-tree", "current-tree"];
+    let writeTreeCalls = 0;
+    return {
+      runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+      runText: async (cmd, args) => {
+        if (cmd !== "git") return { ok: true as const, data: "", exitCode: 0 };
+        if (args[0] === "add") return { ok: true as const, data: "", exitCode: 0 };
+        if (args[0] === "write-tree") {
+          writeTreeCalls += 1;
+          if (opts.failWriteTreeCall === writeTreeCalls) {
+            return { ok: false as const, error: "write-tree failed", code: 128 };
+          }
+          return {
+            ok: true as const,
+            data: trees[Math.min(writeTreeCalls - 1, trees.length - 1)] ?? "current-tree",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "rev-parse") return { ok: true as const, data: "", exitCode: 0 };
+        if (args[0] === "status") {
+          return { ok: true as const, data: opts.status ?? "", exitCode: 0 };
+        }
+        if (args[0] === "diff" && args.includes("--numstat")) {
+          const from = String(args.at(-2));
+          const to = String(args.at(-1));
+          const data =
+            from === "before-tree" && to === "after-tree"
+              ? (opts.codeNumstat ?? "")
+              : (opts.runNumstat ?? "");
+          return { ok: true as const, data, exitCode: 0 };
+        }
+        if (args[0] === "diff" && args.includes("--stat")) {
+          const data = args.includes("--cached")
+            ? (opts.stagedStat ?? "")
+            : (opts.unstagedStat ?? "");
+          return { ok: true as const, data, exitCode: 0 };
+        }
+        return { ok: true as const, data: "", exitCode: 0 };
+      },
+    };
+  };
   const codeThenDone = () =>
     queuedRun([
       'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
       'done\n{"action":"done","summary":"shipped"}',
     ]);
+
+  test("code touched stats include committed end-of-turn changes", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: fakeTouchedTreeExec({
+        codeNumstat: "195\t0\tsrc/committed.ts\n",
+        status: "",
+        unstagedStat: "",
+        stagedStat: "",
+      }),
+    });
+
+    const codeEntry = res.ledger.transcript.find((e) => e.kind === "code");
+    expect(res.status).toBe("done");
+    expect(codeEntry?.touched).toEqual({ files: 1, insertions: 195, deletions: 0 });
+  });
+
+  test("code touched stats still include uncommitted changes", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: fakeTouchedTreeExec({
+        codeNumstat: "195\t0\tsrc/uncommitted.ts\n",
+        status: " M src/uncommitted.ts",
+        unstagedStat: " 1 file changed, 195 insertions(+)",
+      }),
+    });
+
+    const codeEntry = res.ledger.transcript.find((e) => e.kind === "code");
+    expect(res.status).toBe("done");
+    expect(codeEntry?.touched).toEqual({ files: 1, insertions: 195, deletions: 0 });
+  });
+
+  test("code touched stats stay zero when trees are unchanged", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: fakeTouchedTreeExec({ codeNumstat: "" }),
+    });
+
+    const codeEntry = res.ledger.transcript.find((e) => e.kind === "code");
+    expect(res.status).toBe("done");
+    expect(codeEntry?.touched).toEqual({ files: 0, insertions: 0, deletions: 0 });
+  });
+
+  test("code touched stats fall back when pre-turn capture fails", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: fakeTouchedTreeExec({
+        failWriteTreeCall: 2,
+        status: " M src/fallback.ts",
+        unstagedStat: " 1 file changed, 7 insertions(+), 2 deletions(-)",
+      }),
+    });
+
+    const codeEntry = res.ledger.transcript.find((e) => e.kind === "code");
+    expect(res.status).toBe("done");
+    expect(codeEntry?.touched).toEqual({ files: 1, insertions: 7, deletions: 2 });
+  });
 
   test("default code arm defers the full matrix only when verify is configured", async () => {
     const withVerifySeen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];

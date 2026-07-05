@@ -987,7 +987,7 @@ function reviewVerdictSpeaker(
   const matching = members
     .map((m) => bySlug.get(m.slug))
     .filter((r): r is DispatchResult => {
-      if (!r || r.status !== "ok" || r.text.trim().length === 0) return false;
+      if (r?.status !== "ok" || r.text.trim().length === 0) return false;
       return blocked ? hasBlockVerdict(r.text) : true;
     });
   return matching.length ? matching.map((r) => r.slug).join(", ") : undefined;
@@ -1857,10 +1857,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       livePersists = livePersists.then(() => persist(live)).catch(() => {});
     };
     const codeTreeBefore =
-      opts.getExec &&
-      project &&
-      decided.step.kind === "execute" &&
-      decided.step.mode === "code"
+      opts.getExec && project && decided.step.kind === "execute" && decided.step.mode === "code"
         ? await captureWorkingTreeTree(opts.getExec, project.rootPath).catch(() => undefined)
         : undefined;
     const codeBeforeTree = codeTreeBefore?.ok ? codeTreeBefore.tree : undefined;
@@ -1937,10 +1934,21 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         result.code.status === "ok"
           ? result.code.text.trim() || "(no output)"
           : (result.code.error ?? result.code.status);
-      const touched =
-        opts.getExec && project
-          ? await collectTouchedSummary(opts.getExec, project.rootPath)
-          : undefined;
+      let touched: { files: number; insertions: number; deletions: number } | undefined;
+      if (opts.getExec && project) {
+        if (codeBeforeTree) {
+          const after = await captureWorkingTreeTree(opts.getExec, project.rootPath);
+          if (after.ok) {
+            touched = await collectTouchedBetween(
+              opts.getExec,
+              project.rootPath,
+              codeBeforeTree,
+              after.tree,
+            );
+          }
+        }
+        touched ??= await collectTouchedSummary(opts.getExec, project.rootPath);
+      }
       ledger = {
         ...ledger,
         facts: foldFacts(ledger.facts, [
