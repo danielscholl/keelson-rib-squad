@@ -98,6 +98,7 @@ describe("rib-squad", () => {
       "squad_remember",
       "squad_resolve_review",
       "squad_retire_member",
+      "squad_rollback",
       "squad_runs",
       "squad_stop",
       "squad_view_diff",
@@ -404,6 +405,22 @@ describe("rib-squad", () => {
       const data = ask.data as { workflow: string; stay?: boolean };
       expect(data.workflow).toBe("squad-dispatch-run");
       expect(data.stay).toBeUndefined();
+    }
+  });
+
+  it("rollback action launches preview with the originating scope selector", async () => {
+    const res = await rib.onAction?.(
+      { type: "rollback-run", payload: { run: "run-1", scopeId: "alpha" } },
+      bareCtx,
+    );
+
+    expect(res?.ok).toBe(true);
+    if (res?.ok) {
+      expect(res.data).toEqual({
+        effect: "run-workflow",
+        workflow: "squad-rollback-run",
+        args: { run: "run-1", project: "alpha" },
+      });
     }
   });
 

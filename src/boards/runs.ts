@@ -1,6 +1,6 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { RunSummary } from "../runs-store.ts";
-import { STOP_COORDINATOR_ACTION, stripMd } from "./coordinator.ts";
+import { ROLLBACK_RUN_ACTION, STOP_COORDINATOR_ACTION, stripMd } from "./coordinator.ts";
 
 // Pure: the archived coordinator runs for a scope -> a canvas `board` (the Runs
 // history panel). No runs renders a calm idle board; otherwise one card per run
@@ -101,7 +101,29 @@ function runActions(r: RunSummary, scopeId?: string): CardAction[] {
       },
     });
   }
+  if (isRollbackableRunStatus(r.status)) {
+    actions.push({
+      type: ROLLBACK_RUN_ACTION,
+      label: "Rollback",
+      glyph: "↶",
+      tone: "warn",
+      destructive: true,
+      inline: true,
+      payload: { run: r.id, confirm: false, scopeId: scopeId ?? r.scopeId ?? "default" },
+      confirm: {
+        title: "Preview rollback manifest?",
+        body: "The first step calls squad_rollback without confirm:true to render the full C/M/D manifest before any mutation.",
+        confirmLabel: "Preview rollback",
+      },
+    });
+  }
   return actions;
+}
+
+function isRollbackableRunStatus(status: string): boolean {
+  return (
+    status === "aborted" || status === "verification-failed" || status === "change-quality-failed"
+  );
 }
 
 function idleBoard(): CanvasBoardView {

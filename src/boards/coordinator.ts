@@ -21,6 +21,7 @@ type RowItem = Extract<Section, { kind: "rows" }>["items"][number];
 export const COORDINATE_ACTION = "coordinate";
 export const DISPATCH_ACTION = "dispatch";
 export const STOP_COORDINATOR_ACTION = "stop-coordinate";
+export const ROLLBACK_RUN_ACTION = "rollback-run";
 
 const GOAL_CAP = 280;
 const STEP_CAP = 200;
@@ -222,11 +223,11 @@ function sectionsFor(
       return maxRoundsSections(ledger, ledgerRounds, tones);
     case "verification-failed":
     case "change-quality-failed":
-      return failedSections(ledger, ledgerRounds, tones);
+      return failedSections(ledger, ledgerRounds, tones, scopeId);
     case "gave-up":
       return gaveUpSections(ledger, ledgerRounds, tones);
     case "aborted":
-      return abortedSections(ledger, ledgerRounds, tones);
+      return abortedSections(ledger, ledgerRounds, tones, scopeId);
     default:
       return [
         {
@@ -284,6 +285,33 @@ function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
   };
 }
 
+function rollbackSection(ledger: CoordinatorLedger, scopeId?: string): Section {
+  return {
+    kind: "actions",
+    title: "Rollback",
+    items: [
+      {
+        type: ROLLBACK_RUN_ACTION,
+        label: "Rollback",
+        glyph: "↶",
+        tone: "warn",
+        destructive: true,
+        inline: true,
+        payload: {
+          run: runId(ledger.createdAt),
+          confirm: false,
+          scopeId: scopeId ?? ledger.scopeId ?? "default",
+        },
+        confirm: {
+          title: "Preview rollback manifest?",
+          body: "The first step calls squad_rollback without confirm:true to render the full C/M/D manifest before any mutation.",
+          confirmLabel: "Preview rollback",
+        },
+      },
+    ],
+  };
+}
+
 function doneSections(
   ledger: CoordinatorLedger,
   ledgerRounds: number,
@@ -325,8 +353,9 @@ function failedSections(
   ledger: CoordinatorLedger,
   ledgerRounds: number,
   tones?: IdentityTones,
+  scopeId?: string,
 ): Section[] {
-  const sections: Section[] = [];
+  const sections: Section[] = [rollbackSection(ledger, scopeId)];
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   sections.push(
     advisorySection(
@@ -369,8 +398,10 @@ function abortedSections(
   ledger: CoordinatorLedger,
   ledgerRounds: number,
   tones?: IdentityTones,
+  scopeId?: string,
 ): Section[] {
   const sections: Section[] = [
+    rollbackSection(ledger, scopeId),
     advisorySection("neutral", "Stopped by the operator. The transcript is intact."),
   ];
   pushIf(sections, mindsSection(ledger.transcript, tones));
@@ -927,6 +958,10 @@ function idleBoard(): CanvasBoardView {
 function truncate(text: string, max: number): string {
   const t = text.trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+function runId(createdAt: string): string {
+  return createdAt.replaceAll(/[:.]/g, "-");
 }
 
 function tailTruncate(text: string, max: number): string {
