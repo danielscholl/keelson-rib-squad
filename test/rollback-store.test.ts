@@ -27,7 +27,7 @@ function performed(overrides: Partial<RollbackRow> = {}): RollbackRow {
     at: "2026-07-05T00:00:00.000Z",
     preRollbackTree: "tree-after",
     preRollbackHead: "head-after",
-    rollbackRef: "head-before",
+    rollbackRef: "refs/keelson/rollback/run-1",
     baselineTree: "tree-before",
     baselineHeadSha: "head-before",
     revertedCommits: [{ sha: "abc1234", subject: "ship change" }],

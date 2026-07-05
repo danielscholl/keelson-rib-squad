@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RibContext, RibExec, ToolDefinition } from "@keelson/shared";
@@ -7,8 +7,8 @@ import type { CoordinatorLedger } from "../src/coordinator.ts";
 import rib from "../src/index.ts";
 import { scopeDataHome, setSquadDataHome } from "../src/paths.ts";
 import { computeRollbackPlan, type RollbackGitExec } from "../src/rollback.ts";
-import { readRollbackRows } from "../src/rollback-store.ts";
-import { archiveRun } from "../src/runs-store.ts";
+import { appendRollbackRow, readRollbackRows } from "../src/rollback-store.ts";
+import { archiveRun, loadRun } from "../src/runs-store.ts";
 import { writeSelectedProject } from "../src/scope.ts";
 
 interface Call {
@@ -100,6 +100,27 @@ function makeRibExec(
   };
 }
 
+const runId = "2026-07-05T00-00-00-000Z";
+const rollbackRef = `refs/keelson/rollback/${runId}`;
+
+function gitCalls(calls: readonly RunTextCall[]): string[] {
+  return calls.filter((call) => call.cmd === "git").map((call) => call.args.join(" "));
+}
+
+function mutatingGitCalls(calls: readonly RunTextCall[]): string[] {
+  return gitCalls(calls).filter((key) =>
+    [
+      "write-tree",
+      "commit-tree",
+      "update-ref",
+      "reset",
+      "read-tree",
+      "checkout-index",
+      "clean",
+    ].some((prefix) => key.startsWith(prefix)),
+  );
+}
+
 function bootTools(exec: RibExec): readonly ToolDefinition[] {
   const ctx = {
     getDataDir: () => home,
@@ -130,6 +151,7 @@ function rollbackGitHandler(cmd: string, args: readonly string[]): RunTextResult
   if (cmd !== "git") return fail(`unexpected command: ${cmd}`);
   const key = args.join(" ");
   const outputs: Record<string, string> = {
+    [`rev-parse --verify ${rollbackRef}`]: "",
     "rev-parse HEAD": "head-after\n",
     "rev-parse HEAD^{tree}": "tree-after\n",
     "rev-parse -q --verify MERGE_HEAD": "",
@@ -140,13 +162,120 @@ function rollbackGitHandler(cmd: string, args: readonly string[]): RunTextResult
     "diff-tree -r -z --diff-filter=DMRT --name-only base-tree tree-after": "src/changed.ts\u0000",
     "diff-tree -r -z --diff-filter=A --name-only base-tree tree-after":
       "generated.txt\u0000nested/new.txt\u0000",
-    "diff --binary --full-index HEAD": "diff --git a/src/changed.ts b/src/changed.ts\n",
+    "write-tree": "tree-after\n",
+    [`commit-tree tree-after -p head-after -m keelson rollback forensic capture ${runId}`]:
+      "rollback-commit\n",
+    [`update-ref ${rollbackRef} rollback-commit`]: "",
     "reset --soft base-head": "",
     "read-tree base-tree": "",
     "checkout-index -a -f": "",
   };
+  if (key === `rev-parse --verify ${rollbackRef}`) return fail("missing ref");
   if (key === "merge-base --is-ancestor base-head HEAD") return ok("");
   return key in outputs ? ok(outputs[key]) : fail(`unexpected git command: ${key}`);
+}
+
+function statefulRollbackExec(
+  opts: {
+    deletedPaths?: string[];
+    crashAfter?: string;
+    mergeHead?: string;
+    failAncestor?: boolean;
+  } = {},
+): {
+  exec: RibExec;
+  calls: RunTextCall[];
+  state: { head: string; indexTree: string; worktreeTree: string; rollbackRef?: string };
+} {
+  const deletedPaths = opts.deletedPaths ?? ["generated.txt", "nested/new.txt"];
+  const state = {
+    head: "head-after",
+    indexTree: "tree-after",
+    worktreeTree: "tree-after",
+    rollbackRef: undefined as string | undefined,
+  };
+  let refTree = "";
+  let refParent = "";
+  let pendingTree = "";
+  let pendingParent = "";
+  let crashed = false;
+  const { exec, calls } = makeRibExec((cmd, args) => {
+    if (cmd !== "git") return fail(`unexpected command: ${cmd}`);
+    const key = args.join(" ");
+    const crash = () => {
+      if (!crashed && opts.crashAfter === key) {
+        crashed = true;
+        throw new Error(`crash after ${key}`);
+      }
+    };
+    if (key === `rev-parse --verify ${rollbackRef}`) {
+      return state.rollbackRef ? ok(`${state.rollbackRef}\n`) : fail("missing ref");
+    }
+    if (key === `rev-parse ${rollbackRef}^{tree}`) return ok(`${refTree}\n`);
+    if (key === `rev-parse ${rollbackRef}^`) return ok(`${refParent}\n`);
+    if (key === "rev-parse HEAD") return ok(`${state.head}\n`);
+    if (key === "rev-parse HEAD^{tree}") {
+      return ok(`${state.head === "base-head" ? "base-tree" : "tree-after"}\n`);
+    }
+    if (key === "merge-base --is-ancestor base-head HEAD") {
+      return opts.failAncestor ? fail("not ancestor") : ok("");
+    }
+    if (key === "rev-parse -q --verify MERGE_HEAD") return ok(opts.mergeHead ?? "");
+    if (key === "rev-parse --git-path rebase-merge") return ok(".git/rebase-merge\n");
+    if (key === "rev-parse --git-path rebase-apply") return ok(".git/rebase-apply\n");
+    if (key === "rev-list --reverse base-head..HEAD") {
+      return ok(state.head === "base-head" ? "" : "commit-a\n");
+    }
+    if (key === "rev-list --reverse base-head..head-after") return ok("commit-a\n");
+    if (key === "log -n 1 --format=%h%x00%s commit-a") {
+      return ok("aaaa111\u0000ship rollback target\n");
+    }
+    if (key === "diff-tree -r -z --diff-filter=DMRT --name-only base-tree tree-after") {
+      return ok("src/changed.ts\u0000src/deleted.ts\u0000");
+    }
+    if (key === "diff-tree -r -z --diff-filter=A --name-only base-tree tree-after") {
+      return ok(`${deletedPaths.join("\0")}\0`);
+    }
+    if (key === "diff-tree -r -z --diff-filter=DMRT --name-only base-tree base-tree") return ok("");
+    if (key === "diff-tree -r -z --diff-filter=A --name-only base-tree base-tree") return ok("");
+    if (key === "write-tree") {
+      crash();
+      return ok(`${state.indexTree}\n`);
+    }
+    if (
+      key ===
+      `commit-tree ${state.indexTree} -p ${state.head} -m keelson rollback forensic capture ${runId}`
+    ) {
+      pendingTree = state.indexTree;
+      pendingParent = state.head;
+      crash();
+      return ok("rollback-commit\n");
+    }
+    if (key === `update-ref ${rollbackRef} rollback-commit`) {
+      state.rollbackRef = "rollback-commit";
+      refTree = pendingTree;
+      refParent = pendingParent;
+      crash();
+      return ok("");
+    }
+    if (key === "reset --soft base-head") {
+      state.head = "base-head";
+      crash();
+      return ok("");
+    }
+    if (key === "read-tree base-tree") {
+      state.indexTree = "base-tree";
+      crash();
+      return ok("");
+    }
+    if (key === "checkout-index -a -f") {
+      state.worktreeTree = state.indexTree;
+      crash();
+      return ok("");
+    }
+    return fail(`unexpected git command: ${key}`);
+  });
+  return { exec, calls, state };
 }
 
 beforeEach(async () => {
@@ -186,14 +315,14 @@ describe("computeRollbackPlan", () => {
       },
     });
 
-    const plan = await computeRollbackPlan(ledger(), exec);
+    const plan = await computeRollbackPlan(ledger(), exec, rollbackRef);
 
     expect(plan).toEqual({
       type: "performed",
       manifest: {
         preRollbackTree: "tree-after",
         preRollbackHead: "head-after",
-        rollbackRef: "base-head",
+        rollbackRef,
         baselineTree: "base-tree",
         baselineHeadSha: "base-head",
         revertedCommits: [
@@ -230,7 +359,7 @@ describe("computeRollbackPlan", () => {
       failures: new Set(["merge-base --is-ancestor base-head HEAD"]),
     });
 
-    await expect(computeRollbackPlan(ledger(), exec)).resolves.toEqual({
+    await expect(computeRollbackPlan(ledger(), exec, rollbackRef)).resolves.toEqual({
       type: "refused",
       reason: "head-rewritten",
       observedHead: "observed",
@@ -246,7 +375,7 @@ describe("computeRollbackPlan", () => {
       },
     });
 
-    await expect(computeRollbackPlan(ledger(), exec)).resolves.toEqual({
+    await expect(computeRollbackPlan(ledger(), exec, rollbackRef)).resolves.toEqual({
       type: "refused",
       reason: "merge-in-progress",
       observedHead: "observed",
@@ -258,20 +387,34 @@ describe("computeRollbackPlan", () => {
       await archiveRun(scopeDataHome(home, "alpha"), ledger());
       const { exec, calls } = makeRibExec(rollbackGitHandler);
       const tool = rollbackTool(exec);
+      const before = await loadRun(scopeDataHome(home, "alpha"), runId);
 
       const res = await invoke(tool, { project: "alpha" });
 
       expect(tool.state_changing).toBe(true);
       expect(tool.requires_confirmation).toBe(true);
       expect(res.isError).toBeUndefined();
-      expect(res.content).toContain('"runId": "2026-07-05T00-00-00-000Z"');
-      expect(res.content).toContain('"C"');
-      expect(res.content).toContain('"M"');
-      expect(res.content).toContain('"D"');
-      expect(calls.map((call) => call.args.join(" "))).not.toContain("reset --soft base-head");
-      expect(
-        await readRollbackRows(scopeDataHome(home, "alpha"), "2026-07-05T00-00-00-000Z"),
-      ).toEqual([]);
+      const payload = JSON.parse(res.content ?? "");
+      expect(payload).toEqual({
+        tool: "squad_rollback",
+        project: "alpha",
+        scopeId: "alpha",
+        runId,
+        confirmRequired: true,
+        manifest: {
+          status: "performed",
+          preRollbackHead: "head-after",
+          preRollbackTree: "tree-after",
+          rollbackRef,
+          baselineTree: "base-tree",
+          C: [{ sha: "aaaa111", subject: "ship rollback target" }],
+          M: ["src/changed.ts"],
+          D: ["generated.txt", "nested/new.txt"],
+        },
+      });
+      expect(mutatingGitCalls(calls)).toEqual([]);
+      expect(await readRollbackRows(scopeDataHome(home, "alpha"), runId)).toEqual([]);
+      expect(await loadRun(scopeDataHome(home, "alpha"), runId)).toEqual(before);
     });
 
     test("confirm performs the ordered rollback sequence and appends the event last", async () => {
@@ -279,22 +422,210 @@ describe("computeRollbackPlan", () => {
       await mkdir(join(root, "nested"), { recursive: true });
       await writeFile(join(root, "generated.txt"), "delete me");
       await writeFile(join(root, "nested", "new.txt"), "delete me");
-      const { exec, calls } = makeRibExec(rollbackGitHandler);
+      const before = await loadRun(scopeDataHome(home, "alpha"), runId);
+      const { exec, calls } = makeRibExec(async (cmd, args) => {
+        if (cmd === "git" && args.join(" ") === "checkout-index -a -f") {
+          expect(await readFile(join(root, "generated.txt"), "utf8")).toBe("delete me");
+        }
+        return rollbackGitHandler(cmd, args);
+      });
+
+      const res = await invoke(rollbackTool(exec), { project: "alpha", run: runId, confirm: true });
+
+      expect(res.isError).toBeUndefined();
+      expect(res.content).toContain('"event": "performed"');
+      const keys = gitCalls(calls);
+      expect(keys).not.toContain("clean -fd");
+      expect(keys.slice(-7)).toEqual([
+        "write-tree",
+        "rev-parse HEAD",
+        `commit-tree tree-after -p head-after -m keelson rollback forensic capture ${runId}`,
+        `update-ref ${rollbackRef} rollback-commit`,
+        "reset --soft base-head",
+        "read-tree base-tree",
+        "checkout-index -a -f",
+      ]);
+      expect(keys.indexOf("reset --soft base-head")).toBeLessThan(
+        keys.indexOf("read-tree base-tree"),
+      );
+      expect(keys.indexOf("reset --soft base-head")).toBeLessThan(
+        keys.indexOf("checkout-index -a -f"),
+      );
+      const rows = await readRollbackRows(scopeDataHome(home, "alpha"), "2026-07-05T00-00-00-000Z");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.type).toBe("performed");
+      expect(rows[0]).toMatchObject({ rollbackRef });
+      await expect(readFile(join(root, "generated.txt"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(root, "nested", "new.txt"), "utf8")).rejects.toThrow();
+      expect(await loadRun(scopeDataHome(home, "alpha"), runId)).toEqual(before);
+    });
+
+    test("delete set includes only run-added paths absent from the baseline tree", async () => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger());
+      const { exec } = statefulRollbackExec({
+        deletedPaths: ["run-added.txt", "nested/run-added.txt"],
+      });
+
+      const res = await invoke(rollbackTool(exec), { project: "alpha" });
+
+      const payload = JSON.parse(res.content ?? "");
+      expect(payload.manifest.D).toEqual(["nested/run-added.txt", "run-added.txt"]);
+      expect(payload.manifest.D).not.toContain("pre-existing-untracked.txt");
+    });
+
+    test.each([
+      {
+        name: "non-ancestor HEAD",
+        ledger: ledger(),
+        execOpts: { failAncestor: true },
+        reason: "head-rewritten",
+      },
+      {
+        name: "merge in progress",
+        ledger: ledger(),
+        execOpts: { mergeHead: "merge-head\n" },
+        reason: "merge-in-progress",
+      },
+      {
+        name: "done run",
+        ledger: ledger({ status: "done" }),
+        execOpts: {},
+        reason: "run-not-rollbackable",
+      },
+      {
+        name: "live run",
+        ledger: ledger({ status: "active" }),
+        execOpts: {},
+        reason: "run-not-rollbackable",
+      },
+    ])("confirms a refused event without mutation for $name", async ({
+      ledger,
+      execOpts,
+      reason,
+    }) => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger);
+      const before = await loadRun(scopeDataHome(home, "alpha"), runId);
+      const { exec, calls } = statefulRollbackExec(execOpts);
+
+      const res = await invoke(rollbackTool(exec), { project: "alpha", run: runId, confirm: true });
+
+      expect(res.isError).toBe(true);
+      expect(mutatingGitCalls(calls)).toEqual([]);
+      const rows = await readRollbackRows(scopeDataHome(home, "alpha"), runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual({
+        type: "refused",
+        runId,
+        at: expect.any(String),
+        reason,
+        observedHead: "head-after",
+      });
+      expect("rollbackRef" in (rows[0] ?? {})).toBe(false);
+      expect(await loadRun(scopeDataHome(home, "alpha"), runId)).toEqual(before);
+    });
+
+    test("fast-paths an existing performed row without commands or a new event", async () => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger());
+      await appendRollbackRow(scopeDataHome(home, "alpha"), {
+        type: "performed",
+        runId,
+        at: "2026-07-05T00:01:00.000Z",
+        preRollbackTree: "tree-after",
+        preRollbackHead: "head-after",
+        rollbackRef,
+        baselineTree: "base-tree",
+        baselineHeadSha: "base-head",
+        revertedCommits: [{ sha: "aaaa111", subject: "ship rollback target" }],
+        revertedPaths: ["src/changed.ts"],
+        deletedPaths: ["generated.txt"],
+      });
+      const { exec, calls } = statefulRollbackExec();
 
       const res = await invoke(rollbackTool(exec), { project: "alpha", confirm: true });
 
       expect(res.isError).toBeUndefined();
-      expect(res.content).toContain('"event": "performed"');
-      expect(calls.map((call) => call.args.join(" ")).slice(-5)).toEqual([
-        "diff --binary --full-index HEAD",
-        "reset --soft base-head",
-        "diff-tree -r -z --diff-filter=A --name-only base-tree tree-after",
-        "read-tree base-tree",
-        "checkout-index -a -f",
+      expect(calls).toEqual([]);
+      expect(await readRollbackRows(scopeDataHome(home, "alpha"), runId)).toHaveLength(1);
+    });
+
+    test("confirm records noop without creating a rollback ref when nothing changed", async () => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger());
+      const { exec, calls } = makeRibExec((cmd, args) => {
+        if (cmd !== "git") return fail(`unexpected command: ${cmd}`);
+        const outputs: Record<string, string> = {
+          [`rev-parse --verify ${rollbackRef}`]: "",
+          "rev-parse HEAD": "base-head\n",
+          "rev-parse HEAD^{tree}": "base-tree\n",
+          "rev-parse -q --verify MERGE_HEAD": "",
+          "rev-parse --git-path rebase-merge": ".git/rebase-merge\n",
+          "rev-parse --git-path rebase-apply": ".git/rebase-apply\n",
+          "rev-list --reverse base-head..HEAD": "",
+          "diff-tree -r -z --diff-filter=DMRT --name-only base-tree base-tree": "",
+          "diff-tree -r -z --diff-filter=A --name-only base-tree base-tree": "",
+        };
+        if (args.join(" ") === "merge-base --is-ancestor base-head HEAD") return ok("");
+        return args.join(" ") in outputs ? ok(outputs[args.join(" ")]) : fail(args.join(" "));
+      });
+
+      const res = await invoke(rollbackTool(exec), { project: "alpha", confirm: true });
+
+      expect(res.isError).toBeUndefined();
+      expect(mutatingGitCalls(calls)).toEqual([]);
+      expect(await readRollbackRows(scopeDataHome(home, "alpha"), runId)).toEqual([
+        { type: "noop", runId, at: expect.any(String) },
       ]);
-      const rows = await readRollbackRows(scopeDataHome(home, "alpha"), "2026-07-05T00-00-00-000Z");
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.type).toBe("performed");
+    });
+
+    test("declined preview path performs no mutation and records no event", async () => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger());
+      const { exec, calls } = statefulRollbackExec();
+
+      const res = await invoke(rollbackTool(exec), { project: "alpha", confirm: false });
+
+      expect(res.isError).toBeUndefined();
+      expect(mutatingGitCalls(calls)).toEqual([]);
+      expect(await readRollbackRows(scopeDataHome(home, "alpha"), runId)).toEqual([]);
+    });
+
+    test.each([
+      `update-ref ${rollbackRef} rollback-commit`,
+      "reset --soft base-head",
+      "read-tree base-tree",
+      "checkout-index -a -f",
+    ])("recovers after a crash following %s", async (crashAfter) => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger());
+      await mkdir(join(root, "nested"), { recursive: true });
+      await writeFile(join(root, "generated.txt"), "delete me");
+      await writeFile(join(root, "nested", "new.txt"), "delete me");
+      const fake = statefulRollbackExec({ crashAfter });
+
+      const first = await invoke(rollbackTool(fake.exec), { project: "alpha", confirm: true });
+      expect(first.isError).toBe(true);
+      const second = await invoke(rollbackTool(fake.exec), { project: "alpha", confirm: true });
+
+      expect(second.isError).toBeUndefined();
+      expect(fake.state.head).toBe("base-head");
+      expect(fake.state.indexTree).toBe("base-tree");
+      expect(fake.state.worktreeTree).toBe("base-tree");
+      expect(await readRollbackRows(scopeDataHome(home, "alpha"), runId)).toHaveLength(1);
+      expect(await readRollbackRows(scopeDataHome(home, "alpha"), runId)).toEqual([
+        expect.objectContaining({ type: "performed" }),
+      ]);
+    });
+
+    test("tolerates ENOENT while unlinking run-added paths during the final prune step", async () => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger());
+      await mkdir(join(root, "nested"), { recursive: true });
+      await writeFile(join(root, "nested", "new.txt"), "delete me");
+      const { exec, calls } = statefulRollbackExec();
+
+      const res = await invoke(rollbackTool(exec), { project: "alpha", confirm: true });
+
+      expect(res.isError).toBeUndefined();
+      expect(gitCalls(calls)).not.toContain("clean -fd");
+      expect(await readRollbackRows(scopeDataHome(home, "alpha"), runId)).toEqual([
+        expect.objectContaining({ type: "performed" }),
+      ]);
     });
   });
 
@@ -306,7 +637,9 @@ describe("computeRollbackPlan", () => {
       },
     });
 
-    await expect(computeRollbackPlan(ledger({ status: "done" }), exec)).resolves.toEqual({
+    await expect(
+      computeRollbackPlan(ledger({ status: "done" }), exec, rollbackRef),
+    ).resolves.toEqual({
       type: "refused",
       reason: "run-not-rollbackable",
       observedHead: "observed",
@@ -331,7 +664,7 @@ describe("computeRollbackPlan", () => {
       },
     });
 
-    await expect(computeRollbackPlan(ledger(), exec)).resolves.toEqual({
+    await expect(computeRollbackPlan(ledger(), exec, rollbackRef)).resolves.toEqual({
       type: "noop",
       preRollbackHead: "base-head",
       preRollbackTree: "base-tree",

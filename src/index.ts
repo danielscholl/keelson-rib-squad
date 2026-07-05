@@ -38,6 +38,7 @@ import {
 import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
 import {
+  type CoordinatorLedger,
   LEDGER_STATUS_ACTIVE,
   loadLedger,
   type RunCoordinatorResult,
@@ -88,7 +89,11 @@ import {
   validateDispositionRows,
 } from "./review-dispositions.ts";
 import { computeRollbackPlan, type RollbackGitExec, type RollbackPlan } from "./rollback.ts";
-import { appendRollbackRow } from "./rollback-store.ts";
+import {
+  appendRollbackRow,
+  latestPerformedRollbackRow,
+  type RollbackCommit,
+} from "./rollback-store.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   listScopeMembersDirs,
@@ -1548,6 +1553,7 @@ function rollbackManifest(plan: RollbackPlan) {
       D: plan.manifest.deletedPaths,
     };
   }
+
   if (plan.type === "refused") {
     return {
       status: "refused",
@@ -1568,10 +1574,84 @@ function rollbackManifest(plan: RollbackPlan) {
   };
 }
 
+function rollbackRefForRun(runId: string): string {
+  return `refs/keelson/rollback/${runId}`;
+}
+
 async function requireGit(exec: RollbackGitExec, args: string[]): Promise<string> {
   const result = await exec.runGit(args);
   if (!result.ok) throw new Error(`git ${args.join(" ")} failed: ${result.error}`);
   return result.data;
+}
+
+async function readRollbackRefPlan(
+  ledger: Pick<CoordinatorLedger, "baselineTree" | "baselineHeadSha">,
+  exec: RollbackGitExec,
+  runId: string,
+): Promise<Extract<RollbackPlan, { type: "performed" }> | undefined> {
+  const rollbackRef = rollbackRefForRun(runId);
+  const ref = await exec.runGit(["rev-parse", "--verify", rollbackRef]);
+  if (!ref.ok || !ref.data.trim() || !ledger.baselineTree || !ledger.baselineHeadSha)
+    return undefined;
+  const preRollbackTree = (await requireGit(exec, ["rev-parse", `${rollbackRef}^{tree}`])).trim();
+  const preRollbackHead = (await requireGit(exec, ["rev-parse", `${rollbackRef}^`])).trim();
+  const revertedCommits = (
+    await requireGit(exec, [
+      "rev-list",
+      "--reverse",
+      `${ledger.baselineHeadSha}..${preRollbackHead}`,
+    ])
+  )
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const commits: RollbackCommit[] = [];
+  for (const sha of revertedCommits) {
+    const raw = await requireGit(exec, ["log", "-n", "1", "--format=%h%x00%s", sha]);
+    const [shortSha, subject] = raw.replace(/\n$/, "").split("\0");
+    if (shortSha) commits.push({ sha: shortSha, subject: subject ?? "" });
+  }
+  const revertedPaths = (
+    await requireGit(exec, [
+      "diff-tree",
+      "-r",
+      "-z",
+      "--diff-filter=DMRT",
+      "--name-only",
+      ledger.baselineTree,
+      preRollbackTree,
+    ])
+  )
+    .split("\0")
+    .filter(Boolean)
+    .sort();
+  const deletedPaths = (
+    await requireGit(exec, [
+      "diff-tree",
+      "-r",
+      "-z",
+      "--diff-filter=A",
+      "--name-only",
+      ledger.baselineTree,
+      preRollbackTree,
+    ])
+  )
+    .split("\0")
+    .filter(Boolean)
+    .sort();
+  return {
+    type: "performed",
+    manifest: {
+      preRollbackTree,
+      preRollbackHead,
+      rollbackRef,
+      baselineTree: ledger.baselineTree,
+      baselineHeadSha: ledger.baselineHeadSha,
+      revertedCommits: commits,
+      revertedPaths,
+      deletedPaths,
+    },
+  };
 }
 
 function projectRelativePath(rootPath: string, gitPath: string): string {
@@ -1607,25 +1687,29 @@ async function performRollbackSequence(
   plan: Extract<RollbackPlan, { type: "performed" }>,
   exec: RollbackGitExec,
   rootPath: string,
+  runId: string,
 ): Promise<void> {
-  await requireGit(exec, ["diff", "--binary", "--full-index", "HEAD"]);
-  await requireGit(exec, ["reset", "--soft", plan.manifest.rollbackRef]);
-  const deleteSet = await requireGit(exec, [
-    "diff-tree",
-    "-r",
-    "-z",
-    "--diff-filter=A",
-    "--name-only",
-    plan.manifest.baselineTree,
-    plan.manifest.preRollbackTree,
-  ]);
-  const deletedPaths = deleteSet
-    .split("\0")
-    .filter((part) => part.length > 0)
-    .sort();
+  const rollbackRef = rollbackRefForRun(runId);
+  const existingRef = await exec.runGit(["rev-parse", "--verify", rollbackRef]);
+  if (!existingRef.ok || !existingRef.data.trim()) {
+    const tree = (await requireGit(exec, ["write-tree"])).trim();
+    const head = (await requireGit(exec, ["rev-parse", "HEAD"])).trim();
+    const commit = (
+      await requireGit(exec, [
+        "commit-tree",
+        tree,
+        "-p",
+        head,
+        "-m",
+        `keelson rollback forensic capture ${runId}`,
+      ])
+    ).trim();
+    await requireGit(exec, ["update-ref", rollbackRef, commit]);
+  }
+  await requireGit(exec, ["reset", "--soft", plan.manifest.baselineHeadSha]);
   await requireGit(exec, ["read-tree", plan.manifest.baselineTree]);
   await requireGit(exec, ["checkout-index", "-a", "-f"]);
-  for (const deletedPath of deletedPaths) {
+  for (const deletedPath of plan.manifest.deletedPaths) {
     const filePath = projectRelativePath(rootPath, deletedPath);
     try {
       await unlink(filePath);
@@ -1685,7 +1769,36 @@ function makeRollbackTool(
           return;
         }
         const git = rollbackExec(execSeam(), resolution.project.rootPath);
-        const plan = await computeRollbackPlan(run.ledger, git);
+        const performed = parsed.data.confirm
+          ? await latestPerformedRollbackRow(dataHome, run.runId)
+          : undefined;
+        if (performed) {
+          emitResult(
+            ctx,
+            JSON.stringify(
+              {
+                tool: "squad_rollback",
+                project: resolution.project.name,
+                scopeId: resolution.scopeId,
+                runId: run.runId,
+                confirmRequired: false,
+                manifest: rollbackManifest({
+                  type: "performed",
+                  manifest: performed,
+                }),
+                event: "performed",
+              },
+              null,
+              2,
+            ),
+          );
+          return;
+        }
+        const resumed = parsed.data.confirm
+          ? await readRollbackRefPlan(run.ledger, git, run.runId)
+          : undefined;
+        const plan: RollbackPlan =
+          resumed ?? (await computeRollbackPlan(run.ledger, git, rollbackRefForRun(run.runId)));
         const preview = {
           tool: "squad_rollback",
           project: resolution.project.name,
@@ -1715,7 +1828,7 @@ function makeRollbackTool(
           emitResult(ctx, JSON.stringify({ ...preview, event: "noop" }, null, 2));
           return;
         }
-        await performRollbackSequence(plan, git, resolution.project.rootPath);
+        await performRollbackSequence(plan, git, resolution.project.rootPath, run.runId);
         await appendRollbackRow(dataHome, {
           type: "performed",
           runId: run.runId,

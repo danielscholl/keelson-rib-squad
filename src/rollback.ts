@@ -76,6 +76,7 @@ async function commitsToRewind(
 export async function computeRollbackPlan(
   ledger: Pick<CoordinatorLedger, "baselineTree" | "baselineHeadSha" | "status">,
   exec: RollbackGitExec,
+  rollbackRef: string,
 ): Promise<RollbackPlan> {
   const { head: preRollbackHead, tree: preRollbackTree } = await captureHead(exec);
   if (!ledger.baselineTree || !ledger.baselineHeadSha || !isRollbackableStatus(ledger.status)) {
@@ -125,7 +126,7 @@ export async function computeRollbackPlan(
     manifest: {
       preRollbackTree,
       preRollbackHead,
-      rollbackRef: ledger.baselineHeadSha,
+      rollbackRef,
       baselineTree: ledger.baselineTree,
       baselineHeadSha: ledger.baselineHeadSha,
       revertedCommits,
