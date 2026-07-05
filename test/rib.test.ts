@@ -408,6 +408,22 @@ describe("rib-squad", () => {
     }
   });
 
+  it("rollback action launches preview with the originating scope selector", async () => {
+    const res = await rib.onAction?.(
+      { type: "rollback-run", payload: { run: "run-1", scopeId: "alpha" } },
+      bareCtx,
+    );
+
+    expect(res?.ok).toBe(true);
+    if (res?.ok) {
+      expect(res.data).toEqual({
+        effect: "run-workflow",
+        workflow: "squad-rollback-run",
+        args: { run: "run-1", project: "alpha" },
+      });
+    }
+  });
+
   it("assign-code fails closed for an unknown member before launching a billed run", async () => {
     // Preflight: a stale card button naming a member absent from the selected scope
     // must not kick off a doomed squad-code-run.

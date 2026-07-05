@@ -169,8 +169,9 @@ function rollbackGitHandler(cmd: string, args: readonly string[]): RunTextResult
     "log -n 1 --format=%h%x00%s commit-a": "aaaa111\u0000ship rollback target\n",
     "diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after":
       "src/changed.ts\u0000",
-    "diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after":
-      "generated.txt\u0000nested/new.txt\u0000",
+    "ls-tree -r --name-only -z base-tree": "src/changed.ts\u0000",
+    "ls-tree -r --name-only -z index-tree-after":
+      "generated.txt\u0000nested/new.txt\u0000src/changed.ts\u0000",
     [`commit-tree index-tree-after -p head-after -m keelson rollback forensic capture ${runId}`]:
       "rollback-commit\n",
     [`update-ref ${rollbackRef} rollback-commit`]: "",
@@ -239,11 +240,11 @@ function statefulRollbackExec(
     if (key === "diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after") {
       return ok("src/changed.ts\u0000src/deleted.ts\u0000");
     }
-    if (key === "diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after") {
-      return ok(`${deletedPaths.join("\0")}\0`);
+    if (key === "ls-tree -r --name-only -z base-tree") return ok("src/changed.ts\u0000");
+    if (key === "ls-tree -r --name-only -z index-tree-after") {
+      return ok(`${["src/changed.ts", ...deletedPaths].join("\0")}\0`);
     }
     if (key === "diff-tree -r -z --diff-filter=DMRT --name-only base-tree base-tree") return ok("");
-    if (key === "diff-tree -r -z --diff-filter=A --name-only base-tree base-tree") return ok("");
     if (key === "read-tree HEAD" && scratchIndex) return ok("");
     if (key === "add -A -- ." && scratchIndex) return ok("");
     if (key === "write-tree") {
@@ -319,8 +320,9 @@ describe("computeRollbackPlan", () => {
         "log -n 1 --format=%h%x00%s commit-b": "bbbb222\u0000second change\n",
         "diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after":
           "src/changed.ts\u0000src/deleted.ts\u0000",
-        "diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after":
-          "src/new.ts\u0000",
+        "ls-tree -r --name-only -z base-tree": "src/changed.ts\u0000src/deleted.ts\u0000",
+        "ls-tree -r --name-only -z index-tree-after":
+          "src/changed.ts\u0000src/deleted.ts\u0000src/new.ts\u0000",
       },
     });
 
@@ -357,7 +359,8 @@ describe("computeRollbackPlan", () => {
       "git:log -n 1 --format=%h%x00%s commit-a",
       "git:log -n 1 --format=%h%x00%s commit-b",
       "git:diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after",
-      "git:diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after",
+      "git:ls-tree -r --name-only -z base-tree",
+      "git:ls-tree -r --name-only -z index-tree-after",
     ]);
     const scratchCalls = calls.filter((call) =>
       ["read-tree HEAD", "add -A -- .", "write-tree"].includes(call.value),
@@ -651,7 +654,7 @@ describe("computeRollbackPlan", () => {
           "rev-parse --git-path rebase-apply": ".git/rebase-apply\n",
           "rev-list --reverse base-head..HEAD": "",
           "diff-tree -r -z --diff-filter=DMRT --name-only base-tree base-tree": "",
-          "diff-tree -r -z --diff-filter=A --name-only base-tree base-tree": "",
+          "ls-tree -r --name-only -z base-tree": "",
         };
         if (args.join(" ") === "merge-base --is-ancestor base-head HEAD") return ok("");
         return args.join(" ") in outputs ? ok(outputs[args.join(" ")]) : fail(args.join(" "));
@@ -752,7 +755,7 @@ describe("computeRollbackPlan", () => {
         "rev-parse --git-path rebase-apply": ".git/rebase-apply\n",
         "rev-list --reverse base-head..HEAD": "",
         "diff-tree -r -z --diff-filter=DMRT --name-only base-tree base-tree": "",
-        "diff-tree -r -z --diff-filter=A --name-only base-tree base-tree": "",
+        "ls-tree -r --name-only -z base-tree": "",
       },
     });
 

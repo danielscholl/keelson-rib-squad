@@ -35,6 +35,20 @@ function splitNul(text: string): string[] {
     .sort();
 }
 
+async function treePaths(exec: RollbackGitExec, tree: string): Promise<Set<string>> {
+  return new Set(splitNul(await git(exec, ["ls-tree", "-r", "--name-only", "-z", tree])));
+}
+
+export async function pathsAbsentFromBaselineTree(
+  exec: RollbackGitExec,
+  baselineTree: string,
+  preRollbackTree: string,
+): Promise<string[]> {
+  const baselinePaths = await treePaths(exec, baselineTree);
+  const preRollbackPaths = await treePaths(exec, preRollbackTree);
+  return [...preRollbackPaths].filter((path) => !baselinePaths.has(path)).sort();
+}
+
 function isRollbackableStatus(status: CoordinatorLedger["status"]): boolean {
   return (
     status === "aborted" || status === "verification-failed" || status === "change-quality-failed"
@@ -126,16 +140,10 @@ export async function computeRollbackPlan(
       preRollbackTree,
     ]),
   );
-  const deletedPaths = splitNul(
-    await git(exec, [
-      "diff-tree",
-      "-r",
-      "-z",
-      "--diff-filter=A",
-      "--name-only",
-      ledger.baselineTree,
-      preRollbackTree,
-    ]),
+  const deletedPaths = await pathsAbsentFromBaselineTree(
+    exec,
+    ledger.baselineTree,
+    preRollbackTree,
   );
   if (revertedCommits.length === 0 && revertedPaths.length === 0 && deletedPaths.length === 0) {
     return { type: "noop", preRollbackHead, preRollbackTree };

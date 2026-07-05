@@ -88,7 +88,12 @@ import {
   type ReviewDisposition,
   validateDispositionRows,
 } from "./review-dispositions.ts";
-import { computeRollbackPlan, type RollbackGitExec, type RollbackPlan } from "./rollback.ts";
+import {
+  computeRollbackPlan,
+  pathsAbsentFromBaselineTree,
+  type RollbackGitExec,
+  type RollbackPlan,
+} from "./rollback.ts";
 import {
   appendRollbackRow,
   latestPerformedRollbackRow,
@@ -259,8 +264,9 @@ Call the squad_propose_cast tool EXACTLY ONCE. If the mission above is non-empty
 const ROLLBACK_WF_PROMPT = `The operator wants to preview rollback for a failed or aborted coordinator run.
 
 Run id: $inputs.run
+Project selector (optional): $inputs.project
 
-Call the squad_rollback tool EXACTLY ONCE with \`run\` set to that id. Do NOT set \`confirm\`: true — this first phase must compute and show the full rollback manifest (C commits, M tracked paths, D delete list) without mutating the repository. After it returns, reply with EXACTLY its JSON result.`;
+Call the squad_rollback tool EXACTLY ONCE with \`run\` set to that id. If the project selector above is non-empty, pass \`project\` set to it. Do NOT set \`confirm\`: true — this first phase must compute and show the full rollback manifest (C commits, M tracked paths, D delete list) without mutating the repository. After it returns, reply with EXACTLY its JSON result.`;
 
 // Tool results stream to chat as `tool_result` chunks; keep each well under the
 // chat context budget. Truncation is signalled, never silent.
@@ -1629,20 +1635,11 @@ async function readRollbackRefPlan(
     .split("\0")
     .filter(Boolean)
     .sort();
-  const deletedPaths = (
-    await requireGit(exec, [
-      "diff-tree",
-      "-r",
-      "-z",
-      "--diff-filter=A",
-      "--name-only",
-      ledger.baselineTree,
-      preRollbackTree,
-    ])
-  )
-    .split("\0")
-    .filter(Boolean)
-    .sort();
+  const deletedPaths = await pathsAbsentFromBaselineTree(
+    exec,
+    ledger.baselineTree,
+    preRollbackTree,
+  );
   return {
     type: "performed",
     manifest: {
@@ -2822,13 +2819,14 @@ function stopCoordinateAction(action: RibAction): RibActionResult {
 function rollbackRunAction(action: RibAction): RibActionResult {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const run = asNonEmptyString(payload.run);
+  const project = asNonEmptyString(payload.scopeId);
   if (!run) return { ok: false, error: "rollback-run requires payload { run }" };
   return {
     ok: true,
     data: {
       effect: "run-workflow",
       workflow: "squad-rollback-run",
-      args: { run },
+      args: project ? { run, project } : { run },
     },
   };
 }
