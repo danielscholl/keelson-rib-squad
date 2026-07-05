@@ -1022,6 +1022,7 @@ describe("runCoordinator loop", () => {
     // seeing a "now executing" card), no junk fact, and no dispatch entry — so a resume re-runs
     // round 0, budget intact.
     const persisted = await loadLedger(home);
+    expect(persisted?.status).toBe("aborted");
     expect(persisted?.inFlight).toBeUndefined();
     expect(persisted?.round).toBe(0);
     expect(persisted?.facts.some((f) => f.includes("(no synthesis)"))).toBe(false);
@@ -2403,5 +2404,138 @@ describe("collectIncompleteCommitPaths", () => {
       );
       expect(r.ok).toBe(false);
     }
+  });
+});
+
+describe("squad_stop tool + coordinate run guard", () => {
+  let home: string;
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "squad-stop-tool-"));
+    setSquadDataHome(home);
+  });
+  afterEach(async () => {
+    rib.dispose?.();
+    setSquadDataHome(undefined);
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const PROGRESS =
+    'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"look","mode":"dispatch"}';
+
+  function slowRun(delayMs: number): NonNullable<RibContext["runAgentTurn"]> {
+    return () => ({
+      stream: oneShot(),
+      result: new Promise((resolve) => {
+        setTimeout(() => resolve({ status: "ok" as const, text: PROGRESS }), delayMs);
+      }),
+    });
+  }
+
+  async function bootWithMember(
+    run: NonNullable<RibContext["runAgentTurn"]>,
+  ): Promise<readonly ToolDefinition[]> {
+    await scaffoldMember(scopeMembersDir(home, "alpha"), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    const ctx = {
+      getDataDir: () => home,
+      getProjects: () => [project("alpha", "alpha", "/repo/alpha")],
+      runAgentTurn: run,
+    } as unknown as RibContext;
+    return rib.registerTools?.(ctx) ?? [];
+  }
+
+  test("squad_stop with no live run errors and names the scope", async () => {
+    const tools = await bootWithMember(queuedRun([PROGRESS]));
+    const capture = captureTool();
+
+    await registeredTool(tools, "squad_stop").execute({ project: "alpha" }, capture.ctx as never);
+
+    expect(capture.out().isError).toBe(true);
+    expect(capture.out().content).toContain('no live coordinator run in scope "alpha"');
+  });
+
+  test("squad_stop trips a live run into an aborted ledger with the transcript intact", async () => {
+    const tools = await bootWithMember(slowRun(80));
+    const runCapture = captureTool();
+    const running = registeredTool(tools, "squad_coordinate").execute(
+      { task: "stoppable work", project: "alpha", maxRounds: 50 },
+      runCapture.ctx as never,
+    );
+    await new Promise((r) => setTimeout(r, 120));
+
+    const stopCapture = captureTool();
+    await registeredTool(tools, "squad_stop").execute(
+      { project: "alpha" },
+      stopCapture.ctx as never,
+    );
+    await running;
+
+    expect(stopCapture.out().isError).toBe(false);
+    expect(stopCapture.out().content).toContain("stop requested");
+    const ledger = await loadLedger(scopeDataHome(home, "alpha"));
+    expect(ledger?.status).toBe("aborted");
+    expect(runCapture.out().content).toContain("aborted");
+  });
+
+  test("coordinate refuses while the scope has a live run", async () => {
+    const tools = await bootWithMember(slowRun(80));
+    const runCapture = captureTool();
+    const running = registeredTool(tools, "squad_coordinate").execute(
+      { task: "first run", project: "alpha", maxRounds: 50 },
+      runCapture.ctx as never,
+    );
+    await new Promise((r) => setTimeout(r, 120));
+
+    const secondCapture = captureTool();
+    await registeredTool(tools, "squad_coordinate").execute(
+      { task: "second run", project: "alpha" },
+      secondCapture.ctx as never,
+    );
+    expect(secondCapture.out().isError).toBe(true);
+    expect(secondCapture.out().content).toContain("already has a live coordinator run");
+
+    const stopCapture = captureTool();
+    await registeredTool(tools, "squad_stop").execute(
+      { project: "alpha" },
+      stopCapture.ctx as never,
+    );
+    await running;
+  });
+
+  test("coordinate takes over a stale active ledger and records the takeover note", async () => {
+    const staleAt = "2026-07-01T00:00:00.000Z";
+    await saveLedger(scopeDataHome(home, "alpha"), {
+      task: "orphaned work",
+      status: "active",
+      round: 3,
+      facts: [],
+      plan: [],
+      stallCount: 0,
+      resetCount: 0,
+      transcript: [],
+      createdAt: staleAt,
+      updatedAt: staleAt,
+    });
+    const tools = await bootWithMember(queuedRun(['ok\n{"action":"done","summary":"fin"}']));
+    const capture = captureTool();
+
+    await registeredTool(tools, "squad_coordinate").execute(
+      { task: "fresh run", project: "alpha" },
+      capture.ctx as never,
+    );
+
+    expect(capture.out().isError).toBe(false);
+    const ledger = await loadLedger(scopeDataHome(home, "alpha"));
+    expect(ledger?.status).toBe("done");
+    const note = ledger?.transcript.find((e) =>
+      (e.text ?? "").includes("took over stale active coordinator ledger at round 3"),
+    );
+    expect(note).toBeDefined();
   });
 });

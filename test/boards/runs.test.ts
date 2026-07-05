@@ -33,6 +33,19 @@ describe("buildRunsBoard", () => {
     expect(cards.items[1]?.pill?.tone).toBe("caution");
   });
 
+  test("active cards carry a Stop action targeting the caller's scope", () => {
+    const board = buildRunsBoard([run({ status: "active", scopeId: "stale" })], "beta");
+    const cards = board.sections.find((s) => s.kind === "cards");
+    if (cards?.kind !== "cards") throw new Error("no cards section");
+    const stop = cards.items[0]?.actions?.find((a) => a.type === "stop-coordinate");
+    expect(stop?.payload).toEqual({ scopeId: "beta" });
+    expect(stop?.destructive).toBe(true);
+    const done = buildRunsBoard([run()], "beta");
+    const doneCards = done.sections.find((s) => s.kind === "cards");
+    if (doneCards?.kind !== "cards") throw new Error("no cards section");
+    expect(doneCards.items[0]?.actions?.some((a) => a.type === "stop-coordinate")).toBe(false);
+  });
+
   test("no runs renders the calm idle board", () => {
     const board = buildRunsBoard([]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);

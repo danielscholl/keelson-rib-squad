@@ -20,6 +20,7 @@ type RowItem = Extract<Section, { kind: "rows" }>["items"][number];
 // to the whole roster and synthesizes.
 export const COORDINATE_ACTION = "coordinate";
 export const DISPATCH_ACTION = "dispatch";
+export const STOP_COORDINATOR_ACTION = "stop-coordinate";
 
 const GOAL_CAP = 280;
 const STEP_CAP = 200;
@@ -117,11 +118,12 @@ function formatTokens(n: number): string {
 export function buildCoordinatorBoard(
   ledger: CoordinatorLedger | undefined,
   tones?: IdentityTones,
+  scopeId?: string,
 ): CanvasBoardView {
   if (!ledger) return idleBoard();
   // Head every non-active board with the task composer so assigning work is one
   // field away; an ACTIVE run omits it (you're watching, not queuing another).
-  const base = sectionsFor(ledger, undefined, tones);
+  const base = sectionsFor(ledger, undefined, tones, scopeId);
   const sections = ledger.status === "active" ? base : [taskComposerSection(), ...base];
   return {
     view: "board",
@@ -140,6 +142,7 @@ export function buildRunDetailBoard(
   ledger: CoordinatorLedger | undefined,
   id: string,
   tones?: IdentityTones,
+  scopeId?: string,
 ): CanvasBoardView {
   if (!ledger) {
     return {
@@ -160,7 +163,7 @@ export function buildRunDetailBoard(
     view: "board",
     title: "Run",
     header: { status: statusPill(ledger.status), chip: id },
-    sections: sectionsFor(ledger, Number.POSITIVE_INFINITY, tones),
+    sections: sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId),
   };
 }
 
@@ -208,10 +211,11 @@ function sectionsFor(
   ledger: CoordinatorLedger,
   ledgerRounds = LEDGER_ROUNDS_SHOWN,
   tones?: IdentityTones,
+  scopeId?: string,
 ): Section[] {
   switch (ledger.status) {
     case "active":
-      return activeSections(ledger, ledgerRounds, tones);
+      return activeSections(ledger, ledgerRounds, tones, scopeId);
     case "done":
       return doneSections(ledger, ledgerRounds, tones);
     case "max-rounds":
@@ -221,6 +225,8 @@ function sectionsFor(
       return failedSections(ledger, ledgerRounds, tones);
     case "gave-up":
       return gaveUpSections(ledger, ledgerRounds, tones);
+    case "aborted":
+      return abortedSections(ledger, ledgerRounds, tones);
     default:
       return [
         {
@@ -235,8 +241,9 @@ function activeSections(
   ledger: CoordinatorLedger,
   ledgerRounds: number,
   tones?: IdentityTones,
+  scopeId?: string,
 ): Section[] {
-  const sections: Section[] = [pulseSection(ledger)];
+  const sections: Section[] = [pulseSection(ledger), stopSection(ledger, scopeId)];
   const findings = visibleFindings(ledger);
   pushIf(sections, roundRailSection(ledger, tones));
   sections.push(goalSection(ledger.task));
@@ -250,6 +257,31 @@ function activeSections(
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
+}
+
+// The caller's scopeId is authoritative (the collector knows which scope it rendered);
+// ledger.scopeId only covers ledgers persisted before scopeId existed.
+function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
+  return {
+    kind: "actions",
+    title: "Live run",
+    items: [
+      {
+        type: STOP_COORDINATOR_ACTION,
+        label: "Stop run",
+        glyph: "■",
+        tone: "warn",
+        destructive: true,
+        inline: true,
+        payload: { scopeId: scopeId ?? ledger.scopeId ?? "default" },
+        confirm: {
+          title: "Stop this coordinator run?",
+          body: `Round ${ledger.round} will be marked aborted. The transcript stays intact.`,
+          confirmLabel: "Stop run",
+        },
+      },
+    ],
+  };
 }
 
 function doneSections(
@@ -327,6 +359,20 @@ function gaveUpSections(
       ],
     });
   }
+
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  return sections;
+}
+
+function abortedSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
+  const sections: Section[] = [
+    advisorySection("neutral", "Stopped by the operator. The transcript is intact."),
+  ];
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
@@ -839,6 +885,8 @@ function statusPill(status: CoordinatorLedger["status"]): { label: string; tone:
       return { label: "verification failed", tone: "error" };
     case "change-quality-failed":
       return { label: "change quality failed", tone: "error" };
+    case "aborted":
+      return { label: "aborted", tone: "neutral" };
     default:
       return { label: "unknown", tone: "neutral" };
   }

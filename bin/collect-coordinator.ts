@@ -22,7 +22,7 @@ async function main() {
   const ledger = await loadLedger(scopeDataHome(home, scopeId)).catch(() => undefined);
   const members = await readMembers(scopeMembersDir(home, scopeId)).catch(() => []);
   process.stdout.write(
-    JSON.stringify(buildCoordinatorBoard(ledger, identityTonesByMember(members))),
+    JSON.stringify(buildCoordinatorBoard(ledger, identityTonesByMember(members), scopeId)),
   );
 }
 
