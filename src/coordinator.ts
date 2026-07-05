@@ -152,6 +152,7 @@ export interface CoordinatorEntry {
   // written before these fields existed keep loading and rendering.
   at?: string;
   durationMs?: number;
+  outcome?: "ok" | "error" | "timeout" | "aborted";
   usage?: TokenUsage;
   tools?: ToolTrace[];
 }
