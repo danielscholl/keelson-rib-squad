@@ -1987,6 +1987,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           ...(result.code.tools ? { tools: result.code.tools } : {}),
           ...(result.code.usage ? { usage: result.code.usage } : {}),
           ...(result.code.durationMs !== undefined ? { durationMs: result.code.durationMs } : {}),
+          ...(result.code.status !== "ok" ? { outcome: result.code.status } : {}),
         }),
         lastCodeRound: ledger.round,
         updatedAt: now(),
