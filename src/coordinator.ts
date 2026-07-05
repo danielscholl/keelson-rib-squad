@@ -152,6 +152,7 @@ export interface CoordinatorEntry {
   // written before these fields existed keep loading and rendering.
   at?: string;
   durationMs?: number;
+  outcome?: "ok" | "error" | "timeout" | "aborted";
   usage?: TokenUsage;
   tools?: ToolTrace[];
 }
@@ -448,13 +449,20 @@ function renderTranscript(transcript: readonly CoordinatorEntry[]): string {
   return recent.map((e) => `Round ${e.round} — ${renderTranscriptEntry(e)}`).join("\n");
 }
 
+function codeOutcomeFlag(e: CoordinatorEntry): string {
+  if (!e.outcome || e.outcome === "ok") return "";
+  if (e.outcome !== "timeout") return ` [${e.outcome}]`;
+  const after = e.durationMs !== undefined ? ` after ${Math.floor(e.durationMs / 1000)}s` : "";
+  return ` [timed out${after} — output truncated]`;
+}
+
 function renderTranscriptEntry(e: CoordinatorEntry): string {
   if (e.kind === "dispatch") return `${e.speaker ?? "team"} did: ${e.text}`;
   if (e.kind === "code") {
     const touched = e.touched
       ? ` [touched ${e.touched.files} file${e.touched.files === 1 ? "" : "s"}, +${e.touched.insertions} -${e.touched.deletions}]`
       : "";
-    return `${e.speaker ?? "member"} coded: ${e.text}${touched}`;
+    return `${e.speaker ?? "member"} coded: ${e.text}${touched}${codeOutcomeFlag(e)}`;
   }
   if (e.kind === "workflow") return `${e.speaker ?? "member"} workflow: ${e.text}`;
   if (e.kind === "verify") return `verify: ${e.text}`;
@@ -1986,6 +1994,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           ...(result.code.tools ? { tools: result.code.tools } : {}),
           ...(result.code.usage ? { usage: result.code.usage } : {}),
           ...(result.code.durationMs !== undefined ? { durationMs: result.code.durationMs } : {}),
+          ...(result.code.status !== "ok" ? { outcome: result.code.status } : {}),
         }),
         lastCodeRound: ledger.round,
         updatedAt: now(),

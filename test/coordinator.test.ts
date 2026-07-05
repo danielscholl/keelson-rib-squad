@@ -1189,6 +1189,7 @@ describe("runCoordinator loop", () => {
     expect(codeEntry?.tools).toEqual([{ name: "Edit", target: "src/a.ts", ok: true }]);
     expect(codeEntry?.usage).toEqual({ inputTokens: 900, outputTokens: 120 });
     expect(codeEntry?.durationMs).toBe(4200);
+    expect(codeEntry?.outcome).toBeUndefined();
     expect(codeEntry?.at).toBe(NOW);
     const dispatchEntry = res.ledger.transcript.find((e) => e.kind === "dispatch");
     expect(dispatchEntry?.usage).toEqual({ inputTokens: 300, outputTokens: 40 });
@@ -1196,6 +1197,46 @@ describe("runCoordinator loop", () => {
     expect(dispatchEntry?.durationMs).toBe(800);
     const coordEntry = res.ledger.transcript.find((e) => e.kind === "coordinator");
     expect(coordEntry?.at).toBe(NOW);
+  });
+
+  test("surfaces timed-out code turns in the ledger and standup prompt", async () => {
+    const team: Member[] = [
+      {
+        slug: "atlas",
+        name: "atlas",
+        role: "Engineer",
+        charter: "x",
+        status: "active",
+        tools: ["code", "read"],
+      },
+    ];
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      roster: team,
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(
+        [
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X","mode":"code"}',
+          'done\n{"action":"done","summary":"shipped"}',
+        ],
+        seen,
+      ),
+      code: async () => ({
+        status: "timeout" as const,
+        text: "…Typec",
+        error: "agent turn exceeded 240000ms",
+        durationMs: 240000,
+      }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+    });
+
+    const codeEntry = res.ledger.transcript.find((e) => e.kind === "code");
+    expect(res.status).toBe("done");
+    expect(codeEntry?.outcome).toBe("timeout");
+    expect(seen[1]?.prompt).toContain(
+      "atlas coded: agent turn exceeded 240000ms [timed out after 240s — output truncated]",
+    );
   });
 
   const coder = (): Member[] => [
