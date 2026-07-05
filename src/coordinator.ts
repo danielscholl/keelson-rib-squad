@@ -1937,8 +1937,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       let touched: { files: number; insertions: number; deletions: number } | undefined;
       if (opts.getExec && project) {
         if (codeBeforeTree) {
-          const after = await captureWorkingTreeTree(opts.getExec, project.rootPath);
-          if (after.ok) {
+          const after = await captureWorkingTreeTree(opts.getExec, project.rootPath).catch(
+            () => undefined,
+          );
+          if (after?.ok) {
             touched = await collectTouchedBetween(
               opts.getExec,
               project.rootPath,
