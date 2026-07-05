@@ -905,7 +905,10 @@ export type ReviewDispositionParseResult =
 
 function extractFencedBlocks(text: string): string[] {
   const blocks: string[] = [];
-  const re = /```(?:json)?\s*([\s\S]*?)```/gi;
+  // No \s* after the fence label — it overlaps the lazy body match and turns
+  // unclosed-fence input polynomial (js/polynomial-redos); the body is trimmed
+  // below, so leading whitespace never survives anyway.
+  const re = /```(?:json)?([\s\S]*?)```/gi;
   for (const match of text.matchAll(re)) {
     const body = match[1]?.trim();
     if (body) blocks.push(body);
