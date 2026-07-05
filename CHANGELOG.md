@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.10.2...v0.11.0) (2026-07-05)
+
+
+### Added
+
+* **coordinator:** operator Stop, aborted terminal state, and single-run guard ([#142](https://github.com/danielscholl/keelson-rib-squad/issues/142)) ([6c0b809](https://github.com/danielscholl/keelson-rib-squad/commit/6c0b8097cdfcbd41be3055e4db4ca0e25e5ffea3))
+
 ## [0.10.2](https://github.com/danielscholl/keelson-rib-squad/compare/v0.10.1...v0.10.2) (2026-07-03)
 
 
