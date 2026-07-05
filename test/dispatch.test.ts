@@ -34,7 +34,11 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-async function seed(slug: string, name: string): Promise<Member> {
+async function seed(
+  slug: string,
+  name: string,
+  over: { toolAllowlist?: readonly string[] } = {},
+): Promise<Member> {
   const record: MemberRecord = {
     slug,
     name,
@@ -42,9 +46,17 @@ async function seed(slug: string, name: string): Promise<Member> {
     charter: `# ${name}\n\nI am ${name}.`,
     status: "active",
     createdAt: "2026-06-06T00:00:00.000Z",
+    ...(over.toolAllowlist ? { toolAllowlist: over.toolAllowlist } : {}),
   };
   await scaffoldMember(root, record);
-  return { slug, name, role: "Specialist", charter: `I am ${name}.`, status: "active" };
+  return {
+    slug,
+    name,
+    role: "Specialist",
+    charter: `I am ${name}.`,
+    status: "active",
+    ...(over.toolAllowlist ? { toolAllowlist: over.toolAllowlist } : {}),
+  };
 }
 
 async function* oneChunkStream(text: string): AsyncGenerator<MessageChunk> {
@@ -498,6 +510,53 @@ describe("dispatchFanout", () => {
     expect(memberReq?.allowedDirectories).toEqual(["/repo/demo"]);
     // The framing tells the member it can read — the tools are useless if it doesn't reach for them.
     expect(memberReq?.prompt).toContain("Read, Glob, and Grep");
+  });
+
+  test("a project-bound dispatch passes per-member tool allowlists only when set", async () => {
+    const allowed = await seed("a", "Alpha", { toolAllowlist: ["osdu_quality"] });
+    const plain = await seed("b", "Beta");
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("read the repo")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members: [allowed, plain],
+      task: "review the change",
+      synthesize: false,
+      project: { name: "demo", rootPath: "/repo/demo" },
+    });
+    const alphaReq = reqs.find((r) => r.system?.includes("# Alpha"));
+    const betaReq = reqs.find((r) => r.system?.includes("# Beta"));
+    expect(alphaReq?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    expect(alphaReq?.tools).toEqual([{ name: "osdu_quality" }]);
+    expect(betaReq?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    expect(betaReq?.tools).toBeUndefined();
+  });
+
+  test("reflection turns never receive member tool allowlists", async () => {
+    const members = await Promise.all([seed("a", "Alpha", { toolAllowlist: ["osdu_quality"] })]);
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      if (req.prompt.includes("Curate your long-term memory")) {
+        return fakeTurn(Promise.resolve(okResult("# Memory\n\nKept.")));
+      }
+      return fakeTurn(Promise.resolve(okResult("substantive answer")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "T",
+      synthesize: false,
+      reflect: true,
+    });
+    const reflectionReq = reqs.find((r) => r.prompt.includes("Curate your long-term memory"));
+    expect(reflectionReq?.allowedTools).toEqual([]);
+    expect(reflectionReq?.tools).toBeUndefined();
   });
 
   test("a dispatch without a project stays text-only (no tools, no cwd)", async () => {

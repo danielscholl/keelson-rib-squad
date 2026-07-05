@@ -5,7 +5,7 @@ import { errText } from "@keelson/shared";
 import { composeMemberSystemPrompt } from "./compose.ts";
 import { MEMORY_DOC_CAP, readMemberDoc, writeMemory } from "./member-store.ts";
 import { runConfinedTurn, type ToolTrace } from "./turn-runner.ts";
-import type { Member } from "./types.ts";
+import { type Member, normalizeToolAllowlist } from "./types.ts";
 
 // The fan-out coordinator: one turn per member in parallel, then one synthesis
 // turn over their replies. Built on an INJECTED runAgentTurn (the host seam), not
@@ -127,12 +127,14 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
       return { slug: member.slug, name: member.name, status: "aborted", text: "" };
     }
     const system = await composeMemberSystemPrompt(opts.membersRoot, member);
+    const toolAllowlist = normalizeToolAllowlist(member.toolAllowlist);
     const outcome = await runConfinedTurn(
       opts.runAgentTurn,
       {
         system,
         prompt: buildDispatchPrompt(opts.task, opts.project, reviewDiffUnderReview),
         ...(root ? { cwd: root, allowedDirectories: [root], allowedTools: [...READ_TOOLS] } : {}),
+        ...(root && toolAllowlist ? { tools: toolAllowlist.map((name) => ({ name })) } : {}),
         ...(member.provider ? { provider: member.provider } : {}),
         ...(member.provider && member.model ? { model: member.model } : {}),
       },

@@ -79,16 +79,28 @@ describe("readMembers", () => {
     expect(members[0]?.status).toBe("active");
   });
 
-  test("carries model, provider, and tools through when present", async () => {
+  test("carries model, provider, tools, and tool allowlist through when present", async () => {
     await scaffoldMember(
       root,
-      record({ model: "claude-x", provider: "anthropic", tools: ["read"] }),
+      record({
+        model: "claude-x",
+        provider: "anthropic",
+        tools: ["read"],
+        toolAllowlist: ["osdu_quality"],
+      }),
     );
     const [member] = await readMembers(root);
     expect(member?.model).toBe("claude-x");
     expect(member?.provider).toBe("anthropic");
     expect(member?.tools).toEqual(["read"]);
+    expect(member?.toolAllowlist).toEqual(["osdu_quality"]);
     expect(member?.role).toBe("Researcher");
+  });
+
+  test("normalizes an empty tool allowlist to absent", async () => {
+    await scaffoldMember(root, record({ toolAllowlist: [] }));
+    const [member] = await readMembers(root);
+    expect(member?.toolAllowlist).toBeUndefined();
   });
 
   test("a legacy model-only record reads as unpinned (provider-primary coercion)", async () => {

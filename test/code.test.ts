@@ -28,6 +28,7 @@ function member(over: {
   slug: string;
   name: string;
   tools?: readonly string[];
+  toolAllowlist?: readonly string[];
   model?: string;
   provider?: string;
   status?: "active" | "inactive";
@@ -39,6 +40,7 @@ function member(over: {
     charter: `# ${over.name}\n\n## Role\n\nBuilds.`,
     status: over.status ?? "active",
     ...(over.tools ? { tools: over.tools } : {}),
+    ...(over.toolAllowlist ? { toolAllowlist: over.toolAllowlist } : {}),
     ...(over.model ? { model: over.model } : {}),
     ...(over.provider ? { provider: over.provider } : {}),
   };
@@ -74,6 +76,7 @@ describe("runCodeTurn", () => {
     expect(captured?.cwd).toBe("/repo/keelson");
     expect(captured?.allowedDirectories).toEqual(["/repo/keelson"]);
     expect(captured?.allowedTools).toEqual([...CODE_TOOLS]);
+    expect(captured?.tools).toBeUndefined();
     // Identity comes from the composed system prompt (falls back to member.charter).
     expect(captured?.system).toContain("Atlas");
     expect(captured?.prompt).toContain("add a --verbose flag");
@@ -124,6 +127,23 @@ describe("runCodeTurn", () => {
     });
     expect(captured?.model).toBe("claude-opus-4-8");
     expect(captured?.provider).toBe("copilot");
+  });
+
+  test("passes a member tool allowlist alongside the code rail", async () => {
+    await runCodeTurn({
+      runAgentTurn: capturingRun(),
+      membersRoot: home,
+      member: member({
+        slug: "atlas",
+        name: "Atlas",
+        tools: ["code"],
+        toolAllowlist: ["osdu_quality"],
+      }),
+      project: { name: "keelson", rootPath: "/repo/keelson" },
+      task: "x",
+    });
+    expect(captured?.allowedTools).toEqual([...CODE_TOOLS]);
+    expect(captured?.tools).toEqual([{ name: "osdu_quality" }]);
   });
 
   test("fails closed for a member without the code capability (never runs the turn)", async () => {
@@ -228,6 +248,7 @@ describe("squad_code tool", () => {
     slug: string;
     name: string;
     tools?: readonly string[];
+    toolAllowlist?: readonly string[];
     status?: "active" | "inactive";
   }) {
     const record: MemberRecord = {
@@ -238,6 +259,9 @@ describe("squad_code tool", () => {
       status: rec.status ?? "active",
       createdAt: "2026-06-27T00:00:00.000Z",
       ...(rec.tools && rec.tools.length > 0 ? { tools: rec.tools } : {}),
+      ...(rec.toolAllowlist && rec.toolAllowlist.length > 0
+        ? { toolAllowlist: rec.toolAllowlist }
+        : {}),
     };
     // A project-bound run reads the team cast FOR that project (projects/p1/members),
     // not the default scope — these tests boot the sole project "p1".

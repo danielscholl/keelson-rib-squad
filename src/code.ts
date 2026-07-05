@@ -1,7 +1,7 @@
 import type { RibContext } from "@keelson/shared";
 import { composeMemberSystemPrompt } from "./compose.ts";
 import { runConfinedTurn, type ToolTrace, type TurnOutcome } from "./turn-runner.ts";
-import type { Member } from "./types.ts";
+import { type Member, normalizeToolAllowlist } from "./types.ts";
 
 // Code mode: a code-capable member runs ONE confined coding turn that actually edits
 // the selected project's repository. This is the dev-loop primitive — the squad
@@ -82,6 +82,7 @@ export async function runCodeTurn(opts: RunCodeTurnOptions): Promise<RunCodeTurn
   }
 
   const system = await composeMemberSystemPrompt(opts.membersRoot, opts.member);
+  const toolAllowlist = normalizeToolAllowlist(opts.member.toolAllowlist);
   const outcome = await runConfinedTurn(
     opts.runAgentTurn,
     {
@@ -90,6 +91,7 @@ export async function runCodeTurn(opts: RunCodeTurnOptions): Promise<RunCodeTurn
       cwd: root,
       allowedDirectories: [root],
       allowedTools: [...CODE_TOOLS],
+      ...(toolAllowlist ? { tools: toolAllowlist.map((name) => ({ name })) } : {}),
       // The member's pinned coordinates, honored per call — this is the mixed-provider
       // story (a Claude coder, a Codex coder) the original squad can't have. A provider
       // may stand alone (pin the vendor, default model); a model needs its provider

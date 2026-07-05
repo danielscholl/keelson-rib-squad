@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { RibAgentTurn, RibAgentTurnResult, RibContext } from "@keelson/shared";
 import { errText, z } from "@keelson/shared";
 import { assignableProviders, validateProviderPin } from "./provider-pins.ts";
-import { normalizeIdentitySlot } from "./types.ts";
+import { normalizeIdentitySlot, normalizeToolAllowlist } from "./types.ts";
 
 // Auto-cast: inspect a project and propose the team best suited to it. This is the
 // defining capability — chamber hand-authors each Mind; squad reads the repo and
@@ -34,6 +34,7 @@ const castMemberSchema = z.object({
   role: z.string().min(1),
   charter: z.string().min(1),
   tools: z.array(z.string()).optional(),
+  toolAllowlist: z.array(z.string()).optional(),
   model: z.string().optional(),
   provider: z.string().optional(),
 });
@@ -49,6 +50,7 @@ export interface CastProposalMember {
   role: string;
   charter: string;
   tools?: string[];
+  toolAllowlist?: string[];
   model?: string;
   provider?: string;
   themeId?: string;
@@ -202,6 +204,7 @@ function normalizeMember(
   const tools = m.tools
     ? [...new Set(m.tools.map((t) => t.trim()).filter((t) => t.length > 0))]
     : [];
+  const toolAllowlist = normalizeToolAllowlist(m.toolAllowlist);
   const { pin, note } = validateProviderPin(m.name.trim(), m, providers);
   return {
     member: {
@@ -209,6 +212,7 @@ function normalizeMember(
       role: m.role.trim(),
       charter: m.charter,
       ...(tools.length > 0 ? { tools } : {}),
+      ...(toolAllowlist ? { toolAllowlist } : {}),
       ...(pin.provider ? { provider: pin.provider } : {}),
       ...(pin.provider && pin.model ? { model: pin.model } : {}),
     },
@@ -362,6 +366,7 @@ export async function readProposal(dataHome: string): Promise<CastProposalRecord
 }
 
 function normalizeStoredMember(m: CastProposalMember, index: number): CastProposalMember {
+  const toolAllowlist = normalizeToolAllowlist(m.toolAllowlist);
   return {
     ...(typeof m.slug === "string" && m.slug ? { slug: m.slug } : {}),
     name: m.name,
@@ -370,6 +375,7 @@ function normalizeStoredMember(m: CastProposalMember, index: number): CastPropos
     ...(Array.isArray(m.tools) && m.tools.length > 0
       ? { tools: m.tools.filter((t): t is string => typeof t === "string") }
       : {}),
+    ...(toolAllowlist ? { toolAllowlist } : {}),
     ...(typeof m.provider === "string" && m.provider ? { provider: m.provider } : {}),
     ...(typeof m.provider === "string" && m.provider && typeof m.model === "string" && m.model
       ? { model: m.model }

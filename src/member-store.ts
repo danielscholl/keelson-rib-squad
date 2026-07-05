@@ -1,7 +1,12 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { assertSafeSlug } from "./genesis.ts";
-import { type Member, type MemberStatus, normalizeIdentitySlot } from "./types.ts";
+import {
+  type Member,
+  type MemberStatus,
+  normalizeIdentitySlot,
+  normalizeToolAllowlist,
+} from "./types.ts";
 
 // File-based member persistence. One directory per member under the data home's
 // members/ root; `member.json` is the structured record the roster reads and
@@ -20,6 +25,7 @@ export interface MemberRecord {
   model?: string;
   provider?: string;
   tools?: readonly string[];
+  toolAllowlist?: readonly string[];
   // Themed-casting identity (#16) — persisted so the roster card and the charter
   // composer carry the character's voice. Optional/back-compat.
   themeId?: string;
@@ -120,6 +126,7 @@ export async function listMemberRecords(
       // than crashing the sort/map and blanking the roster.
       if (typeof rec !== "object" || rec === null) continue;
       if (typeof rec.name !== "string" || typeof rec.charter !== "string") continue;
+      const toolAllowlist = normalizeToolAllowlist(rec.toolAllowlist);
       records.push({
         slug,
         name: rec.name,
@@ -141,6 +148,7 @@ export async function listMemberRecords(
         ...(Array.isArray(rec.tools) && rec.tools.length > 0
           ? { tools: rec.tools.filter((t): t is string => typeof t === "string") }
           : {}),
+        ...(toolAllowlist ? { toolAllowlist } : {}),
         ...(typeof rec.themeId === "string" && rec.themeId ? { themeId: rec.themeId } : {}),
         ...(typeof rec.personality === "string" && rec.personality
           ? { personality: rec.personality }
@@ -173,6 +181,7 @@ export async function readMembers(membersRoot: string): Promise<Member[]> {
     ...(r.model ? { model: r.model } : {}),
     ...(r.provider ? { provider: r.provider } : {}),
     ...(r.tools && r.tools.length > 0 ? { tools: r.tools } : {}),
+    ...(r.toolAllowlist && r.toolAllowlist.length > 0 ? { toolAllowlist: r.toolAllowlist } : {}),
     ...(r.themeId ? { themeId: r.themeId } : {}),
     ...(r.personality ? { personality: r.personality } : {}),
     ...(r.backstory ? { backstory: r.backstory } : {}),
