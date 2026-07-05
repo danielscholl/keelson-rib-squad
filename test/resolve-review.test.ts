@@ -9,7 +9,7 @@ import type {
   RibExec,
   ToolDefinition,
 } from "@keelson/shared";
-import rib, { parseReviewDispositions } from "../src/index.ts";
+import rib from "../src/index.ts";
 import { scaffoldMember } from "../src/member-store.ts";
 import { scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import {
@@ -18,6 +18,7 @@ import {
   replyToThread,
   resolveThread,
 } from "../src/resolve-review.ts";
+import { parseReviewDispositions } from "../src/review-dispositions.ts";
 
 type RunTextResult = Awaited<ReturnType<RibExec["runText"]>>;
 type RunTextOptions = Parameters<RibExec["runText"]>[2];
@@ -268,6 +269,18 @@ describe("resolve-review forge mechanics", () => {
                 },
               ],
             },
+            {
+              id: "disc-3",
+              resolved: false,
+              notes: [
+                {
+                  body: "General unresolved discussion",
+                  system: false,
+                  author: { username: "reviewer" },
+                  position: null,
+                },
+              ],
+            },
           ]),
         );
       }
@@ -287,6 +300,16 @@ describe("resolve-review forge mechanics", () => {
           path: "src/a.ts",
           line: 11,
           author: "reviewer",
+        }),
+        expect.objectContaining({
+          forge: "gitlab",
+          threadRef: "gl:disc-3",
+          projectPath: "group/project",
+          mergeRequestIid: 34,
+          path: undefined,
+          line: 0,
+          author: "reviewer",
+          body: "General unresolved discussion",
         }),
       ]);
     }

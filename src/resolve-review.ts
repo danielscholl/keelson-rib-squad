@@ -28,7 +28,7 @@ export type ReviewThread =
       discussionId: string;
       projectPath: string;
       mergeRequestIid: number;
-      path: string;
+      path?: string;
       line: number;
       author: string;
       body: string;
@@ -392,7 +392,6 @@ export async function fetchUnresolvedThreads(
       if (!first) continue;
       const path = first.position?.new_path ?? first.position?.old_path;
       const line = first.position?.new_line ?? first.position?.old_line ?? 0;
-      if (!path) continue;
       threads.push({
         forge: "gitlab",
         threadRef: stableRef("gl", discussion.id),

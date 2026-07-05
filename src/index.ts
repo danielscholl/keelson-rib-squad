@@ -80,6 +80,7 @@ import {
   replyToThread,
   resolveThread,
 } from "./resolve-review.ts";
+import { parseReviewDispositions, type ReviewDisposition } from "./review-dispositions.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   listScopeMembersDirs,
@@ -893,83 +894,30 @@ function makeOpenPrTool(
 const resolveReviewSchema = z.object({ project: z.string().optional() });
 const RESOLVE_REVIEW_EXEC_TIMEOUT_MS = 120_000;
 
-type ReviewDisposition = {
-  threadRef: string;
-  disposition: "fixed" | "declined";
-  note: string;
-};
+const REVIEW_THREAD_BODY_LIMIT = 4_000;
+const REVIEW_THREAD_COMMENT_LIMIT = 12;
+const REVIEW_THREAD_COMMENT_BODY_LIMIT = 2_000;
 
-export type ReviewDispositionParseResult =
-  | { ok: true; dispositions: Map<string, ReviewDisposition> }
-  | { ok: false; reason: string };
-
-function extractFencedBlocks(text: string): string[] {
-  const blocks: string[] = [];
-  // No \s* after the fence label — it overlaps the lazy body match and turns
-  // unclosed-fence input polynomial (js/polynomial-redos); the body is trimmed
-  // below, so leading whitespace never survives anyway.
-  const re = /```(?:json)?([\s\S]*?)```/gi;
-  for (const match of text.matchAll(re)) {
-    const body = match[1]?.trim();
-    if (body) blocks.push(body);
-  }
-  return blocks;
-}
-
-export function parseReviewDispositions(
-  transcriptTail: string,
-  threads: readonly ReviewThread[],
-): ReviewDispositionParseResult {
-  const blocks = extractFencedBlocks(transcriptTail);
-  if (blocks.length === 0) return { ok: false, reason: "missing fenced JSON disposition block" };
-  const knownRefs = new Set(threads.map((t) => t.threadRef));
-  for (const block of blocks.reverse()) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(block);
-    } catch {
-      continue;
-    }
-    if (!Array.isArray(parsed)) continue;
-    const dispositions = new Map<string, ReviewDisposition>();
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") {
-        return { ok: false, reason: "disposition block must be an array of objects" };
-      }
-      const row = item as Record<string, unknown>;
-      const threadRef = typeof row.threadRef === "string" ? row.threadRef.trim() : "";
-      if (!threadRef || !knownRefs.has(threadRef)) {
-        return { ok: false, reason: `unknown review threadRef "${threadRef || "(missing)"}"` };
-      }
-      const disposition = row.disposition;
-      if (disposition !== "fixed" && disposition !== "declined") {
-        return {
-          ok: false,
-          reason: `unknown disposition for ${threadRef}: ${String(disposition)}`,
-        };
-      }
-      const note = typeof row.note === "string" ? row.note.trim() : "";
-      dispositions.set(threadRef, { threadRef, disposition, note });
-    }
-    const missing = threads.map((t) => t.threadRef).filter((ref) => !dispositions.has(ref));
-    if (missing.length > 0) {
-      return {
-        ok: false,
-        reason: `missing dispositions for review threads: ${missing.join(", ")}`,
-      };
-    }
-    return { ok: true, dispositions };
-  }
-  return { ok: false, reason: "malformed fenced JSON disposition block" };
+function truncateReviewText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n[truncated ${text.length - limit} chars]`;
 }
 
 function composeResolveReviewTask(threads: readonly ReviewThread[]): string {
   const reviewItems = threads.map((thread) => ({
     threadRef: thread.threadRef,
-    location: `${thread.path}:${thread.line}`,
+    location: thread.path ? `${thread.path}:${thread.line}` : "general thread",
     author: thread.author,
-    body: thread.body,
-    comments: thread.comments,
+    body: truncateReviewText(thread.body, REVIEW_THREAD_BODY_LIMIT),
+    comments: thread.comments.slice(0, REVIEW_THREAD_COMMENT_LIMIT).map((comment) => ({
+      author: comment.author,
+      body: truncateReviewText(comment.body, REVIEW_THREAD_COMMENT_BODY_LIMIT),
+    })),
+    ...(thread.comments.length > REVIEW_THREAD_COMMENT_LIMIT
+      ? {
+          commentsTruncated: `truncated ${thread.comments.length - REVIEW_THREAD_COMMENT_LIMIT} additional comments`,
+        }
+      : {}),
   }));
   return `Resolve the currently open code-review threads on this branch.
 
