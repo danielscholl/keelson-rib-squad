@@ -27,6 +27,7 @@ import {
   provenanceLines,
   runCoordinator,
   saveLedger,
+  withPlanContext,
 } from "../src/coordinator.ts";
 import type { DispatchOutcome } from "../src/dispatch.ts";
 import rib from "../src/index.ts";
@@ -206,6 +207,25 @@ describe("actionLabel", () => {
     expect(actionLabel({ kind: "execute", mode: "dispatch", instruction: "x" })).toBe("working");
     expect(actionLabel({ kind: "end", reason: "done" })).toBe("working");
     expect(actionLabel({ kind: "replan", reason: "stalled" })).toBe("working");
+  });
+});
+
+describe("withPlanContext", () => {
+  test("adds the current manager plan and assigned step", () => {
+    const prompt = withPlanContext("patch the dispatcher", [
+      "Confirm the failing dispatch prompt",
+      "Project plan rows into member turns",
+    ]);
+
+    expect(prompt).toContain("The manager's current plan");
+    expect(prompt).toContain("lives with the coordinator");
+    expect(prompt).toContain("1. Confirm the failing dispatch prompt");
+    expect(prompt).toContain("2. Project plan rows into member turns");
+    expect(prompt).toContain("Your assigned step in this plan:\npatch the dispatcher");
+  });
+
+  test("returns the original instruction when no plan exists", () => {
+    expect(withPlanContext("patch the dispatcher", [])).toBe("patch the dispatcher");
   });
 });
 
@@ -417,6 +437,44 @@ describe("runCoordinator loop", () => {
     expect(res.summary).toBe("finished it");
     expect(d.calls).toHaveLength(0);
     expect(res.ledger.transcript.filter((e) => e.kind === "dispatch")).toHaveLength(0);
+  });
+
+  test("projects the current plan into dispatched member instructions", async () => {
+    const d = fakeDispatch();
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"patch the dispatcher","plan":["Confirm the failing dispatch prompt","Project plan rows into member turns"]}',
+        'ok\n{"action":"done","summary":"finished it"}',
+      ]),
+      dispatch: d.fn,
+    });
+
+    expect(res.status).toBe("done");
+    expect(d.calls).toHaveLength(1);
+    expect(d.calls[0]?.instruction).toContain("The manager's current plan");
+    expect(d.calls[0]?.instruction).toContain("1. Confirm the failing dispatch prompt");
+    expect(d.calls[0]?.instruction).toContain("patch the dispatcher");
+    expect(res.ledger.transcript.find((e) => e.kind === "dispatch")?.instruction).toBe(
+      "patch the dispatcher",
+    );
+  });
+
+  test("leaves dispatched member instructions unchanged without a plan", async () => {
+    const d = fakeDispatch();
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"patch the dispatcher"}',
+        'ok\n{"action":"done","summary":"finished it"}',
+      ]),
+      dispatch: d.fn,
+    });
+
+    expect(res.status).toBe("done");
+    expect(d.calls).toHaveLength(1);
+    expect(d.calls[0]?.instruction).toBe("patch the dispatcher");
+    expect(d.calls[0]?.instruction).not.toContain("manager's current plan");
   });
 
   test("a fresh run persists the configured maxRounds as its round budget", async () => {
