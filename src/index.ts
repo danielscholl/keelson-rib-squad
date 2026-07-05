@@ -1692,14 +1692,12 @@ async function performRollbackSequence(
   const rollbackRef = rollbackRefForRun(runId);
   const existingRef = await exec.runGit(["rev-parse", "--verify", rollbackRef]);
   if (!existingRef.ok || !existingRef.data.trim()) {
-    const tree = (await requireGit(exec, ["write-tree"])).trim();
-    const head = (await requireGit(exec, ["rev-parse", "HEAD"])).trim();
     const commit = (
       await requireGit(exec, [
         "commit-tree",
-        tree,
+        plan.manifest.preRollbackTree,
         "-p",
-        head,
+        plan.manifest.preRollbackHead,
         "-m",
         `keelson rollback forensic capture ${runId}`,
       ])

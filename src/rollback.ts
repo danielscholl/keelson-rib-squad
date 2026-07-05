@@ -43,9 +43,9 @@ async function git(exec: RollbackGitExec, args: string[]): Promise<string> {
 
 async function captureHead(exec: RollbackGitExec): Promise<{ head: string; tree: string }> {
   const head = (await git(exec, ["rev-parse", "HEAD"])).trim();
-  const tree = (await git(exec, ["rev-parse", "HEAD^{tree}"])).trim();
+  const tree = (await git(exec, ["write-tree"])).trim();
   if (!head) throw new Error("git rev-parse HEAD returned an empty ref");
-  if (!tree) throw new Error("git rev-parse HEAD^{tree} returned an empty tree");
+  if (!tree) throw new Error("git write-tree returned an empty tree");
   return { head, tree };
 }
 

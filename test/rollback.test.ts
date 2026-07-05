@@ -109,15 +109,9 @@ function gitCalls(calls: readonly RunTextCall[]): string[] {
 
 function mutatingGitCalls(calls: readonly RunTextCall[]): string[] {
   return gitCalls(calls).filter((key) =>
-    [
-      "write-tree",
-      "commit-tree",
-      "update-ref",
-      "reset",
-      "read-tree",
-      "checkout-index",
-      "clean",
-    ].some((prefix) => key.startsWith(prefix)),
+    ["commit-tree", "update-ref", "reset", "read-tree", "checkout-index", "clean"].some((prefix) =>
+      key.startsWith(prefix),
+    ),
   );
 }
 
@@ -153,17 +147,17 @@ function rollbackGitHandler(cmd: string, args: readonly string[]): RunTextResult
   const outputs: Record<string, string> = {
     [`rev-parse --verify ${rollbackRef}`]: "",
     "rev-parse HEAD": "head-after\n",
-    "rev-parse HEAD^{tree}": "tree-after\n",
+    "write-tree": "index-tree-after\n",
     "rev-parse -q --verify MERGE_HEAD": "",
     "rev-parse --git-path rebase-merge": ".git/rebase-merge\n",
     "rev-parse --git-path rebase-apply": ".git/rebase-apply\n",
     "rev-list --reverse base-head..HEAD": "commit-a\n",
     "log -n 1 --format=%h%x00%s commit-a": "aaaa111\u0000ship rollback target\n",
-    "diff-tree -r -z --diff-filter=DMRT --name-only base-tree tree-after": "src/changed.ts\u0000",
-    "diff-tree -r -z --diff-filter=A --name-only base-tree tree-after":
+    "diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after":
+      "src/changed.ts\u0000",
+    "diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after":
       "generated.txt\u0000nested/new.txt\u0000",
-    "write-tree": "tree-after\n",
-    [`commit-tree tree-after -p head-after -m keelson rollback forensic capture ${runId}`]:
+    [`commit-tree index-tree-after -p head-after -m keelson rollback forensic capture ${runId}`]:
       "rollback-commit\n",
     [`update-ref ${rollbackRef} rollback-commit`]: "",
     "reset --soft base-head": "",
@@ -190,8 +184,8 @@ function statefulRollbackExec(
   const deletedPaths = opts.deletedPaths ?? ["generated.txt", "nested/new.txt"];
   const state = {
     head: "head-after",
-    indexTree: "tree-after",
-    worktreeTree: "tree-after",
+    indexTree: "index-tree-after",
+    worktreeTree: "index-tree-after",
     rollbackRef: undefined as string | undefined,
   };
   let refTree = "";
@@ -214,9 +208,6 @@ function statefulRollbackExec(
     if (key === `rev-parse ${rollbackRef}^{tree}`) return ok(`${refTree}\n`);
     if (key === `rev-parse ${rollbackRef}^`) return ok(`${refParent}\n`);
     if (key === "rev-parse HEAD") return ok(`${state.head}\n`);
-    if (key === "rev-parse HEAD^{tree}") {
-      return ok(`${state.head === "base-head" ? "base-tree" : "tree-after"}\n`);
-    }
     if (key === "merge-base --is-ancestor base-head HEAD") {
       return opts.failAncestor ? fail("not ancestor") : ok("");
     }
@@ -230,10 +221,10 @@ function statefulRollbackExec(
     if (key === "log -n 1 --format=%h%x00%s commit-a") {
       return ok("aaaa111\u0000ship rollback target\n");
     }
-    if (key === "diff-tree -r -z --diff-filter=DMRT --name-only base-tree tree-after") {
+    if (key === "diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after") {
       return ok("src/changed.ts\u0000src/deleted.ts\u0000");
     }
-    if (key === "diff-tree -r -z --diff-filter=A --name-only base-tree tree-after") {
+    if (key === "diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after") {
       return ok(`${deletedPaths.join("\0")}\0`);
     }
     if (key === "diff-tree -r -z --diff-filter=DMRT --name-only base-tree base-tree") return ok("");
@@ -302,16 +293,17 @@ describe("computeRollbackPlan", () => {
     const { exec, calls } = fakeExec({
       outputs: {
         "rev-parse HEAD": "head-after\n",
-        "rev-parse HEAD^{tree}": "tree-after\n",
+        "write-tree": "index-tree-after\n",
         "rev-parse -q --verify MERGE_HEAD": "",
         "rev-parse --git-path rebase-merge": ".git/rebase-merge\n",
         "rev-parse --git-path rebase-apply": ".git/rebase-apply\n",
         "rev-list --reverse base-head..HEAD": "commit-a\ncommit-b\n",
         "log -n 1 --format=%h%x00%s commit-a": "aaaa111\u0000first change\n",
         "log -n 1 --format=%h%x00%s commit-b": "bbbb222\u0000second change\n",
-        "diff-tree -r -z --diff-filter=DMRT --name-only base-tree tree-after":
+        "diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after":
           "src/changed.ts\u0000src/deleted.ts\u0000",
-        "diff-tree -r -z --diff-filter=A --name-only base-tree tree-after": "src/new.ts\u0000",
+        "diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after":
+          "src/new.ts\u0000",
       },
     });
 
@@ -320,7 +312,7 @@ describe("computeRollbackPlan", () => {
     expect(plan).toEqual({
       type: "performed",
       manifest: {
-        preRollbackTree: "tree-after",
+        preRollbackTree: "index-tree-after",
         preRollbackHead: "head-after",
         rollbackRef,
         baselineTree: "base-tree",
@@ -335,7 +327,7 @@ describe("computeRollbackPlan", () => {
     });
     expect(calls.map((call) => `${call.kind}:${call.value}`)).toEqual([
       "git:rev-parse HEAD",
-      "git:rev-parse HEAD^{tree}",
+      "git:write-tree",
       "git:merge-base --is-ancestor base-head HEAD",
       "git:rev-parse -q --verify MERGE_HEAD",
       "git:rev-parse --git-path rebase-merge",
@@ -345,8 +337,8 @@ describe("computeRollbackPlan", () => {
       "git:rev-list --reverse base-head..HEAD",
       "git:log -n 1 --format=%h%x00%s commit-a",
       "git:log -n 1 --format=%h%x00%s commit-b",
-      "git:diff-tree -r -z --diff-filter=DMRT --name-only base-tree tree-after",
-      "git:diff-tree -r -z --diff-filter=A --name-only base-tree tree-after",
+      "git:diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after",
+      "git:diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after",
     ]);
   });
 
@@ -354,7 +346,7 @@ describe("computeRollbackPlan", () => {
     const { exec } = fakeExec({
       outputs: {
         "rev-parse HEAD": "observed\n",
-        "rev-parse HEAD^{tree}": "tree\n",
+        "write-tree": "tree\n",
       },
       failures: new Set(["merge-base --is-ancestor base-head HEAD"]),
     });
@@ -370,7 +362,7 @@ describe("computeRollbackPlan", () => {
     const { exec } = fakeExec({
       outputs: {
         "rev-parse HEAD": "observed\n",
-        "rev-parse HEAD^{tree}": "tree\n",
+        "write-tree": "tree\n",
         "rev-parse -q --verify MERGE_HEAD": "merge-head\n",
       },
     });
@@ -404,7 +396,7 @@ describe("computeRollbackPlan", () => {
         manifest: {
           status: "performed",
           preRollbackHead: "head-after",
-          preRollbackTree: "tree-after",
+          preRollbackTree: "index-tree-after",
           rollbackRef,
           baselineTree: "base-tree",
           C: [{ sha: "aaaa111", subject: "ship rollback target" }],
@@ -436,10 +428,12 @@ describe("computeRollbackPlan", () => {
       expect(res.content).toContain('"event": "performed"');
       const keys = gitCalls(calls);
       expect(keys).not.toContain("clean -fd");
-      expect(keys.slice(-7)).toEqual([
-        "write-tree",
-        "rev-parse HEAD",
-        `commit-tree tree-after -p head-after -m keelson rollback forensic capture ${runId}`,
+      expect(keys).not.toContain("rev-parse HEAD^{tree}");
+      expect(keys.indexOf("write-tree")).toBeLessThan(
+        keys.findIndex((key) => key.startsWith("commit-tree")),
+      );
+      expect(keys.slice(-5)).toEqual([
+        `commit-tree index-tree-after -p head-after -m keelson rollback forensic capture ${runId}`,
         `update-ref ${rollbackRef} rollback-commit`,
         "reset --soft base-head",
         "read-tree base-tree",
@@ -454,7 +448,7 @@ describe("computeRollbackPlan", () => {
       const rows = await readRollbackRows(scopeDataHome(home, "alpha"), "2026-07-05T00-00-00-000Z");
       expect(rows).toHaveLength(1);
       expect(rows[0]?.type).toBe("performed");
-      expect(rows[0]).toMatchObject({ rollbackRef });
+      expect(rows[0]).toMatchObject({ rollbackRef, preRollbackTree: "index-tree-after" });
       await expect(readFile(join(root, "generated.txt"), "utf8")).rejects.toThrow();
       await expect(readFile(join(root, "nested", "new.txt"), "utf8")).rejects.toThrow();
       expect(await loadRun(scopeDataHome(home, "alpha"), runId)).toEqual(before);
@@ -530,7 +524,7 @@ describe("computeRollbackPlan", () => {
         type: "performed",
         runId,
         at: "2026-07-05T00:01:00.000Z",
-        preRollbackTree: "tree-after",
+        preRollbackTree: "index-tree-after",
         preRollbackHead: "head-after",
         rollbackRef,
         baselineTree: "base-tree",
@@ -555,7 +549,7 @@ describe("computeRollbackPlan", () => {
         const outputs: Record<string, string> = {
           [`rev-parse --verify ${rollbackRef}`]: "",
           "rev-parse HEAD": "base-head\n",
-          "rev-parse HEAD^{tree}": "base-tree\n",
+          "write-tree": "base-tree\n",
           "rev-parse -q --verify MERGE_HEAD": "",
           "rev-parse --git-path rebase-merge": ".git/rebase-merge\n",
           "rev-parse --git-path rebase-apply": ".git/rebase-apply\n",
@@ -633,7 +627,7 @@ describe("computeRollbackPlan", () => {
     const { exec, calls } = fakeExec({
       outputs: {
         "rev-parse HEAD": "observed\n",
-        "rev-parse HEAD^{tree}": "tree\n",
+        "write-tree": "tree\n",
       },
     });
 
@@ -646,7 +640,7 @@ describe("computeRollbackPlan", () => {
     });
     expect(calls.map((call) => `${call.kind}:${call.value}`)).toEqual([
       "git:rev-parse HEAD",
-      "git:rev-parse HEAD^{tree}",
+      "git:write-tree",
     ]);
   });
 
@@ -654,7 +648,7 @@ describe("computeRollbackPlan", () => {
     const { exec } = fakeExec({
       outputs: {
         "rev-parse HEAD": "base-head\n",
-        "rev-parse HEAD^{tree}": "base-tree\n",
+        "write-tree": "base-tree\n",
         "rev-parse -q --verify MERGE_HEAD": "",
         "rev-parse --git-path rebase-merge": ".git/rebase-merge\n",
         "rev-parse --git-path rebase-apply": ".git/rebase-apply\n",
