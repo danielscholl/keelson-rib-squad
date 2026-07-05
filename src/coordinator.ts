@@ -178,9 +178,7 @@ export type CoordinatorTerminalStatus =
   | typeof RUN_STATUS_VERIFICATION_FAILED
   | typeof RUN_STATUS_CHANGE_QUALITY_FAILED
   | typeof RUN_STATUS_ABORTED;
-export type CoordinatorLedgerStatus =
-  | typeof LEDGER_STATUS_ACTIVE
-  | CoordinatorTerminalStatus;
+export type CoordinatorLedgerStatus = typeof LEDGER_STATUS_ACTIVE | CoordinatorTerminalStatus;
 export type RunCoordinatorStatus = CoordinatorTerminalStatus | "error";
 
 function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTerminalStatus {

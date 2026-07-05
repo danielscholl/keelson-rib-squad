@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type CanvasTone, canvasViewSchema } from "@keelson/shared";
+import { canvasViewSchema } from "@keelson/shared";
 import { buildRosterBoard, type RosterPulse } from "../../src/boards/roster.ts";
 import { GENESIS_STARTERS } from "../../src/starters.ts";
 import type { Member } from "../../src/types.ts";
@@ -12,17 +12,6 @@ const member = (over: Partial<Member> = {}): Member => ({
   status: "active",
   ...over,
 });
-
-const TONES: readonly CanvasTone[] = [
-  "ok",
-  "warn",
-  "error",
-  "neutral",
-  "info",
-  "caution",
-  "brand",
-  "accent",
-];
 
 function actionItems(board: ReturnType<typeof buildRosterBoard>) {
   return board.sections.flatMap((s) => (s.kind === "actions" ? s.items : []));

@@ -769,9 +769,9 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status).toEqual({ label: "aborted", tone: "neutral" });
     expect(rowsTitled(board, "Advisory")[0]?.glyph).toBe("neutral");
-    expect(rowsTitled(board, "Ledger · R0 · team").some((i) => i.text.includes("partially done"))).toBe(
-      true,
-    );
+    expect(
+      rowsTitled(board, "Ledger · R0 · team").some((i) => i.text.includes("partially done")),
+    ).toBe(true);
   });
 
   test("Minds aggregates one lane per member: provider pill, turn/token counts, last act", () => {
