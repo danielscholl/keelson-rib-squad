@@ -1,5 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { readFile, rmdir, stat, unlink } from "node:fs/promises";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   CanvasBoardView,
@@ -9,6 +9,7 @@ import type {
   RibActionResult,
   RibAuthStatus,
   RibContext,
+  RibExec,
   SnapshotManager,
   ToolContext,
   ToolDefinition,
@@ -85,6 +86,8 @@ import {
   type ReviewDisposition,
   validateDispositionRows,
 } from "./review-dispositions.ts";
+import { computeRollbackPlan, type RollbackGitExec, type RollbackPlan } from "./rollback.ts";
+import { appendRollbackRow } from "./rollback-store.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   listScopeMembersDirs,
@@ -1283,6 +1286,12 @@ const coordinateSchema = z.object({
 });
 
 const stopSchema = z.object({ project: z.string().optional() });
+const rollbackSchema = z.object({
+  project: z.string().optional(),
+  run: z.string().optional(),
+  confirm: z.boolean().optional(),
+});
+const ROLLBACK_EXEC_TIMEOUT_MS = 120_000;
 
 function relayAbort(parent: AbortSignal | undefined, controller: AbortController): () => void {
   if (!parent) return () => {};
@@ -1479,6 +1488,236 @@ function makeStopTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
         emitResult(ctx, `squad_stop: stop requested for scope "${resolution.scopeId}"`);
       } catch (e) {
         emitResult(ctx, `squad_stop failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+function isRollbackableRunStatus(status: string): boolean {
+  return (
+    status === "aborted" || status === "verification-failed" || status === "change-quality-failed"
+  );
+}
+
+async function resolveRollbackRun(
+  dataHome: string,
+  runArg: string,
+): Promise<
+  | { ok: true; runId: string; ledger: NonNullable<Awaited<ReturnType<typeof loadRun>>> }
+  | { ok: false; error: string }
+> {
+  if (runArg) {
+    const ledger = await loadRun(dataHome, runArg);
+    if (!ledger) return { ok: false, error: `run "${runArg}" not found` };
+    return { ok: true, runId: runArg, ledger };
+  }
+  const run = (await listRuns(dataHome)).find((item) => isRollbackableRunStatus(item.status));
+  if (!run) return { ok: false, error: "no aborted or failed run found" };
+  const ledger = await loadRun(dataHome, run.id);
+  if (!ledger) return { ok: false, error: `run "${run.id}" could not be loaded` };
+  return { ok: true, runId: run.id, ledger };
+}
+
+function rollbackExec(exec: RibExec, cwd: string): RollbackGitExec {
+  return {
+    runGit: async (args) => {
+      const result = await exec.runText("git", args, { cwd, timeoutMs: ROLLBACK_EXEC_TIMEOUT_MS });
+      return result.ok ? { ok: true, data: result.data } : { ok: false, error: result.error };
+    },
+    pathExists: async (path) => pathExists(resolve(cwd, path)),
+  };
+}
+
+function rollbackManifest(plan: RollbackPlan) {
+  if (plan.type === "performed") {
+    return {
+      status: "performed",
+      preRollbackHead: plan.manifest.preRollbackHead,
+      preRollbackTree: plan.manifest.preRollbackTree,
+      rollbackRef: plan.manifest.rollbackRef,
+      baselineTree: plan.manifest.baselineTree,
+      C: plan.manifest.revertedCommits,
+      M: plan.manifest.revertedPaths,
+      D: plan.manifest.deletedPaths,
+    };
+  }
+  if (plan.type === "refused") {
+    return {
+      status: "refused",
+      refusalReason: plan.reason,
+      observedHead: plan.observedHead,
+      C: [],
+      M: [],
+      D: [],
+    };
+  }
+  return {
+    status: "noop",
+    preRollbackHead: plan.preRollbackHead,
+    preRollbackTree: plan.preRollbackTree,
+    C: [],
+    M: [],
+    D: [],
+  };
+}
+
+async function requireGit(exec: RollbackGitExec, args: string[]): Promise<string> {
+  const result = await exec.runGit(args);
+  if (!result.ok) throw new Error(`git ${args.join(" ")} failed: ${result.error}`);
+  return result.data;
+}
+
+function projectRelativePath(rootPath: string, gitPath: string): string {
+  const resolvedRoot = resolve(rootPath);
+  const absolute = resolve(resolvedRoot, gitPath);
+  const rel = relative(resolvedRoot, absolute);
+  if (!rel || rel.startsWith("..") || rel.includes(`..${sep}`)) {
+    throw new Error(`unsafe rollback path: ${gitPath}`);
+  }
+  return absolute;
+}
+
+async function pruneEmptyParents(rootPath: string, filePath: string): Promise<void> {
+  const resolvedRoot = resolve(rootPath);
+  let dir = dirname(filePath);
+  while (dir !== resolvedRoot && dir.startsWith(`${resolvedRoot}${sep}`)) {
+    try {
+      await rmdir(dir);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        dir = dirname(dir);
+        continue;
+      }
+      if (code === "ENOTEMPTY" || code === "EEXIST") return;
+      throw e;
+    }
+    dir = dirname(dir);
+  }
+}
+
+async function performRollbackSequence(
+  plan: Extract<RollbackPlan, { type: "performed" }>,
+  exec: RollbackGitExec,
+  rootPath: string,
+): Promise<void> {
+  await requireGit(exec, ["diff", "--binary", "--full-index", "HEAD"]);
+  await requireGit(exec, ["reset", "--soft", plan.manifest.rollbackRef]);
+  const deleteSet = await requireGit(exec, [
+    "diff-tree",
+    "-r",
+    "-z",
+    "--diff-filter=A",
+    "--name-only",
+    plan.manifest.baselineTree,
+    plan.manifest.preRollbackTree,
+  ]);
+  const deletedPaths = deleteSet
+    .split("\0")
+    .filter((part) => part.length > 0)
+    .sort();
+  await requireGit(exec, ["read-tree", plan.manifest.baselineTree]);
+  await requireGit(exec, ["checkout-index", "-a", "-f"]);
+  for (const deletedPath of deletedPaths) {
+    const filePath = projectRelativePath(rootPath, deletedPath);
+    try {
+      await unlink(filePath);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") throw e;
+    }
+    await pruneEmptyParents(rootPath, filePath);
+  }
+}
+
+function makeRollbackTool(
+  projectsSeam: RibContext["getProjects"],
+  execSeam: RibContext["getExec"],
+): ToolDefinition {
+  return {
+    name: "squad_rollback",
+    description:
+      "Preview or perform a rollback for the selected project's aborted/failed coordinator run. `project` (optional id/name) resolves scope like squad_coordinate; `run` (optional archived run id) defaults to the most recent aborted or failed run in that scope. Without `confirm: true`, returns the full manifest and mutates nothing. With `confirm: true`, rewinds commits and restores tracked paths to the run baseline, deletes files created by the run, then writes the rollback event last. Refuses if HEAD was rewritten, a merge/rebase is in progress, or the run is not rollbackable.",
+    inputSchema: rollbackSchema,
+    state_changing: true,
+    requires_confirmation: true,
+    async execute(input, ctx) {
+      const parsed = rollbackSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_rollback: ${parsed.error.message}`, true);
+        return;
+      }
+      if (!execSeam) {
+        emitResult(ctx, "squad_rollback: exec seam unavailable on this harness", true);
+        return;
+      }
+      try {
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_rollback: ${resolution.error}`, true);
+          return;
+        }
+        if (!resolution.project) {
+          emitResult(
+            ctx,
+            "squad_rollback: no project bound to roll back — select a project first",
+            true,
+          );
+          return;
+        }
+        const dataHome = scopeDataHome(home, resolution.scopeId);
+        const run = await resolveRollbackRun(dataHome, asNonEmptyString(parsed.data.run));
+        if (!run.ok) {
+          emitResult(ctx, `squad_rollback: ${run.error}`, true);
+          return;
+        }
+        const git = rollbackExec(execSeam(), resolution.project.rootPath);
+        const plan = await computeRollbackPlan(run.ledger, git);
+        const preview = {
+          tool: "squad_rollback",
+          project: resolution.project.name,
+          scopeId: resolution.scopeId,
+          runId: run.runId,
+          confirmRequired: plan.type === "performed",
+          manifest: rollbackManifest(plan),
+        };
+        if (!parsed.data.confirm) {
+          emitResult(ctx, JSON.stringify(preview, null, 2), plan.type === "refused");
+          return;
+        }
+        const at = new Date().toISOString();
+        if (plan.type === "refused") {
+          await appendRollbackRow(dataHome, {
+            type: "refused",
+            runId: run.runId,
+            at,
+            reason: plan.reason,
+            observedHead: plan.observedHead,
+          });
+          emitResult(ctx, JSON.stringify({ ...preview, event: "refused" }, null, 2), true);
+          return;
+        }
+        if (plan.type === "noop") {
+          await appendRollbackRow(dataHome, { type: "noop", runId: run.runId, at });
+          emitResult(ctx, JSON.stringify({ ...preview, event: "noop" }, null, 2));
+          return;
+        }
+        await performRollbackSequence(plan, git, resolution.project.rootPath);
+        await appendRollbackRow(dataHome, {
+          type: "performed",
+          runId: run.runId,
+          at,
+          ...plan.manifest,
+        });
+        emitResult(ctx, JSON.stringify({ ...preview, event: "performed" }, null, 2));
+      } catch (e) {
+        emitResult(ctx, `squad_rollback failed: ${errText(e)}`, true);
       }
     },
   };
@@ -2098,6 +2337,7 @@ const rib: Rib = {
       makeProposeCastTool(),
       makeRunsTool(ctx.getProjects),
       makeStopTool(ctx.getProjects),
+      makeRollbackTool(ctx.getProjects, ctx.getExec),
       makeCoordinateTool(
         ctx.runAgentTurn,
         ctx.getProjects,

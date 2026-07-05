@@ -1,11 +1,30 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { RibContext, RibExec, ToolDefinition } from "@keelson/shared";
 import type { CoordinatorLedger } from "../src/coordinator.ts";
+import rib from "../src/index.ts";
+import { scopeDataHome, setSquadDataHome } from "../src/paths.ts";
 import { computeRollbackPlan, type RollbackGitExec } from "../src/rollback.ts";
+import { readRollbackRows } from "../src/rollback-store.ts";
+import { archiveRun } from "../src/runs-store.ts";
+import { writeSelectedProject } from "../src/scope.ts";
 
 interface Call {
   kind: "git" | "exists";
   value: string;
 }
+
+type RunTextResult = Awaited<ReturnType<RibExec["runText"]>>;
+
+interface RunTextCall {
+  cmd: string;
+  args: string[];
+}
+
+let home: string;
+let root: string;
 
 function ledger(overrides: Partial<CoordinatorLedger> = {}): CoordinatorLedger {
   return {
@@ -23,6 +42,18 @@ function ledger(overrides: Partial<CoordinatorLedger> = {}): CoordinatorLedger {
     baselineHeadSha: "base-head",
     ...overrides,
   };
+}
+
+function project(id: string, name: string, rootPath: string) {
+  return { id, name, rootPath, createdAt: "2026-07-05T00:00:00.000Z" };
+}
+
+function ok(data = ""): RunTextResult {
+  return { ok: true, data, exitCode: 0 };
+}
+
+function fail(error: string): RunTextResult {
+  return { ok: false, error, code: 1 };
 }
 
 function fakeExec(
@@ -52,6 +83,90 @@ function fakeExec(
     },
   };
 }
+
+function makeRibExec(
+  handler: (cmd: string, args: readonly string[]) => RunTextResult | Promise<RunTextResult>,
+): { exec: RibExec; calls: RunTextCall[] } {
+  const calls: RunTextCall[] = [];
+  return {
+    calls,
+    exec: {
+      runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+      runText: async (cmd, args) => {
+        calls.push({ cmd, args: [...args] });
+        return handler(cmd, args);
+      },
+    },
+  };
+}
+
+function bootTools(exec: RibExec): readonly ToolDefinition[] {
+  const ctx = {
+    getDataDir: () => home,
+    getExec: () => exec,
+    getProjects: () => [project("alpha", "alpha", root)],
+  } as unknown as RibContext;
+  return rib.registerTools?.(ctx) ?? [];
+}
+
+function rollbackTool(exec: RibExec): ToolDefinition {
+  const tool = bootTools(exec).find((t) => t.name === "squad_rollback");
+  if (!tool) throw new Error("squad_rollback was not registered");
+  return tool;
+}
+
+async function invoke(
+  tool: ToolDefinition,
+  input: unknown,
+): Promise<{ content?: string; isError?: boolean }> {
+  const chunks: { content?: string; isError?: boolean }[] = [];
+  await tool.execute(input, {
+    emit: (chunk: { content?: string; isError?: boolean }) => chunks.push(chunk),
+  } as never);
+  return chunks[0] ?? {};
+}
+
+function rollbackGitHandler(cmd: string, args: readonly string[]): RunTextResult {
+  if (cmd !== "git") return fail(`unexpected command: ${cmd}`);
+  const key = args.join(" ");
+  const outputs: Record<string, string> = {
+    "rev-parse HEAD": "head-after\n",
+    "rev-parse HEAD^{tree}": "tree-after\n",
+    "rev-parse -q --verify MERGE_HEAD": "",
+    "rev-parse --git-path rebase-merge": ".git/rebase-merge\n",
+    "rev-parse --git-path rebase-apply": ".git/rebase-apply\n",
+    "rev-list --reverse base-head..HEAD": "commit-a\n",
+    "log -n 1 --format=%h%x00%s commit-a": "aaaa111\u0000ship rollback target\n",
+    "diff-tree -r -z --diff-filter=DMRT --name-only base-tree tree-after": "src/changed.ts\u0000",
+    "diff-tree -r -z --diff-filter=A --name-only base-tree tree-after":
+      "generated.txt\u0000nested/new.txt\u0000",
+    "diff --binary --full-index HEAD": "diff --git a/src/changed.ts b/src/changed.ts\n",
+    "reset --soft base-head": "",
+    "read-tree base-tree": "",
+    "checkout-index -a -f": "",
+  };
+  if (key === "merge-base --is-ancestor base-head HEAD") return ok("");
+  return key in outputs ? ok(outputs[key]) : fail(`unexpected git command: ${key}`);
+}
+
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), "squad-rollback-home-"));
+  root = await mkdtemp(join(tmpdir(), "squad-rollback-root-"));
+  await writeSelectedProject(home, {
+    scopeId: "alpha",
+    projectId: "alpha",
+    name: "alpha",
+    rootPath: root,
+    at: "2026-07-05T00:00:00.000Z",
+  });
+});
+
+afterEach(async () => {
+  rib.dispose?.();
+  setSquadDataHome(undefined);
+  await rm(home, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true });
+});
 
 describe("computeRollbackPlan", () => {
   test("computes a performed manifest without mutating git state", async () => {
@@ -135,6 +250,51 @@ describe("computeRollbackPlan", () => {
       type: "refused",
       reason: "merge-in-progress",
       observedHead: "observed",
+    });
+  });
+
+  describe("squad_rollback tool", () => {
+    test("registers as a confirmed state-changing tool and previews without mutation", async () => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger());
+      const { exec, calls } = makeRibExec(rollbackGitHandler);
+      const tool = rollbackTool(exec);
+
+      const res = await invoke(tool, { project: "alpha" });
+
+      expect(tool.state_changing).toBe(true);
+      expect(tool.requires_confirmation).toBe(true);
+      expect(res.isError).toBeUndefined();
+      expect(res.content).toContain('"runId": "2026-07-05T00-00-00-000Z"');
+      expect(res.content).toContain('"C"');
+      expect(res.content).toContain('"M"');
+      expect(res.content).toContain('"D"');
+      expect(calls.map((call) => call.args.join(" "))).not.toContain("reset --soft base-head");
+      expect(
+        await readRollbackRows(scopeDataHome(home, "alpha"), "2026-07-05T00-00-00-000Z"),
+      ).toEqual([]);
+    });
+
+    test("confirm performs the ordered rollback sequence and appends the event last", async () => {
+      await archiveRun(scopeDataHome(home, "alpha"), ledger());
+      await mkdir(join(root, "nested"), { recursive: true });
+      await writeFile(join(root, "generated.txt"), "delete me");
+      await writeFile(join(root, "nested", "new.txt"), "delete me");
+      const { exec, calls } = makeRibExec(rollbackGitHandler);
+
+      const res = await invoke(rollbackTool(exec), { project: "alpha", confirm: true });
+
+      expect(res.isError).toBeUndefined();
+      expect(res.content).toContain('"event": "performed"');
+      expect(calls.map((call) => call.args.join(" ")).slice(-5)).toEqual([
+        "diff --binary --full-index HEAD",
+        "reset --soft base-head",
+        "diff-tree -r -z --diff-filter=A --name-only base-tree tree-after",
+        "read-tree base-tree",
+        "checkout-index -a -f",
+      ]);
+      const rows = await readRollbackRows(scopeDataHome(home, "alpha"), "2026-07-05T00-00-00-000Z");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.type).toBe("performed");
     });
   });
 
