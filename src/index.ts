@@ -74,6 +74,12 @@ import {
 } from "./paths.ts";
 import { squadPolicies } from "./policies.ts";
 import { validateProviderPin } from "./provider-pins.ts";
+import {
+  fetchUnresolvedThreads,
+  type ReviewThread,
+  replyToThread,
+  resolveThread,
+} from "./resolve-review.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   listScopeMembersDirs,
@@ -879,6 +885,338 @@ function makeOpenPrTool(
         emitResult(ctx, result.url, false);
       } catch (e) {
         emitResult(ctx, `squad_open_pr failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+const resolveReviewSchema = z.object({ project: z.string().optional() });
+const RESOLVE_REVIEW_EXEC_TIMEOUT_MS = 120_000;
+
+type ReviewDisposition = {
+  threadRef: string;
+  disposition: "fixed" | "declined";
+  note: string;
+};
+
+export type ReviewDispositionParseResult =
+  | { ok: true; dispositions: Map<string, ReviewDisposition> }
+  | { ok: false; reason: string };
+
+function extractFencedBlocks(text: string): string[] {
+  const blocks: string[] = [];
+  const re = /```(?:json)?\s*([\s\S]*?)```/gi;
+  for (const match of text.matchAll(re)) {
+    const body = match[1]?.trim();
+    if (body) blocks.push(body);
+  }
+  return blocks;
+}
+
+export function parseReviewDispositions(
+  transcriptTail: string,
+  threads: readonly ReviewThread[],
+): ReviewDispositionParseResult {
+  const blocks = extractFencedBlocks(transcriptTail);
+  if (blocks.length === 0) return { ok: false, reason: "missing fenced JSON disposition block" };
+  const knownRefs = new Set(threads.map((t) => t.threadRef));
+  for (const block of blocks.reverse()) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(block);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(parsed)) continue;
+    const dispositions = new Map<string, ReviewDisposition>();
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") {
+        return { ok: false, reason: "disposition block must be an array of objects" };
+      }
+      const row = item as Record<string, unknown>;
+      const threadRef = typeof row.threadRef === "string" ? row.threadRef.trim() : "";
+      if (!threadRef || !knownRefs.has(threadRef)) {
+        return { ok: false, reason: `unknown review threadRef "${threadRef || "(missing)"}"` };
+      }
+      const disposition = row.disposition;
+      if (disposition !== "fixed" && disposition !== "declined") {
+        return {
+          ok: false,
+          reason: `unknown disposition for ${threadRef}: ${String(disposition)}`,
+        };
+      }
+      const note = typeof row.note === "string" ? row.note.trim() : "";
+      dispositions.set(threadRef, { threadRef, disposition, note });
+    }
+    const missing = threads.map((t) => t.threadRef).filter((ref) => !dispositions.has(ref));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason: `missing dispositions for review threads: ${missing.join(", ")}`,
+      };
+    }
+    return { ok: true, dispositions };
+  }
+  return { ok: false, reason: "malformed fenced JSON disposition block" };
+}
+
+function composeResolveReviewTask(threads: readonly ReviewThread[]): string {
+  const reviewItems = threads.map((thread) => ({
+    threadRef: thread.threadRef,
+    location: `${thread.path}:${thread.line}`,
+    author: thread.author,
+    body: thread.body,
+    comments: thread.comments,
+  }));
+  return `Resolve the currently open code-review threads on this branch.
+
+Review threads to address:
+${JSON.stringify(reviewItems, null, 2)}
+
+For each thread:
+- Use threadRef exactly as given; it is the stable identifier the resolver will match.
+- If the review is correct, make the necessary code/test/docs change and commit it.
+- If the review should not be changed, leave the code as-is and record a concise reasoned pushback.
+- Do not force-push, merge, delete branches, or rewrite history.
+
+End the run only after all review threads are handled. The final manager message MUST end with a fenced JSON block containing one object per thread:
+
+\`\`\`json
+[
+  { "threadRef": "<threadRef>", "disposition": "fixed", "note": "what changed" },
+  { "threadRef": "<threadRef>", "disposition": "declined", "note": "reasoned pushback" }
+]
+\`\`\`
+
+Use only "fixed" or "declined" for disposition.`;
+}
+
+function reviewTranscriptTail(result: RunCoordinatorResult): string {
+  const entries = result.ledger.transcript
+    .slice(-8)
+    .map((entry) => entry.text)
+    .filter(Boolean);
+  return [...entries, result.summary].join("\n\n");
+}
+
+async function gitText(
+  exec: ReturnType<NonNullable<RibContext["getExec"]>>,
+  cwd: string,
+  args: string[],
+): Promise<{ ok: true; data: string } | { ok: false; error: string }> {
+  const result = await exec.runText("git", args, {
+    cwd,
+    timeoutMs: RESOLVE_REVIEW_EXEC_TIMEOUT_MS,
+  });
+  return result.ok ? { ok: true, data: result.data } : { ok: false, error: result.error };
+}
+
+function reviewReplyBody(disposition: ReviewDisposition, commitSha: string): string {
+  if (disposition.disposition === "fixed") {
+    return `Fixed in commit ${commitSha}.\n\n${disposition.note || "The squad addressed this review thread."}`;
+  }
+  return `Declined.\n\n${disposition.note || "The squad reviewed this thread and did not make a code change."}`;
+}
+
+async function runResolveReviewFlow(opts: {
+  ctx: ToolContext;
+  turnSeam: RibContext["runAgentTurn"];
+  projectsSeam: RibContext["getProjects"];
+  runWorkflowSeam: RibContext["runWorkflow"];
+  memorySeam: RibContext["getMemory"];
+  execSeam: RibContext["getExec"];
+  projectArg: string;
+}): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  const { ctx, turnSeam, projectsSeam, runWorkflowSeam, memorySeam, execSeam, projectArg } = opts;
+  if (!turnSeam) return { ok: false, error: "agent-turn seam unavailable on this harness" };
+  if (!execSeam) return { ok: false, error: "exec seam unavailable on this harness" };
+  if (!projectsSeam) return { ok: false, error: "projects seam unavailable on this harness" };
+
+  const home = squadDataHome();
+  const selection = await readSelectedProject(home);
+  const resolution = resolveRunScope(projectsSeam, projectArg, selection);
+  if (!resolution.ok) return { ok: false, error: resolution.error };
+  const { scopeId } = resolution;
+  if (!resolution.project) {
+    return {
+      ok: false,
+      error: "no project bound to resolve review for — select a project first",
+    };
+  }
+  const dataHome = scopeDataHome(home, scopeId);
+  const activeLedger = await loadLedger(dataHome);
+  const activeRun = activeCoordinateRuns.get(scopeId);
+  const liveActiveRun = activeRun && !activeRun.signal.aborted ? activeRun : undefined;
+  if (activeLedger?.status === LEDGER_STATUS_ACTIVE && liveActiveRun) {
+    return {
+      ok: false,
+      error: `scope "${scopeId}" already has a live coordinator run at round ${activeLedger.round}; stop it with squad_stop before starting another`,
+    };
+  }
+  if (activeRun && !liveActiveRun) activeCoordinateRuns.delete(scopeId);
+
+  const project = {
+    id: resolution.project.id,
+    name: resolution.project.name,
+    rootPath: resolution.project.rootPath,
+  };
+  const membersRoot = scopeMembersDir(home, scopeId);
+  const roster = (await readMembers(membersRoot)).filter((m) => m.status === "active");
+  if (roster.length === 0) {
+    const locations = await activeMemberScopeLocations(home);
+    return {
+      ok: false,
+      error: `no matching active members to coordinate in scope "${scopeId}"${locations ? `; active members live in: ${locations}` : ""}`,
+    };
+  }
+
+  const exec = execSeam();
+  const threadsResult = await fetchUnresolvedThreads(exec, project.rootPath);
+  if (!threadsResult.ok) return { ok: false, error: threadsResult.error };
+  const threads = threadsResult.data;
+  if (threads.length === 0)
+    return { ok: true, message: "squad_resolve_review: no unresolved review threads found" };
+
+  const beforeHead = await gitText(exec, project.rootPath, ["rev-parse", "HEAD"]);
+  if (!beforeHead.ok)
+    return { ok: false, error: `could not read HEAD before review run: ${beforeHead.error}` };
+
+  const controller = new AbortController();
+  const unlinkAbort = relayAbort(ctx.abortSignal, controller);
+  activeCoordinateRuns.set(scopeId, controller);
+  let result: RunCoordinatorResult;
+  try {
+    result = await runCoordinator({
+      runAgentTurn: turnSeam,
+      membersRoot,
+      dataHome,
+      roster,
+      task: composeResolveReviewTask(threads),
+      scopeId,
+      abortSignal: controller.signal,
+      publish: async () => {
+        await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+      },
+      project,
+      ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
+      ...(memorySeam ? { getMemory: memorySeam } : {}),
+      getExec: exec,
+      verify: await autoDetectVerify(project.rootPath),
+      limits: DEFAULT_LIMITS,
+    });
+  } finally {
+    unlinkAbort();
+    if (activeCoordinateRuns.get(scopeId) === controller) activeCoordinateRuns.delete(scopeId);
+  }
+  await refreshWorkflow?.("squad-coordinator").catch(() => {});
+  if (result.status !== "done") {
+    return {
+      ok: false,
+      error: `coordinator did not reach done (status: ${result.status}); no review replies or resolves were sent`,
+    };
+  }
+
+  const parsed = parseReviewDispositions(reviewTranscriptTail(result), threads);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      error: `could not parse review disposition block: ${parsed.reason}; no review replies or resolves were sent`,
+    };
+  }
+
+  const afterHead = await gitText(exec, project.rootPath, ["rev-parse", "HEAD"]);
+  if (!afterHead.ok)
+    return { ok: false, error: `could not read HEAD after review run: ${afterHead.error}` };
+  const beforeSha = beforeHead.data.trim();
+  const afterSha = afterHead.data.trim();
+  if (!afterSha || afterSha === beforeSha) {
+    return {
+      ok: false,
+      error:
+        "coordinator reached done but created no new commit; no push, review replies, or resolves were sent",
+    };
+  }
+
+  const pushed = await gitText(exec, project.rootPath, ["push"]);
+  if (!pushed.ok)
+    return {
+      ok: false,
+      error: `git push failed; no review replies or resolves were sent: ${pushed.error}`,
+    };
+
+  const errors: string[] = [];
+  let resolved = 0;
+  for (const thread of threads) {
+    const disposition = parsed.dispositions.get(thread.threadRef);
+    if (!disposition) {
+      errors.push(`missing disposition for ${thread.threadRef}`);
+      continue;
+    }
+    const replied = await replyToThread(
+      exec,
+      project.rootPath,
+      thread,
+      reviewReplyBody(disposition, afterSha),
+    );
+    if (!replied.ok) {
+      errors.push(`${thread.threadRef}: ${replied.error}`);
+      continue;
+    }
+    if (disposition.disposition === "fixed") {
+      const marked = await resolveThread(exec, project.rootPath, thread);
+      if (marked.ok) resolved += 1;
+      else errors.push(`${thread.threadRef}: ${marked.error}`);
+    }
+  }
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `review follow-up partially failed after push ${afterSha}: ${errors.join("; ")}`,
+    };
+  }
+  return {
+    ok: true,
+    message: `squad_resolve_review: pushed ${afterSha}, replied to ${threads.length} thread(s), resolved ${resolved} fixed thread(s)`,
+  };
+}
+
+function makeResolveReviewTool(
+  turnSeam: RibContext["runAgentTurn"],
+  projectsSeam: RibContext["getProjects"],
+  runWorkflowSeam: RibContext["runWorkflow"],
+  memorySeam: RibContext["getMemory"],
+  execSeam: RibContext["getExec"],
+): ToolDefinition {
+  return {
+    name: "squad_resolve_review",
+    description:
+      "Operator-triggered review follow-up for the selected project: fetches unresolved PR/MR review threads from the current branch, runs the squad coordinator through the normal single-run/verify/review-gated loop to address them, pushes the resulting commit with plain git push, replies to every fetched thread, and resolves only threads marked fixed. `project` (optional id/name) overrides the selected project. Never schedules itself, force-pushes, merges, deletes branches, or resolves declined threads.",
+    inputSchema: resolveReviewSchema,
+    state_changing: true,
+    requires_confirmation: true,
+    async execute(input, ctx) {
+      const parsed = resolveReviewSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_resolve_review: ${parsed.error.message}`, true);
+        return;
+      }
+      try {
+        const result = await runResolveReviewFlow({
+          ctx,
+          turnSeam,
+          projectsSeam,
+          runWorkflowSeam,
+          memorySeam,
+          execSeam,
+          projectArg: asNonEmptyString(parsed.data.project),
+        });
+        emitResult(
+          ctx,
+          result.ok ? result.message : `squad_resolve_review: ${result.error}`,
+          !result.ok,
+        );
+      } catch (e) {
+        emitResult(ctx, `squad_resolve_review failed: ${errText(e)}`, true);
       }
     },
   };
@@ -1779,6 +2117,13 @@ const rib: Rib = {
       makeDispatchTool(ctx.runAgentTurn),
       makeCodeTool(ctx.runAgentTurn, ctx.getProjects),
       makeOpenPrTool(ctx.getProjects, ctx.getExec),
+      makeResolveReviewTool(
+        ctx.runAgentTurn,
+        ctx.getProjects,
+        ctx.runWorkflow,
+        ctx.getMemory,
+        ctx.getExec,
+      ),
       makeViewDiffTool(ctx.getProjects, ctx.getExec),
       makeProposeCastTool(),
       makeRunsTool(ctx.getProjects),
