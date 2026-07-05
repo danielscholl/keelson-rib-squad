@@ -1856,6 +1856,14 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       };
       livePersists = livePersists.then(() => persist(live)).catch(() => {});
     };
+    const codeTreeBefore =
+      opts.getExec &&
+      project &&
+      decided.step.kind === "execute" &&
+      decided.step.mode === "code"
+        ? await captureWorkingTreeTree(opts.getExec, project.rootPath).catch(() => undefined)
+        : undefined;
+    const codeBeforeTree = codeTreeBefore?.ok ? codeTreeBefore.tree : undefined;
     const result = await executeStep(decided.step, {
       dispatch,
       ...(code ? { code } : {}),
