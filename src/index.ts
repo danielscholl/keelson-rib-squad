@@ -80,7 +80,11 @@ import {
   replyToThread,
   resolveThread,
 } from "./resolve-review.ts";
-import { parseReviewDispositions, type ReviewDisposition } from "./review-dispositions.ts";
+import {
+  parseReviewDispositions,
+  type ReviewDisposition,
+  validateDispositionRows,
+} from "./review-dispositions.ts";
 import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   listScopeMembersDirs,
@@ -930,16 +934,7 @@ For each thread:
 - If the review should not be changed, leave the code as-is and record a concise reasoned pushback.
 - Do not force-push, merge, delete branches, or rewrite history.
 
-End the run only after all review threads are handled. The final manager message MUST end with a fenced JSON block containing one object per thread:
-
-\`\`\`json
-[
-  { "threadRef": "<threadRef>", "disposition": "fixed", "note": "what changed" },
-  { "threadRef": "<threadRef>", "disposition": "declined", "note": "reasoned pushback" }
-]
-\`\`\`
-
-Use only "fixed" or "declined" for disposition.`;
+End the run only after all review threads are handled. The manager's final done directive MUST carry the dispositions on the directive JSON itself — {"action":"done","summary":"...","dispositions":[{"threadRef":"<threadRef>","disposition":"fixed","note":"what changed"},{"threadRef":"<threadRef>","disposition":"declined","note":"reasoned pushback"}]} — one object per thread, never in the prose. Use only "fixed" or "declined" for disposition.`;
 }
 
 function reviewTranscriptTail(result: RunCoordinatorResult): string {
@@ -1067,7 +1062,13 @@ async function runResolveReviewFlow(opts: {
     };
   }
 
-  const parsed = parseReviewDispositions(reviewTranscriptTail(result), threads);
+  // Directive-carried rows are the primary channel (they survive ENTRY_CAP truncation);
+  // the transcript-tail prose parse remains as the fallback for a manager that answered
+  // in the older fenced-block form.
+  const ledgerRows = result.ledger.dispositions;
+  const parsed = ledgerRows?.length
+    ? validateDispositionRows(ledgerRows, threads)
+    : parseReviewDispositions(reviewTranscriptTail(result), threads);
   if (!parsed.ok) {
     return {
       ok: false,
@@ -1080,20 +1081,38 @@ async function runResolveReviewFlow(opts: {
     return { ok: false, error: `could not read HEAD after review run: ${afterHead.error}` };
   const beforeSha = beforeHead.data.trim();
   const afterSha = afterHead.data.trim();
-  if (!afterSha || afterSha === beforeSha) {
+  if (!afterSha) {
     return {
       ok: false,
       error:
         "coordinator reached done but created no new commit; no push, review replies, or resolves were sent",
     };
   }
-
-  const pushed = await gitText(exec, project.rootPath, ["push"]);
-  if (!pushed.ok)
-    return {
-      ok: false,
-      error: `git push failed; no review replies or resolves were sent: ${pushed.error}`,
-    };
+  // A re-invocation whose fixes are already committed AND pushed (clean tree, branch not
+  // ahead of upstream) may proceed to replies/resolves without a new commit — refusing
+  // there would strand threads whose fixes are already public. Anything else keeps the
+  // fail-closed refusal.
+  const pushedNew = afterSha !== beforeSha;
+  if (!pushedNew) {
+    const clean = await gitText(exec, project.rootPath, ["status", "--porcelain"]);
+    const ahead = await gitText(exec, project.rootPath, ["rev-list", "--count", "@{u}..HEAD"]);
+    const alreadySynced =
+      clean.ok && clean.data.trim() === "" && ahead.ok && ahead.data.trim() === "0";
+    if (!alreadySynced) {
+      return {
+        ok: false,
+        error:
+          "coordinator reached done but created no new commit; no push, review replies, or resolves were sent",
+      };
+    }
+  } else {
+    const pushed = await gitText(exec, project.rootPath, ["push"]);
+    if (!pushed.ok)
+      return {
+        ok: false,
+        error: `git push failed; no review replies or resolves were sent: ${pushed.error}`,
+      };
+  }
 
   const errors: string[] = [];
   let resolved = 0;
@@ -1122,12 +1141,12 @@ async function runResolveReviewFlow(opts: {
   if (errors.length > 0) {
     return {
       ok: false,
-      error: `review follow-up partially failed after push ${afterSha}: ${errors.join("; ")}`,
+      error: `review follow-up partially failed at ${afterSha}: ${errors.join("; ")}`,
     };
   }
   return {
     ok: true,
-    message: `squad_resolve_review: pushed ${afterSha}, replied to ${threads.length} thread(s), resolved ${resolved} fixed thread(s)`,
+    message: `squad_resolve_review: ${pushedNew ? `pushed ${afterSha}` : `branch already up to date at ${afterSha}`}, replied to ${threads.length} thread(s), resolved ${resolved} fixed thread(s)`,
   };
 }
 

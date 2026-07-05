@@ -109,6 +109,9 @@ export interface CoordinatorLedger {
   // it returns, so a streamed Run-loop board can show "work being assigned" in real time. A
   // terminal/replanning run carries none. Optional so old ledgers and existing callers are intact.
   inFlight?: InFlightTurn;
+  // Dispositions the manager attached to the run-terminating done directive; persisted only on
+  // a genuine done so consumers (squad_resolve_review) read structured rows, not capped prose.
+  dispositions?: DoneDisposition[];
   createdAt: string;
   updatedAt: string;
 }
@@ -122,6 +125,15 @@ export interface InFlightTurn {
   // The live tool trace the executing turn has produced so far (#113) — updated on a
   // throttle while the turn runs, so a watching board streams the work as it happens.
   tools?: ToolTrace[];
+}
+
+// Per-item disposition rows a task may require the manager to attach to its done
+// directive (e.g. squad_resolve_review's per-thread fixed/declined verdicts). Carried
+// as directive JSON — never prose — so ENTRY_CAP truncation can't destroy them.
+export interface DoneDisposition {
+  threadRef: string;
+  disposition: "fixed" | "declined";
+  note: string;
 }
 
 export interface CoordinatorEntry {
@@ -238,6 +250,7 @@ interface ParsedDirective {
   // "cast this" recommendation, not acted on autonomously (roster mutation stays operator-gated).
   needs: string[];
   summary?: string;
+  dispositions?: DoneDisposition[];
   head: string;
 }
 
@@ -255,6 +268,23 @@ function asStrArray(v: unknown): string[] {
     : [];
 }
 
+const DISPOSITION_ROW_CAP = 200;
+const DISPOSITION_NOTE_CAP = 500;
+function asDispositionRows(v: unknown): DoneDisposition[] {
+  if (!Array.isArray(v)) return [];
+  const rows: DoneDisposition[] = [];
+  for (const item of v.slice(0, DISPOSITION_ROW_CAP)) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const threadRef = typeof row.threadRef === "string" ? row.threadRef.trim() : "";
+    const disposition = row.disposition;
+    if (!threadRef || (disposition !== "fixed" && disposition !== "declined")) continue;
+    const note = typeof row.note === "string" ? row.note.trim().slice(0, DISPOSITION_NOTE_CAP) : "";
+    rows.push({ threadRef, disposition, note });
+  }
+  return rows;
+}
+
 // Parse a coordinator turn's reply into a directive. Returns null when there is no
 // valid trailing directive (the caller falls back). Tolerant on field synonyms, so a
 // slightly-off model reply still routes.
@@ -268,12 +298,14 @@ export function parseCoordinatorDirective(text: string): ParsedDirective | null 
   const summary = asStr(p.summary);
 
   if (p.action === "done") {
+    const dispositions = asDispositionRows(p.dispositions);
     return {
       progress: { isRequestSatisfied: true, isInLoop: false, isProgressBeingMade: true },
       facts,
       plan,
       needs,
       ...(summary ? { summary } : {}),
+      ...(dispositions.length > 0 ? { dispositions } : {}),
       head: match.head,
     };
   }
@@ -493,6 +525,7 @@ ${renderTranscript(ledger.transcript)}
 Assess the state, then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to continue: {"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"<member slug>","instruction":"<the single next instruction for that member>","plan":["step","step"],"facts":["any new finding"]}
 - when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}${needsNote}
+- if the task requires per-item dispositions, carry them ON the done directive itself — {"action":"done","summary":"...","dispositions":[{"threadRef":"...","disposition":"fixed|declined","note":"..."}]} — never in the prose.
 Set "satisfied" true only when the goal is genuinely complete. Pick next_speaker from the members above. Keep the instruction to ONE concrete step.`;
 }
 
@@ -1643,6 +1676,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...ledger,
         status: givingUp ? RUN_STATUS_GAVE_UP : RUN_STATUS_DONE,
         ...(ledger.summary ? {} : { summary: directive.summary ?? decided.step.reason }),
+        ...(!givingUp && directive.dispositions ? { dispositions: directive.dispositions } : {}),
         inFlight: undefined,
         updatedAt: now(),
       };

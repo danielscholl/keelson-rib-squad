@@ -18,7 +18,7 @@ import {
   replyToThread,
   resolveThread,
 } from "../src/resolve-review.ts";
-import { parseReviewDispositions } from "../src/review-dispositions.ts";
+import { parseReviewDispositions, validateDispositionRows } from "../src/review-dispositions.ts";
 
 type RunTextResult = Awaited<ReturnType<RibExec["runText"]>>;
 type RunTextOptions = Parameters<RibExec["runText"]>[2];
@@ -94,6 +94,14 @@ function invoke(t: ToolDefinition, input: unknown): Promise<{ content: string; i
       },
     } as never)
     .then(() => ({ content, isError }));
+}
+
+function managerDoneWithDirectiveDispositions(threadRef = "gh:thread-1"): string {
+  return `done\n${JSON.stringify({
+    action: "done",
+    summary: "handled review",
+    dispositions: [{ threadRef, disposition: "fixed", note: "Adjusted the code." }],
+  })}`;
 }
 
 function managerDoneWithDisposition(threadRef = "gh:thread-1"): string {
@@ -364,6 +372,37 @@ describe("resolve-review dispositions", () => {
     }
   });
 
+  test("validates directive-carried rows by threadRef", () => {
+    const result = validateDispositionRows(
+      [
+        { threadRef: "gh:one", disposition: "fixed", note: "done" },
+        { threadRef: "gh:two", disposition: "declined", note: "no" },
+      ],
+      threads,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.dispositions.get("gh:one")?.disposition).toBe("fixed");
+      expect(result.dispositions.get("gh:two")?.disposition).toBe("declined");
+    }
+  });
+
+  test("directive rows fail closed on unknown or missing threadRefs", () => {
+    const unknown = validateDispositionRows(
+      [{ threadRef: "gh:missing", disposition: "fixed", note: "x" }],
+      threads,
+    );
+    expect(unknown.ok).toBe(false);
+
+    const missing = validateDispositionRows(
+      [{ threadRef: "gh:one", disposition: "fixed", note: "x" }],
+      threads,
+    );
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toContain("gh:two");
+  });
+
   test.each([
     ["missing", "no block"],
     ["malformed", "```json\n{ nope\n```"],
@@ -435,6 +474,7 @@ describe("squad_resolve_review tool flow", () => {
     const { exec, calls } = githubFetchExec();
     const original = exec.runText;
     exec.runText = async (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], opts });
       if (cmd === "git" && argsEqual(args, ["rev-parse", "HEAD"])) return ok("abc123\n");
       if (cmd === "git" && argsEqual(args, ["add", "-A", "--", "."])) return ok();
       if (cmd === "git" && argsEqual(args, ["write-tree"])) return ok("tree123\n");
@@ -454,6 +494,83 @@ describe("squad_resolve_review tool flow", () => {
     expect(result.content).toContain("created no new commit");
     expect(commandCalls(calls, "git", "push")).toHaveLength(0);
     expect(calls.some((call) => call.args.some((arg) => arg.endsWith("/replies")))).toBe(false);
+  });
+
+  test("directive-carried dispositions push, reply, and resolve after a new commit", async () => {
+    const { exec, calls } = githubFetchExec();
+    const original = exec.runText;
+    let revParseCount = 0;
+    exec.runText = async (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], opts });
+      if (cmd === "git" && argsEqual(args, ["rev-parse", "HEAD"])) {
+        revParseCount += 1;
+        return ok(revParseCount === 1 ? "abc123\n" : "def456\n");
+      }
+      if (cmd === "git" && argsEqual(args, ["add", "-A", "--", "."])) return ok();
+      if (cmd === "git" && argsEqual(args, ["write-tree"])) return ok("tree123\n");
+      if (cmd === "git" && argsEqual(args, ["push"])) return ok("");
+      if (cmd === "gh" && args.some((a) => a.includes("resolveReviewThread"))) {
+        return ok(
+          JSON.stringify({
+            data: { resolveReviewThread: { thread: { id: "thread-1", isResolved: true } } },
+          }),
+        );
+      }
+      if (cmd === "gh" && args.some((a) => a.endsWith("/replies"))) return ok("{}");
+      return original(cmd, args, opts);
+    };
+    const tools =
+      rib.registerTools?.({
+        getDataDir: () => home,
+        getProjects: () => [project(root)],
+        getExec: () => exec,
+        runAgentTurn: queuedRun([managerDoneWithDirectiveDispositions()]),
+      } as unknown as RibContext) ?? [];
+
+    const result = await invoke(tool(tools, "squad_resolve_review"), { project: "alpha" });
+
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("resolved 1");
+    expect(commandCalls(calls, "git", "push")).toHaveLength(1);
+    expect(calls.filter((c) => c.args.some((a) => a.endsWith("/replies")))).toHaveLength(1);
+    expect(calls.filter((c) => c.args.some((a) => a.includes("resolveReviewThread")))).toHaveLength(
+      1,
+    );
+  });
+
+  test("re-run with fixes already pushed replies and resolves without a push", async () => {
+    const { exec, calls } = githubFetchExec();
+    const original = exec.runText;
+    exec.runText = async (cmd, args, opts) => {
+      calls.push({ cmd, args: [...args], opts });
+      if (cmd === "git" && argsEqual(args, ["rev-parse", "HEAD"])) return ok("abc123\n");
+      if (cmd === "git" && argsEqual(args, ["add", "-A", "--", "."])) return ok();
+      if (cmd === "git" && argsEqual(args, ["write-tree"])) return ok("tree123\n");
+      if (cmd === "git" && argsEqual(args, ["status", "--porcelain"])) return ok("");
+      if (cmd === "git" && argsEqual(args, ["rev-list", "--count", "@{u}..HEAD"])) return ok("0\n");
+      if (cmd === "gh" && args.some((a) => a.includes("resolveReviewThread"))) {
+        return ok(
+          JSON.stringify({
+            data: { resolveReviewThread: { thread: { id: "thread-1", isResolved: true } } },
+          }),
+        );
+      }
+      if (cmd === "gh" && args.some((a) => a.endsWith("/replies"))) return ok("{}");
+      return original(cmd, args, opts);
+    };
+    const tools =
+      rib.registerTools?.({
+        getDataDir: () => home,
+        getProjects: () => [project(root)],
+        getExec: () => exec,
+        runAgentTurn: queuedRun([managerDoneWithDirectiveDispositions()]),
+      } as unknown as RibContext) ?? [];
+
+    const result = await invoke(tool(tools, "squad_resolve_review"), { project: "alpha" });
+
+    expect(result.isError).toBe(false);
+    expect(commandCalls(calls, "git", "push")).toHaveLength(0);
+    expect(calls.filter((c) => c.args.some((a) => a.endsWith("/replies")))).toHaveLength(1);
   });
 
   test("active-run guard returns before any second-run forge calls", async () => {

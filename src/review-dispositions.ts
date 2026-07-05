@@ -23,6 +23,28 @@ function extractFencedBlocks(text: string): string[] {
   return blocks;
 }
 
+// Validate directive-carried disposition rows (the primary channel — see
+// CoordinatorLedger.dispositions) against the fetched threads: every thread covered,
+// no unknown refs. Same fail-closed semantics as the prose fallback below.
+export function validateDispositionRows(
+  rows: readonly ReviewDisposition[],
+  threads: readonly ReviewThread[],
+): ReviewDispositionParseResult {
+  const knownRefs = new Set(threads.map((t) => t.threadRef));
+  const dispositions = new Map<string, ReviewDisposition>();
+  for (const row of rows) {
+    if (!knownRefs.has(row.threadRef)) {
+      return { ok: false, reason: `unknown review threadRef "${row.threadRef}"` };
+    }
+    dispositions.set(row.threadRef, { ...row, note: row.note.trim() });
+  }
+  const missing = threads.map((t) => t.threadRef).filter((ref) => !dispositions.has(ref));
+  if (missing.length > 0) {
+    return { ok: false, reason: `missing dispositions for review threads: ${missing.join(", ")}` };
+  }
+  return { ok: true, dispositions };
+}
+
 export function parseReviewDispositions(
   transcriptTail: string,
   threads: readonly ReviewThread[],
