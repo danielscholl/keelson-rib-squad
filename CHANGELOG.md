@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.11.0...v0.12.0) (2026-07-05)
+
+
+### Added
+
+* add per-member tool allowlists ([#145](https://github.com/danielscholl/keelson-rib-squad/issues/145)) ([96cef63](https://github.com/danielscholl/keelson-rib-squad/commit/96cef638655432a3f3e7ea3acf577144f438f215))
+* squad_resolve_review addresses reviewer feedback on its own change requests ([#147](https://github.com/danielscholl/keelson-rib-squad/issues/147)) ([e4e3dea](https://github.com/danielscholl/keelson-rib-squad/commit/e4e3dead32071b0a06156cfc82768c46eaa414e0))
+* squad_rollback reverts a stopped or failed run to its captured baseline ([#148](https://github.com/danielscholl/keelson-rib-squad/issues/148)) ([d6eaa79](https://github.com/danielscholl/keelson-rib-squad/commit/d6eaa79bc7f8fac6c95567f9eae5a9b73bfb4474))
+
+
+### Fixed
+
+* **coordinator:** count committed turn deltas in touched stats ([#155](https://github.com/danielscholl/keelson-rib-squad/issues/155)) ([16c8113](https://github.com/danielscholl/keelson-rib-squad/commit/16c8113028751a884220d94be2747c7b1bb0defa))
+* **coordinator:** include plan rows in dispatch prompt ([#156](https://github.com/danielscholl/keelson-rib-squad/issues/156)) ([2ec8414](https://github.com/danielscholl/keelson-rib-squad/commit/2ec8414a944de12d5776199caddda62273afa2aa))
+* **coordinator:** surface code-turn timeout in standup ([#157](https://github.com/danielscholl/keelson-rib-squad/issues/157)) ([273e7c0](https://github.com/danielscholl/keelson-rib-squad/commit/273e7c0770f5e86db5077727ddff204f0f8a7686))
+
 ## [0.11.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.10.2...v0.11.0) (2026-07-05)
 
 
