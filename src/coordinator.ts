@@ -217,6 +217,7 @@ const MAX_TRANSCRIPT = 40; // bounded so the prompt + file stay sane
 const ENTRY_CAP = 1500; // per-transcript-entry char cap
 const MAX_FAILED = 20; // bounded list of recently-abandoned steps surfaced on a re-plan
 const STEP_DESC_CAP = 200; // per-swept-step char cap so the re-plan prompt stays compact
+const PLAN_CONTEXT_ROW_CAP = 12;
 const MAX_GAPS = 6; // bounded list of "the roster lacks X" recommendations
 const GAP_CAP = 160; // per-gap char cap so a recommendation stays a short headline
 export const MAX_VERIFY_FAILURES = 3; // consecutive done-gate failures before terminating
@@ -1025,6 +1026,17 @@ function summarizeProvenance(transcript: readonly CoordinatorEntry[]): string | 
 function withTeamMemory(instruction: string, recalled: readonly string[]): string {
   if (recalled.length === 0) return instruction;
   return `Team memory — decisions and lessons the squad recorded on earlier passes for this project (honor and build on them; don't re-derive or contradict them):\n${recalled.map((r) => `- ${r}`).join("\n")}\n\nYour task:\n${instruction}`;
+}
+
+export function withPlanContext(instruction: string, plan: readonly string[]): string {
+  if (plan.length === 0) return instruction;
+  const rows = plan
+    .slice(0, PLAN_CONTEXT_ROW_CAP)
+    .map((s, i) => `${i + 1}. ${cap(s.trim(), STEP_DESC_CAP)}`)
+    .join("\n");
+  const overflow =
+    plan.length > PLAN_CONTEXT_ROW_CAP ? `\n…(+${plan.length - PLAN_CONTEXT_ROW_CAP} more)` : "";
+  return `The manager's current plan (it lives with the coordinator — NOT in repo files or a todo table; do not hunt the repository for plan/todo files, none exist and that is expected):\n${rows}${overflow}\n\nYour assigned step in this plan:\n${instruction}`;
 }
 
 function foldFacts(existing: readonly string[], added: readonly string[]): string[] {
