@@ -765,6 +765,26 @@ async function captureWorkingTreeTree(
   }
 }
 
+async function collectTouchedBetween(
+  exec: RibExec,
+  cwd: string,
+  treeBefore: string,
+  treeAfter: string,
+): Promise<{ files: number; insertions: number; deletions: number } | undefined> {
+  const numstat = await exec.runText(
+    "git",
+    ["diff", "--numstat", "--find-renames", treeBefore, treeAfter],
+    { cwd, timeoutMs: VERIFY_TIMEOUT_MS },
+  );
+  if (!numstat.ok) return undefined;
+  const files = parseNumstat(numstat.data);
+  return {
+    files: files.length,
+    insertions: files.reduce((sum, file) => sum + file.added, 0),
+    deletions: files.reduce((sum, file) => sum + file.removed, 0),
+  };
+}
+
 async function collectTouchedSummary(
   exec: RibExec,
   cwd: string,
