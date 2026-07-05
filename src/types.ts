@@ -57,6 +57,14 @@ export function normalizeIdentitySlot(value: unknown, fallbackIndex = 0): number
     : identitySlotForIndex(fallbackIndex);
 }
 
+export function normalizeToolAllowlist(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const tools = [
+    ...new Set(value.map((t) => (typeof t === "string" ? t.trim() : "")).filter(Boolean)),
+  ];
+  return tools.length > 0 ? tools : undefined;
+}
+
 export interface Member {
   slug: MemberSlug;
   name: string;
@@ -75,6 +83,7 @@ export interface Member {
   // Free-form capability slugs (unconstrained in Phase 0). Omitting yields a
   // text-only chat agent.
   tools?: readonly string[];
+  toolAllowlist?: readonly string[];
   // Themed-casting identity (#16). Set when the member was cast from an ensemble:
   // themeId is the ensemble it belongs to, personality/backstory its character's
   // voice (also folded into the charter), and originalName the proposed name casting

@@ -79,6 +79,31 @@ describe("member store tools", () => {
     expect(refreshed).toContain("squad-roster");
   });
 
+  test("emit round-trips tool allowlists and normalizes empty lists to absent", async () => {
+    const tools = bootTools([project("alpha", "alpha", "/repo/alpha")]);
+
+    const emittedAtlas = await invoke(tool(tools, "squad_emit_member"), {
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      project: "alpha",
+      toolAllowlist: ["osdu_quality", " osdu_quality ", ""],
+    });
+    const emittedBeacon = await invoke(tool(tools, "squad_emit_member"), {
+      name: "Beacon",
+      role: "Reviewer",
+      charter: "# Beacon",
+      project: "alpha",
+      toolAllowlist: [],
+    });
+
+    const atlas = JSON.parse(emittedAtlas.content) as { slug: string };
+    const beacon = JSON.parse(emittedBeacon.content) as { slug: string };
+    const members = await readMembers(scopeMembersDir(home, "alpha"));
+    expect(members.find((m) => m.slug === atlas.slug)?.toolAllowlist).toEqual(["osdu_quality"]);
+    expect(members.find((m) => m.slug === beacon.slug)?.toolAllowlist).toBeUndefined();
+  });
+
   test("emit and list without project use the selected scope", async () => {
     await writeSelectedProject(home, {
       scopeId: "beta",

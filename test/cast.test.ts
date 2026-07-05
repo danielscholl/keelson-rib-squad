@@ -183,7 +183,7 @@ describe("proposeCast", () => {
     expect(result.proposal.projectName).toBe("keelson");
   });
 
-  test("dedupes/trims capability tags and keeps a provider with no model (vendor pin)", async () => {
+  test("dedupes/trims capability tags and tool allowlists", async () => {
     const runAgentTurn = (): RibAgentTurn =>
       fakeTurn(
         Promise.resolve(
@@ -194,6 +194,7 @@ describe("proposeCast", () => {
                 role: "Engineer",
                 charter: "# Atlas",
                 tools: ["code", " code ", "read", ""],
+                toolAllowlist: ["osdu_quality", " osdu_quality ", ""],
                 provider: "anthropic",
               },
             ]),
@@ -204,6 +205,7 @@ describe("proposeCast", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.proposal.members[0]?.tools).toEqual(["code", "read"]);
+    expect(result.proposal.members[0]?.toolAllowlist).toEqual(["osdu_quality"]);
     // A provider may stand alone — pin the vendor, default model.
     expect(result.proposal.members[0]?.provider).toBe("anthropic");
     expect(result.proposal.members[0]?.model).toBeUndefined();
@@ -302,7 +304,15 @@ describe("cast proposal store", () => {
     projectName: "keelson",
     rootPath: "/repo/keelson",
     mission: "ship search",
-    members: [{ name: "Atlas", role: "Engineer", charter: "# Atlas", tools: ["code", "read"] }],
+    members: [
+      {
+        name: "Atlas",
+        role: "Engineer",
+        charter: "# Atlas",
+        tools: ["code", "read"],
+        toolAllowlist: ["osdu_quality"],
+      },
+    ],
     summary: "a tuned team",
     notes: [],
     createdAt: "2026-06-27T00:00:00.000Z",
@@ -313,6 +323,7 @@ describe("cast proposal store", () => {
     const back = await readProposal(home);
     expect(back?.projectName).toBe("keelson");
     expect(back?.members[0]?.tools).toEqual(["code", "read"]);
+    expect(back?.members[0]?.toolAllowlist).toEqual(["osdu_quality"]);
     expect(back?.members[0]?.identitySlot).toBe(0);
   });
 

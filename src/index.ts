@@ -85,7 +85,12 @@ import {
 } from "./scope.ts";
 import { GENESIS_STARTERS } from "./starters.ts";
 import type { TurnOutcome } from "./turn-runner.ts";
-import { identitySlotForIndex, identityTonesByMember, type Member } from "./types.ts";
+import {
+  identitySlotForIndex,
+  identityTonesByMember,
+  type Member,
+  normalizeToolAllowlist,
+} from "./types.ts";
 
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
 // dispose. refreshWorkflow re-runs a bound collector (squad-roster, squad-cast)
@@ -265,6 +270,7 @@ async function themedRecord(
     model?: string;
     provider?: string;
     tools?: readonly string[];
+    toolAllowlist?: readonly string[];
   },
   identitySlot: number,
 ): Promise<MemberRecord> {
@@ -287,6 +293,9 @@ async function themedRecord(
     ...(base.provider ? { provider: base.provider } : {}),
     ...(base.provider && base.model ? { model: base.model } : {}),
     ...(base.tools && base.tools.length > 0 ? { tools: [...base.tools] } : {}),
+    ...(base.toolAllowlist && base.toolAllowlist.length > 0
+      ? { toolAllowlist: [...base.toolAllowlist] }
+      : {}),
   };
 }
 
@@ -328,6 +337,7 @@ async function themedProposal(
       role: m.role,
       charter: foldedCharter(m.charter, id),
       ...(m.tools && m.tools.length > 0 ? { tools: m.tools } : {}),
+      ...(m.toolAllowlist && m.toolAllowlist.length > 0 ? { toolAllowlist: m.toolAllowlist } : {}),
       ...(m.provider ? { provider: m.provider } : {}),
       ...(m.provider && m.model ? { model: m.model } : {}),
       ...(id.themeId ? { themeId: id.themeId } : {}),
@@ -366,6 +376,7 @@ const memberEmitSchema = z.object({
   project: z.string().optional(),
   provider: z.string().optional(),
   tools: z.array(z.string()).optional(),
+  toolAllowlist: z.array(z.string()).optional(),
 });
 
 function makeEmitMemberTool(
@@ -384,7 +395,15 @@ function makeEmitMemberTool(
         emitResult(ctx, `squad_emit_member: ${parsed.error.message}`, true);
         return;
       }
-      const { name, role, charter, tools, model: rawModel, provider: rawProvider } = parsed.data;
+      const {
+        name,
+        role,
+        charter,
+        tools,
+        toolAllowlist,
+        model: rawModel,
+        provider: rawProvider,
+      } = parsed.data;
       try {
         const home = squadDataHome();
         const selection = await readSelectedProject(home);
@@ -414,6 +433,7 @@ function makeEmitMemberTool(
         const dedupedTools = tools
           ? [...new Set(tools.map((t) => t.trim()).filter((t) => t.length > 0))]
           : [];
+        const dedupedToolAllowlist = normalizeToolAllowlist(toolAllowlist);
         // An authored member takes the next slot after the existing roster, so
         // hand-built teams don't stack every member on slot 0.
         const existing = await readMembers(scopeMembersDir(home, scopeId));
@@ -429,6 +449,7 @@ function makeEmitMemberTool(
               ? { model: validated.pin.model }
               : {}),
             ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
+            ...(dedupedToolAllowlist ? { toolAllowlist: dedupedToolAllowlist } : {}),
           },
           existing.length,
         );
@@ -2209,6 +2230,9 @@ async function approveCastAction(): Promise<RibActionResult> {
         ...(m.provider ? { provider: m.provider } : {}),
         ...(m.provider && m.model ? { model: m.model } : {}),
         ...(m.tools && m.tools.length > 0 ? { tools: m.tools } : {}),
+        ...(m.toolAllowlist && m.toolAllowlist.length > 0
+          ? { toolAllowlist: m.toolAllowlist }
+          : {}),
       });
     }
     const outcome = await scaffoldRoster(scopeMembersDir(home, scopeId), records);
