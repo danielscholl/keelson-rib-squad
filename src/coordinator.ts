@@ -455,7 +455,13 @@ function renderTranscriptEntry(e: CoordinatorEntry): string {
     const touched = e.touched
       ? ` [touched ${e.touched.files} file${e.touched.files === 1 ? "" : "s"}, +${e.touched.insertions} -${e.touched.deletions}]`
       : "";
-    return `${e.speaker ?? "member"} coded: ${e.text}${touched}`;
+    const flag =
+      e.outcome && e.outcome !== "ok"
+        ? e.outcome === "timeout"
+          ? ` [timed out after ${Math.round((e.durationMs ?? 0) / 1000)}s — output truncated]`
+          : ` [${e.outcome}]`
+        : "";
+    return `${e.speaker ?? "member"} coded: ${e.text}${touched}${flag}`;
   }
   if (e.kind === "workflow") return `${e.speaker ?? "member"} workflow: ${e.text}`;
   if (e.kind === "verify") return `verify: ${e.text}`;
