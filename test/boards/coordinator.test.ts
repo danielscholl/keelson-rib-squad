@@ -187,6 +187,22 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(stop?.confirm?.confirmLabel).toBe("Stop run");
   });
 
+  test("the caller's scopeId wins over the ledger's, covering pre-scopeId ledgers", () => {
+    const stopPayload = (board: ReturnType<typeof buildCoordinatorBoard>) => {
+      const section = board.sections.find((s) => s.kind === "actions" && s.title === "Live run");
+      if (section?.kind !== "actions") throw new Error("no live run actions section");
+      return section.items[0]?.payload;
+    };
+    const legacy = buildCoordinatorBoard(ledger({ status: "active", round: 3 }), undefined, "beta");
+    expect(stopPayload(legacy)).toEqual({ scopeId: "beta" });
+    const stale = buildCoordinatorBoard(
+      ledger({ status: "active", round: 3, scopeId: "alpha" }),
+      undefined,
+      "beta",
+    );
+    expect(stopPayload(stale)).toEqual({ scopeId: "beta" });
+  });
+
   test("renders an old-shape ledger without a round budget as just the round", () => {
     const oldShapeLedger = ledger({ round: 3 });
 

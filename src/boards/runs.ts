@@ -44,7 +44,7 @@ function statusTone(status: string): CanvasTone {
   }
 }
 
-export function buildRunsBoard(runs: readonly RunSummary[]): CanvasBoardView {
+export function buildRunsBoard(runs: readonly RunSummary[], scopeId?: string): CanvasBoardView {
   if (runs.length === 0) return idleBoard();
   const shown = runs.slice(0, MAX_RUNS);
   return {
@@ -68,14 +68,14 @@ export function buildRunsBoard(runs: readonly RunSummary[]): CanvasBoardView {
             { label: "rounds", value: `r${r.round}` },
             { label: "when", value: shortTime(r.updatedAt) },
           ],
-          actions: runActions(r),
+          actions: runActions(r, scopeId),
         })),
       },
     ],
   };
 }
 
-function runActions(r: RunSummary): CardAction[] {
+function runActions(r: RunSummary, scopeId?: string): CardAction[] {
   const actions: CardAction[] = [
     {
       type: VIEW_RUN_ACTION,
@@ -93,7 +93,7 @@ function runActions(r: RunSummary): CardAction[] {
       tone: "warn",
       destructive: true,
       inline: true,
-      payload: { scopeId: r.scopeId ?? "default" },
+      payload: { scopeId: scopeId ?? r.scopeId ?? "default" },
       confirm: {
         title: "Stop this coordinator run?",
         body: `Round ${r.round} will be marked aborted. The transcript stays intact.`,

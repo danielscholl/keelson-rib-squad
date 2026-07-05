@@ -118,11 +118,12 @@ function formatTokens(n: number): string {
 export function buildCoordinatorBoard(
   ledger: CoordinatorLedger | undefined,
   tones?: IdentityTones,
+  scopeId?: string,
 ): CanvasBoardView {
   if (!ledger) return idleBoard();
   // Head every non-active board with the task composer so assigning work is one
   // field away; an ACTIVE run omits it (you're watching, not queuing another).
-  const base = sectionsFor(ledger, undefined, tones);
+  const base = sectionsFor(ledger, undefined, tones, scopeId);
   const sections = ledger.status === "active" ? base : [taskComposerSection(), ...base];
   return {
     view: "board",
@@ -141,6 +142,7 @@ export function buildRunDetailBoard(
   ledger: CoordinatorLedger | undefined,
   id: string,
   tones?: IdentityTones,
+  scopeId?: string,
 ): CanvasBoardView {
   if (!ledger) {
     return {
@@ -161,7 +163,7 @@ export function buildRunDetailBoard(
     view: "board",
     title: "Run",
     header: { status: statusPill(ledger.status), chip: id },
-    sections: sectionsFor(ledger, Number.POSITIVE_INFINITY, tones),
+    sections: sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId),
   };
 }
 
@@ -209,10 +211,11 @@ function sectionsFor(
   ledger: CoordinatorLedger,
   ledgerRounds = LEDGER_ROUNDS_SHOWN,
   tones?: IdentityTones,
+  scopeId?: string,
 ): Section[] {
   switch (ledger.status) {
     case "active":
-      return activeSections(ledger, ledgerRounds, tones);
+      return activeSections(ledger, ledgerRounds, tones, scopeId);
     case "done":
       return doneSections(ledger, ledgerRounds, tones);
     case "max-rounds":
@@ -238,8 +241,9 @@ function activeSections(
   ledger: CoordinatorLedger,
   ledgerRounds: number,
   tones?: IdentityTones,
+  scopeId?: string,
 ): Section[] {
-  const sections: Section[] = [pulseSection(ledger), stopSection(ledger)];
+  const sections: Section[] = [pulseSection(ledger), stopSection(ledger, scopeId)];
   const findings = visibleFindings(ledger);
   pushIf(sections, roundRailSection(ledger, tones));
   sections.push(goalSection(ledger.task));
@@ -255,7 +259,9 @@ function activeSections(
   return sections;
 }
 
-function stopSection(ledger: CoordinatorLedger): Section {
+// The caller's scopeId is authoritative (the collector knows which scope it rendered);
+// ledger.scopeId only covers ledgers persisted before scopeId existed.
+function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
   return {
     kind: "actions",
     title: "Live run",
@@ -267,7 +273,7 @@ function stopSection(ledger: CoordinatorLedger): Section {
         tone: "warn",
         destructive: true,
         inline: true,
-        payload: { scopeId: ledger.scopeId ?? "default" },
+        payload: { scopeId: scopeId ?? ledger.scopeId ?? "default" },
         confirm: {
           title: "Stop this coordinator run?",
           body: `Round ${ledger.round} will be marked aborted. The transcript stays intact.`,

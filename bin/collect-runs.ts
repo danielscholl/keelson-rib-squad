@@ -22,7 +22,7 @@ async function main() {
   } catch {
     runs = [];
   }
-  process.stdout.write(JSON.stringify(buildRunsBoard(runs)));
+  process.stdout.write(JSON.stringify(buildRunsBoard(runs, scopeId)));
 }
 
 await main();

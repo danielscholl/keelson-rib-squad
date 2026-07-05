@@ -2306,7 +2306,7 @@ async function viewRunAction(action: RibAction): Promise<RibActionResult> {
     const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
     const ledger = await loadRun(scopeDataHome(home, scopeId), id);
     const members = await readMembers(scopeMembersDir(home, scopeId)).catch(() => []);
-    runDetailBoard = buildRunDetailBoard(ledger, id, identityTonesByMember(members));
+    runDetailBoard = buildRunDetailBoard(ledger, id, identityTonesByMember(members), scopeId);
     await snapshots.recompose(RUN_DETAIL_KEY);
     return {
       ok: true,
