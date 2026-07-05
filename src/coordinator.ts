@@ -449,19 +449,20 @@ function renderTranscript(transcript: readonly CoordinatorEntry[]): string {
   return recent.map((e) => `Round ${e.round} — ${renderTranscriptEntry(e)}`).join("\n");
 }
 
+function codeOutcomeFlag(e: CoordinatorEntry): string {
+  if (!e.outcome || e.outcome === "ok") return "";
+  if (e.outcome !== "timeout") return ` [${e.outcome}]`;
+  const after = e.durationMs !== undefined ? ` after ${Math.floor(e.durationMs / 1000)}s` : "";
+  return ` [timed out${after} — output truncated]`;
+}
+
 function renderTranscriptEntry(e: CoordinatorEntry): string {
   if (e.kind === "dispatch") return `${e.speaker ?? "team"} did: ${e.text}`;
   if (e.kind === "code") {
     const touched = e.touched
       ? ` [touched ${e.touched.files} file${e.touched.files === 1 ? "" : "s"}, +${e.touched.insertions} -${e.touched.deletions}]`
       : "";
-    const flag =
-      e.outcome && e.outcome !== "ok"
-        ? e.outcome === "timeout"
-          ? ` [timed out after ${Math.round((e.durationMs ?? 0) / 1000)}s — output truncated]`
-          : ` [${e.outcome}]`
-        : "";
-    return `${e.speaker ?? "member"} coded: ${e.text}${touched}${flag}`;
+    return `${e.speaker ?? "member"} coded: ${e.text}${touched}${codeOutcomeFlag(e)}`;
   }
   if (e.kind === "workflow") return `${e.speaker ?? "member"} workflow: ${e.text}`;
   if (e.kind === "verify") return `verify: ${e.text}`;
