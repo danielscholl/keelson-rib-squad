@@ -1848,7 +1848,11 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       };
       livePersists = livePersists.then(() => persist(live)).catch(() => {});
     };
-    const result = await executeStep(decided.step, {
+    const executed =
+      ledger.plan.length > 0
+        ? { ...decided.step, instruction: withPlanContext(decided.step.instruction, ledger.plan) }
+        : decided.step;
+    const result = await executeStep(executed, {
       dispatch,
       ...(code ? { code } : {}),
       workflow,
