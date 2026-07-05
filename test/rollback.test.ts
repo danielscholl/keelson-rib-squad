@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { RibContext, RibExec, ToolDefinition } from "@keelson/shared";
 import type { CoordinatorLedger } from "../src/coordinator.ts";
 import rib from "../src/index.ts";
@@ -14,6 +16,7 @@ import { writeSelectedProject } from "../src/scope.ts";
 interface Call {
   kind: "git" | "exists";
   value: string;
+  env?: Record<string, string>;
 }
 
 type RunTextResult = Awaited<ReturnType<RibExec["runText"]>>;
@@ -21,10 +24,12 @@ type RunTextResult = Awaited<ReturnType<RibExec["runText"]>>;
 interface RunTextCall {
   cmd: string;
   args: string[];
+  opts?: Parameters<RibExec["runText"]>[2];
 }
 
 let home: string;
 let root: string;
+const execFileAsync = promisify(execFile);
 
 function ledger(overrides: Partial<CoordinatorLedger> = {}): CoordinatorLedger {
   return {
@@ -70,9 +75,9 @@ function fakeExec(
   return {
     calls,
     exec: {
-      runGit: async (args) => {
+      runGit: async (args, opts) => {
         const key = args.join(" ");
-        calls.push({ kind: "git", value: key });
+        calls.push({ kind: "git", value: key, env: opts?.env });
         if (failures.has(key)) return { ok: false, error: `failed ${key}` };
         return { ok: true, data: outputs[key] ?? "" };
       },
@@ -85,16 +90,20 @@ function fakeExec(
 }
 
 function makeRibExec(
-  handler: (cmd: string, args: readonly string[]) => RunTextResult | Promise<RunTextResult>,
+  handler: (
+    cmd: string,
+    args: readonly string[],
+    opts?: Parameters<RibExec["runText"]>[2],
+  ) => RunTextResult | Promise<RunTextResult>,
 ): { exec: RibExec; calls: RunTextCall[] } {
   const calls: RunTextCall[] = [];
   return {
     calls,
     exec: {
       runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
-      runText: async (cmd, args) => {
-        calls.push({ cmd, args: [...args] });
-        return handler(cmd, args);
+      runText: async (cmd, args, opts) => {
+        calls.push({ cmd, args: [...args], opts });
+        return handler(cmd, args, opts);
       },
     },
   };
@@ -108,11 +117,14 @@ function gitCalls(calls: readonly RunTextCall[]): string[] {
 }
 
 function mutatingGitCalls(calls: readonly RunTextCall[]): string[] {
-  return gitCalls(calls).filter((key) =>
-    ["commit-tree", "update-ref", "reset", "read-tree", "checkout-index", "clean"].some((prefix) =>
-      key.startsWith(prefix),
-    ),
-  );
+  return calls
+    .filter((call) => call.cmd === "git" && !call.opts?.env?.GIT_INDEX_FILE)
+    .map((call) => call.args.join(" "))
+    .filter((key) =>
+      ["commit-tree", "update-ref", "reset", "read-tree", "checkout-index", "clean"].some(
+        (prefix) => key.startsWith(prefix),
+      ),
+    );
 }
 
 function bootTools(exec: RibExec): readonly ToolDefinition[] {
@@ -147,6 +159,8 @@ function rollbackGitHandler(cmd: string, args: readonly string[]): RunTextResult
   const outputs: Record<string, string> = {
     [`rev-parse --verify ${rollbackRef}`]: "",
     "rev-parse HEAD": "head-after\n",
+    "read-tree HEAD": "",
+    "add -A -- .": "",
     "write-tree": "index-tree-after\n",
     "rev-parse -q --verify MERGE_HEAD": "",
     "rev-parse --git-path rebase-merge": ".git/rebase-merge\n",
@@ -193,9 +207,10 @@ function statefulRollbackExec(
   let pendingTree = "";
   let pendingParent = "";
   let crashed = false;
-  const { exec, calls } = makeRibExec((cmd, args) => {
+  const { exec, calls } = makeRibExec((cmd, args, runOpts) => {
     if (cmd !== "git") return fail(`unexpected command: ${cmd}`);
     const key = args.join(" ");
+    const scratchIndex = runOpts?.env?.GIT_INDEX_FILE;
     const crash = () => {
       if (!crashed && opts.crashAfter === key) {
         crashed = true;
@@ -229,9 +244,11 @@ function statefulRollbackExec(
     }
     if (key === "diff-tree -r -z --diff-filter=DMRT --name-only base-tree base-tree") return ok("");
     if (key === "diff-tree -r -z --diff-filter=A --name-only base-tree base-tree") return ok("");
+    if (key === "read-tree HEAD" && scratchIndex) return ok("");
+    if (key === "add -A -- ." && scratchIndex) return ok("");
     if (key === "write-tree") {
       crash();
-      return ok(`${state.indexTree}\n`);
+      return ok(`${scratchIndex ? state.worktreeTree : state.indexTree}\n`);
     }
     if (
       key ===
@@ -327,6 +344,8 @@ describe("computeRollbackPlan", () => {
     });
     expect(calls.map((call) => `${call.kind}:${call.value}`)).toEqual([
       "git:rev-parse HEAD",
+      "git:read-tree HEAD",
+      "git:add -A -- .",
       "git:write-tree",
       "git:merge-base --is-ancestor base-head HEAD",
       "git:rev-parse -q --verify MERGE_HEAD",
@@ -340,6 +359,81 @@ describe("computeRollbackPlan", () => {
       "git:diff-tree -r -z --diff-filter=DMRT --name-only base-tree index-tree-after",
       "git:diff-tree -r -z --diff-filter=A --name-only base-tree index-tree-after",
     ]);
+    const scratchCalls = calls.filter((call) =>
+      ["read-tree HEAD", "add -A -- .", "write-tree"].includes(call.value),
+    );
+    expect(scratchCalls).toHaveLength(3);
+    const scratchIndex = scratchCalls[0]?.env?.GIT_INDEX_FILE;
+    expect(scratchIndex).toBeTruthy();
+    expect(scratchCalls.every((call) => call.env?.GIT_INDEX_FILE === scratchIndex)).toBe(true);
+    expect(
+      calls.find((call) => call.value === "rev-parse HEAD")?.env?.GIT_INDEX_FILE,
+    ).toBeUndefined();
+  });
+
+  test("captures run-created untracked files through the scratch index", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "squad-rollback-git-"));
+    try {
+      const gitRepo = async (args: string[], env?: Record<string, string>) =>
+        execFileAsync("git", args, { cwd: repo, env: { ...process.env, ...env } });
+      await gitRepo(["init"]);
+      await gitRepo(["config", "user.email", "test@example.com"]);
+      await gitRepo(["config", "user.name", "Rollback Test"]);
+      await writeFile(join(repo, "tracked.txt"), "baseline\n");
+      await gitRepo(["add", "tracked.txt"]);
+      await gitRepo(["commit", "-m", "baseline"]);
+      const baselineTree = (await gitRepo(["rev-parse", "HEAD^{tree}"])).stdout.trim();
+      const baselineHeadSha = (await gitRepo(["rev-parse", "HEAD"])).stdout.trim();
+      await writeFile(join(repo, "run-created.txt"), "new worktree file\n");
+
+      const calls: Call[] = [];
+      const exec: RollbackGitExec = {
+        runGit: async (args, opts) => {
+          calls.push({ kind: "git", value: args.join(" "), env: opts?.env });
+          try {
+            const result = await gitRepo(args, opts?.env);
+            return { ok: true, data: result.stdout };
+          } catch (error) {
+            const e = error as { stderr?: string; message?: string };
+            return { ok: false, error: e.stderr ?? e.message ?? String(error) };
+          }
+        },
+        pathExists: async () => false,
+      };
+
+      const plan = await computeRollbackPlan(
+        ledger({ baselineTree, baselineHeadSha }),
+        exec,
+        rollbackRef,
+      );
+
+      expect(plan.type).toBe("performed");
+      if (plan.type !== "performed") throw new Error("expected performed rollback plan");
+      expect(plan.manifest.deletedPaths).toEqual(["run-created.txt"]);
+      expect(plan.manifest.preRollbackTree).not.toBe(baselineTree);
+      const names = (
+        await gitRepo(["ls-tree", "-r", "--name-only", plan.manifest.preRollbackTree])
+      ).stdout
+        .trim()
+        .split("\n");
+      expect(names).toContain("run-created.txt");
+
+      const liveIndex = join(repo, ".git", "index");
+      const scratchCalls = calls.filter((call) =>
+        ["read-tree HEAD", "add -A -- .", "write-tree"].includes(call.value),
+      );
+      expect(scratchCalls.map((call) => call.value)).toEqual([
+        "read-tree HEAD",
+        "add -A -- .",
+        "write-tree",
+      ]);
+      const scratchIndex = scratchCalls[0]?.env?.GIT_INDEX_FILE;
+      expect(scratchIndex).toBeTruthy();
+      expect(scratchIndex).not.toBe(liveIndex);
+      expect(scratchCalls.every((call) => call.env?.GIT_INDEX_FILE === scratchIndex)).toBe(true);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   test("refuses when baseline head is not an ancestor of HEAD", async () => {
@@ -549,6 +643,8 @@ describe("computeRollbackPlan", () => {
         const outputs: Record<string, string> = {
           [`rev-parse --verify ${rollbackRef}`]: "",
           "rev-parse HEAD": "base-head\n",
+          "read-tree HEAD": "",
+          "add -A -- .": "",
           "write-tree": "base-tree\n",
           "rev-parse -q --verify MERGE_HEAD": "",
           "rev-parse --git-path rebase-merge": ".git/rebase-merge\n",
@@ -640,6 +736,8 @@ describe("computeRollbackPlan", () => {
     });
     expect(calls.map((call) => `${call.kind}:${call.value}`)).toEqual([
       "git:rev-parse HEAD",
+      "git:read-tree HEAD",
+      "git:add -A -- .",
       "git:write-tree",
     ]);
   });

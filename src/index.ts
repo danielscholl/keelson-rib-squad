@@ -1532,8 +1532,12 @@ async function resolveRollbackRun(
 
 function rollbackExec(exec: RibExec, cwd: string): RollbackGitExec {
   return {
-    runGit: async (args) => {
-      const result = await exec.runText("git", args, { cwd, timeoutMs: ROLLBACK_EXEC_TIMEOUT_MS });
+    runGit: async (args, opts) => {
+      const result = await exec.runText("git", args, {
+        cwd,
+        timeoutMs: ROLLBACK_EXEC_TIMEOUT_MS,
+        env: opts?.env,
+      });
       return result.ok ? { ok: true, data: result.data } : { ok: false, error: result.error };
     },
     pathExists: async (path) => pathExists(resolve(cwd, path)),

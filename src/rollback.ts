@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CoordinatorLedger } from "./coordinator.ts";
 import type {
   RollbackCommit,
@@ -6,7 +9,10 @@ import type {
 } from "./rollback-store.ts";
 
 export interface RollbackGitExec {
-  runGit(args: string[]): Promise<{ ok: true; data: string } | { ok: false; error: string }>;
+  runGit(
+    args: string[],
+    opts?: { env?: Record<string, string> },
+  ): Promise<{ ok: true; data: string } | { ok: false; error: string }>;
   pathExists(path: string): Promise<boolean>;
 }
 
@@ -35,15 +41,28 @@ function isRollbackableStatus(status: CoordinatorLedger["status"]): boolean {
   );
 }
 
-async function git(exec: RollbackGitExec, args: string[]): Promise<string> {
-  const result = await exec.runGit(args);
+async function git(
+  exec: RollbackGitExec,
+  args: string[],
+  opts?: { env?: Record<string, string> },
+): Promise<string> {
+  const result = await exec.runGit(args, opts);
   if (!result.ok) throw new Error(`git ${args.join(" ")} failed: ${result.error}`);
   return result.data;
 }
 
 async function captureHead(exec: RollbackGitExec): Promise<{ head: string; tree: string }> {
   const head = (await git(exec, ["rev-parse", "HEAD"])).trim();
-  const tree = (await git(exec, ["write-tree"])).trim();
+  const scratchDir = await mkdtemp(join(tmpdir(), "squad-rollback-tree-"));
+  const env = { GIT_INDEX_FILE: join(scratchDir, "index") };
+  let tree: string;
+  try {
+    await git(exec, ["read-tree", "HEAD"], { env });
+    await git(exec, ["add", "-A", "--", "."], { env });
+    tree = (await git(exec, ["write-tree"], { env })).trim();
+  } finally {
+    await rm(scratchDir, { recursive: true, force: true });
+  }
   if (!head) throw new Error("git rev-parse HEAD returned an empty ref");
   if (!tree) throw new Error("git write-tree returned an empty tree");
   return { head, tree };
