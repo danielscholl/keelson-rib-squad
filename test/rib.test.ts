@@ -86,7 +86,7 @@ describe("rib-squad", () => {
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
 
-  it("registers all squad tools without any seams", () => {
+  it("registers all coordinator, member, PR, run, and diff tools without any seams", () => {
     expect((rib.registerTools?.(bareCtx) ?? []).map((t) => t.name).sort()).toEqual([
       "squad_code",
       "squad_coordinate",

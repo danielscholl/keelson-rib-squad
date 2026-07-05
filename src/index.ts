@@ -898,7 +898,7 @@ function makeOpenPrTool(
 const resolveReviewSchema = z.object({ project: z.string().optional() });
 const RESOLVE_REVIEW_EXEC_TIMEOUT_MS = 120_000;
 
-const REVIEW_THREAD_BODY_LIMIT = 4_000;
+const REVIEW_THREAD_BODY_LIMIT = 2_000;
 const REVIEW_THREAD_COMMENT_LIMIT = 12;
 const REVIEW_THREAD_COMMENT_BODY_LIMIT = 2_000;
 
