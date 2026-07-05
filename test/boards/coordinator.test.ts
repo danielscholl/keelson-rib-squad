@@ -4,6 +4,7 @@ import {
   buildCoordinatorBoard,
   identityTone,
   outcomeTone,
+  ROLLBACK_RUN_ACTION,
   STOP_COORDINATOR_ACTION,
   transcriptTrailing,
 } from "../../src/boards/coordinator.ts";
@@ -185,6 +186,12 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(stop?.destructive).toBe(true);
     expect(stop?.payload).toEqual({ scopeId: "alpha" });
     expect(stop?.confirm?.confirmLabel).toBe("Stop run");
+  });
+
+  test("active runs do not expose rollback", () => {
+    const board = buildCoordinatorBoard(ledger({ status: "active", round: 3, scopeId: "alpha" }));
+    const actions = board.sections.flatMap((s) => (s.kind === "actions" ? s.items : []));
+    expect(actions.some((a) => a.type === ROLLBACK_RUN_ACTION)).toBe(false);
   });
 
   test("the caller's scopeId wins over the ledger's, covering pre-scopeId ledgers", () => {
@@ -726,7 +733,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     );
   });
 
-  test("verification-failed: error pill, a red Verification row, an Advisory, no actions", () => {
+  test("verification-failed: error pill, a red Verification row, an Advisory, and rollback", () => {
     const board = buildCoordinatorBoard(
       ledger({
         status: "verification-failed",
@@ -749,12 +756,16 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(verify[0]?.glyph).toBe("error");
     expect(verify[0]?.trailing).toContain("exit 1");
     expect(rowsTitled(board, "Advisory").length).toBe(1);
-    // The only actions section is the task composer; the failed run carries none itself.
-    const actions = board.sections.filter((s) => s.kind === "actions");
-    expect(actions).toHaveLength(1);
-    expect(actions[0]?.kind === "actions" ? actions[0].title : undefined).toBe(
-      "Give the squad a task",
-    );
+    const rollback = board.sections
+      .flatMap((s) => (s.kind === "actions" ? s.items : []))
+      .find((a) => a.type === ROLLBACK_RUN_ACTION);
+    expect(rollback?.destructive).toBe(true);
+    expect(rollback?.payload).toEqual({
+      run: "2026-06-28T00-00-00-000Z",
+      confirm: false,
+      scopeId: "default",
+    });
+    expect(rollback?.confirm?.body).toContain("C/M/D manifest");
   });
 
   test("gave-up surfaces the summary and provenance", () => {
@@ -788,6 +799,29 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(
       rowsTitled(board, "Ledger · R0 · team").some((i) => i.text.includes("partially done")),
     ).toBe(true);
+  });
+
+  test("rollback appears only on aborted and failed terminal runs", () => {
+    const rollbackStatuses: CoordinatorLedger["status"][] = [
+      "aborted",
+      "verification-failed",
+      "change-quality-failed",
+    ];
+    const noRollbackStatuses: CoordinatorLedger["status"][] = [
+      "active",
+      "done",
+      "gave-up",
+      "max-rounds",
+    ];
+    const hasRollback = (status: CoordinatorLedger["status"]) => {
+      const board = buildCoordinatorBoard(ledger({ status, scopeId: "alpha" }), undefined, "beta");
+      return board.sections
+        .flatMap((s) => (s.kind === "actions" ? s.items : []))
+        .some((a) => a.type === ROLLBACK_RUN_ACTION);
+    };
+
+    for (const status of rollbackStatuses) expect(hasRollback(status)).toBe(true);
+    for (const status of noRollbackStatuses) expect(hasRollback(status)).toBe(false);
   });
 
   test("Minds aggregates one lane per member: provider pill, turn/token counts, last act", () => {

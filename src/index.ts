@@ -21,6 +21,7 @@ import {
   buildRunDetailBoard,
   COORDINATE_ACTION,
   DISPATCH_ACTION,
+  ROLLBACK_RUN_ACTION,
   STOP_COORDINATOR_ACTION,
 } from "./boards/coordinator.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
@@ -249,6 +250,12 @@ const CAST_SCAN_WF_PROMPT = `The operator wants to auto-compose a squad for the 
 Mission (optional focus): $inputs.mission
 
 Call the squad_propose_cast tool EXACTLY ONCE. If the mission above is non-empty, pass it as \`mission\`; otherwise omit it. Do NOT inspect the repository yourself — the tool runs a confined read-only scan and proposes the team into the Proposed squad panel. After it returns, reply with EXACTLY its summary.`;
+
+const ROLLBACK_WF_PROMPT = `The operator wants to preview rollback for a failed or aborted coordinator run.
+
+Run id: $inputs.run
+
+Call the squad_rollback tool EXACTLY ONCE with \`run\` set to that id. Do NOT set \`confirm\`: true — this first phase must compute and show the full rollback manifest (C commits, M tracked paths, D delete list) without mutating the repository. After it returns, reply with EXACTLY its JSON result.`;
 
 // Tool results stream to chat as `tool_result` chunks; keep each well under the
 // chat context budget. Truncation is signalled, never silent.
@@ -2227,6 +2234,24 @@ const rib: Rib = {
       },
     },
     {
+      // Surface-launched: preview rollback for an aborted/failed coordinator run.
+      // The tool owns the two-phase contract: no confirm computes the manifest, and
+      // confirm:true is the only mutating path.
+      definition: {
+        name: "squad-rollback-run",
+        description:
+          'Use when: preview rollback for an aborted or failed coordinator run. Triggers: a Run-loop or Runs card "Rollback" action. Does: calls squad_rollback without confirm:true so the operator sees the full C/M/D manifest before any mutation. NOT for: stopping a live run (squad_stop) or rolling back done/live runs.',
+        nodes: [
+          {
+            id: "preview",
+            prompt: ROLLBACK_WF_PROMPT,
+            fail_on_tool_error: true,
+            allowed_tools: ["squad_rollback"],
+          },
+        ],
+      },
+    },
+    {
       // The governed-decision write path. A rib runs in-process and has NO seam to
       // call the memory ledger directly, so the supported path is a declarative
       // `memory: { writeback }` block the executor runs SERVER-SIDE after the node.
@@ -2385,6 +2410,8 @@ const rib: Rib = {
         return dispatchAction(action);
       case STOP_COORDINATOR_ACTION:
         return stopCoordinateAction(action);
+      case ROLLBACK_RUN_ACTION:
+        return rollbackRunAction(action);
       case ASSIGN_CODE_ACTION:
         return assignCodeAction(action);
       case RECORD_DECISION_ACTION:
@@ -2675,6 +2702,20 @@ function stopCoordinateAction(action: RibAction): RibActionResult {
   if (!stopped.ok) return { ok: false, error: `squad_stop: ${stopped.error}` };
   void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
   return { ok: true, data: { stopped: scopeId } };
+}
+
+function rollbackRunAction(action: RibAction): RibActionResult {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const run = asNonEmptyString(payload.run);
+  if (!run) return { ok: false, error: "rollback-run requires payload { run }" };
+  return {
+    ok: true,
+    data: {
+      effect: "run-workflow",
+      workflow: "squad-rollback-run",
+      args: { run },
+    },
+  };
 }
 
 // Assign a code task: one code-capable member edits the selected project. The card

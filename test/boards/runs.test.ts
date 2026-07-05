@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { canvasViewSchema } from "@keelson/shared";
-import { buildRunDetailBoard } from "../../src/boards/coordinator.ts";
+import { buildRunDetailBoard, ROLLBACK_RUN_ACTION } from "../../src/boards/coordinator.ts";
 import { buildRunsBoard, VIEW_RUN_ACTION } from "../../src/boards/runs.ts";
 import type { CoordinatorLedger } from "../../src/coordinator.ts";
 import type { RunSummary } from "../../src/runs-store.ts";
@@ -44,6 +44,35 @@ describe("buildRunsBoard", () => {
     const doneCards = done.sections.find((s) => s.kind === "cards");
     if (doneCards?.kind !== "cards") throw new Error("no cards section");
     expect(doneCards.items[0]?.actions?.some((a) => a.type === "stop-coordinate")).toBe(false);
+  });
+
+  test("rollback appears only on aborted and failed cards with preview payload", () => {
+    const board = buildRunsBoard(
+      [
+        run({ id: "done", task: "done", status: "done" }),
+        run({ id: "live", task: "live", status: "active" }),
+        run({ id: "aborted", task: "aborted", status: "aborted", scopeId: "stale" }),
+        run({ id: "verify", task: "verify", status: "verification-failed" }),
+        run({ id: "quality", task: "quality", status: "change-quality-failed" }),
+        run({ id: "rounds", task: "rounds", status: "max-rounds" }),
+      ],
+      "beta",
+    );
+    const cards = board.sections.find((s) => s.kind === "cards");
+    if (cards?.kind !== "cards") throw new Error("no cards section");
+    const byTitle = new Map(cards.items.map((item) => [item.title, item]));
+
+    expect(byTitle.get("done")?.actions?.some((a) => a.type === ROLLBACK_RUN_ACTION)).toBe(false);
+    expect(byTitle.get("live")?.actions?.some((a) => a.type === ROLLBACK_RUN_ACTION)).toBe(false);
+    expect(byTitle.get("rounds")?.actions?.some((a) => a.type === ROLLBACK_RUN_ACTION)).toBe(false);
+
+    for (const id of ["aborted", "verify", "quality"]) {
+      const rollback = byTitle.get(id)?.actions?.find((a) => a.type === ROLLBACK_RUN_ACTION);
+      expect(rollback?.destructive).toBe(true);
+      expect(rollback?.payload).toEqual({ run: id, confirm: false, scopeId: "beta" });
+      expect(rollback?.confirm?.confirmLabel).toBe("Preview rollback");
+      expect(rollback?.confirm?.body).toContain("C/M/D manifest");
+    }
   });
 
   test("no runs renders the calm idle board", () => {
