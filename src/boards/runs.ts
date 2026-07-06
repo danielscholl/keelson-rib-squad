@@ -1,6 +1,11 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { RunSummary } from "../runs-store.ts";
-import { ROLLBACK_RUN_ACTION, STOP_COORDINATOR_ACTION, stripMd } from "./coordinator.ts";
+import {
+  REPORT_RUN_ACTION,
+  ROLLBACK_RUN_ACTION,
+  STOP_COORDINATOR_ACTION,
+  stripMd,
+} from "./coordinator.ts";
 
 // Pure: the archived coordinator runs for a scope -> a canvas `board` (the Runs
 // history panel). No runs renders a calm idle board; otherwise one card per run
@@ -83,6 +88,13 @@ function runActions(r: RunSummary, scopeId?: string): CardAction[] {
       glyph: "→",
       inline: true,
       payload: { id: r.id },
+    },
+    {
+      type: REPORT_RUN_ACTION,
+      label: "Report",
+      glyph: "▤",
+      inline: true,
+      payload: { runId: r.id },
     },
   ];
   if (r.status === "active") {

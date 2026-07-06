@@ -21,6 +21,7 @@ import {
   buildRunDetailBoard,
   COORDINATE_ACTION,
   DISPATCH_ACTION,
+  REPORT_RUN_ACTION,
   ROLLBACK_RUN_ACTION,
   STOP_COORDINATOR_ACTION,
 } from "./boards/coordinator.ts";
@@ -50,6 +51,7 @@ import {
   CAST_KEY,
   COORDINATOR_KEY,
   DECISIONS_KEY,
+  REPORT_KEY,
   ROSTER_KEY,
   RUN_DETAIL_KEY,
   SQUAD_RUNS_KEY,
@@ -77,6 +79,7 @@ import {
 } from "./paths.ts";
 import { squadPolicies } from "./policies.ts";
 import { validateProviderPin } from "./provider-pins.ts";
+import { buildRunReportHtml, reportSummaryLine } from "./report.ts";
 import {
   fetchUnresolvedThreads,
   type ReviewThread,
@@ -131,6 +134,11 @@ let getProviders: RibContext["getProviders"];
 let snapshots: SnapshotManager | undefined;
 let unregisterRunDetail: (() => void) | undefined;
 let runDetailBoard: CanvasBoardView | undefined;
+// The run report: an imperatively-registered `html` snapshot whose composer reads
+// the page the last Report action / squad_report call built. Same lifecycle as
+// run-detail — registered in registerTools, cleared and unregistered in dispose.
+let unregisterReport: (() => void) | undefined;
+let reportHtml: string | undefined;
 const activeCoordinateRuns = new Map<string, AbortController>();
 
 // Absolute path to the roster collector, resolved at module load so the workflow
@@ -1988,6 +1996,75 @@ function summarizeRuns(runs: readonly RunSummary[], scopeId: string): string {
   return lines.join("\n");
 }
 
+const EMPTY_REPORT_HTML =
+  "<!doctype html><html><body><p>No run report composed yet — use a run's Report action or the squad_report tool.</p></body></html>";
+
+// Fail-closed validator for the report key: the `html` canvas renders the payload
+// as raw markup, so anything but a non-empty string is dropped before broadcast.
+function expectReportHtml(data: unknown): string {
+  if (typeof data !== "string" || data.trim().length === 0) {
+    throw new Error(`${REPORT_KEY}: expected a non-empty HTML string`);
+  }
+  return data;
+}
+
+// Compose the deterministic run report for one archived run (default: the most
+// recent in the selected scope) and republish it under the report key. Shared by
+// the squad-report board action and the squad_report tool so the two entry
+// points can't drift.
+async function composeRunReport(
+  runId?: string,
+): Promise<
+  { ok: true; id: string; title: string; summary: string } | { ok: false; error: string }
+> {
+  if (!snapshots) {
+    return { ok: false, error: "run report unavailable: no snapshot seam on this harness" };
+  }
+  const home = squadDataHome();
+  const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
+  const scopedHome = scopeDataHome(home, scopeId);
+  let id = runId;
+  if (!id) {
+    id = (await listRuns(scopedHome))[0]?.id;
+    if (!id) return { ok: false, error: `no archived runs in scope "${scopeId}"` };
+  }
+  const ledger = await loadRun(scopedHome, id);
+  if (!ledger) return { ok: false, error: `unknown run '${id}' in scope "${scopeId}"` };
+  const members = await readMembers(scopeMembersDir(home, scopeId)).catch(() => []);
+  reportHtml = buildRunReportHtml(ledger, { runId: id, members });
+  await snapshots.recompose(REPORT_KEY);
+  return { ok: true, id, title: `Run report ${id}`, summary: reportSummaryLine(ledger) };
+}
+
+const reportToolSchema = z.object({ run_id: z.string().optional() });
+
+function makeReportTool(): ToolDefinition {
+  return {
+    name: "squad_report",
+    description:
+      "Compose the deterministic styled HTML report for one archived coordinator run and publish it to the Run report canvas. `run_id` (optional, an id from squad_runs) picks the run; omitted reports the most recent archived run for the selected scope. Reads only the run ledger (no agent turn) and republishes the report snapshot.",
+    inputSchema: reportToolSchema,
+    state_changing: true,
+    async execute(input, ctx) {
+      const parsed = reportToolSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_report: ${parsed.error.message}`, true);
+        return;
+      }
+      try {
+        const result = await composeRunReport(asNonEmptyString(parsed.data.run_id));
+        if (!result.ok) {
+          emitResult(ctx, `squad_report: ${result.error}`, true);
+          return;
+        }
+        emitResult(ctx, `${REPORT_KEY} — ${result.title}\n${result.summary}`);
+      } catch (e) {
+        emitResult(ctx, `squad_report failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
 // Shared cast-scan seam: run ONE confined read-only scan of the SELECTED project (the
 // read-only rail lives inside proposeCast — cwd + allowedDirectories + read-only tools),
 // persist the proposal under the selection's scope where approve-cast reads it, and
@@ -2085,6 +2162,7 @@ const rib: Rib = {
     { key: COORDINATOR_KEY, canvasKind: "view", title: "Run loop" },
     { key: SQUAD_RUNS_KEY, canvasKind: "view", title: "Runs" },
     { key: RUN_DETAIL_KEY, canvasKind: "view", title: "Run" },
+    { key: REPORT_KEY, canvasKind: "html", title: "Run report" },
   ],
 
   // The Squad nav tab. The roster sits in the header (the members you author); each
@@ -2453,6 +2531,10 @@ const rib: Rib = {
       RUN_DETAIL_KEY,
       () => runDetailBoard ?? buildRunDetailBoard(undefined, "none"),
     );
+    unregisterReport?.();
+    unregisterReport = snapshots?.register(REPORT_KEY, () => reportHtml ?? EMPTY_REPORT_HTML, {
+      validate: expectReportHtml,
+    });
     // Seed the picker's project list so it has options on first render.
     snapshotProjects();
     return [
@@ -2473,6 +2555,7 @@ const rib: Rib = {
       makeViewDiffTool(ctx.getProjects, ctx.getExec),
       makeProposeCastTool(),
       makeRunsTool(ctx.getProjects),
+      makeReportTool(),
       makeStopTool(ctx.getProjects),
       makeRollbackTool(ctx.getProjects, ctx.getExec),
       makeCoordinateTool(
@@ -2486,9 +2569,10 @@ const rib: Rib = {
   },
 
   // Board verbs. Actions relayed from a sandboxed HTML canvas arrive with origin
-  // "canvas-html" (the host stamps it; a frame can't forge it). There is no chart
-  // iframe in Phase 0, so any frame-origin action is rejected outright; trusted
-  // board actions (origin absent) keep the full verb surface below.
+  // "canvas-html" (the host stamps it; a frame can't forge it). The run-report
+  // canvas is read-only and ships no frame actions, so every frame-origin action
+  // stays rejected outright; trusted board actions (origin absent) keep the full
+  // verb surface below.
   onAction: (action) => {
     if (action.origin === "canvas-html") {
       return { ok: false, error: `'${action.type}' is not permitted from an HTML canvas` };
@@ -2530,6 +2614,8 @@ const rib: Rib = {
         return recordDecisionAction(action);
       case VIEW_RUN_ACTION:
         return viewRunAction(action);
+      case REPORT_RUN_ACTION:
+        return reportRunAction(action);
       default:
         return { ok: false, error: `unknown action '${action.type}'` };
     }
@@ -2565,8 +2651,11 @@ const rib: Rib = {
     getProviders = undefined;
     unregisterRunDetail?.();
     unregisterRunDetail = undefined;
+    unregisterReport?.();
+    unregisterReport = undefined;
     snapshots = undefined;
     runDetailBoard = undefined;
+    reportHtml = undefined;
     activeCoordinateRuns.clear();
   },
 };
@@ -3047,6 +3136,21 @@ async function viewRunAction(action: RibAction): Promise<RibActionResult> {
     };
   } catch (e) {
     return { ok: false, error: `view-run failed: ${errText(e)}` };
+  }
+}
+
+// Report one archived run: compose the styled report page, publish it under the
+// report key, and hand the SPA an open-canvas effect pointing at it.
+async function reportRunAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const runId = asNonEmptyString(payload.runId);
+  if (!runId) return { ok: false, error: "squad-report needs the run's id" };
+  try {
+    const result = await composeRunReport(runId);
+    if (!result.ok) return { ok: false, error: result.error };
+    return { ok: true, data: { effect: "open-canvas", key: REPORT_KEY, title: result.title } };
+  } catch (e) {
+    return { ok: false, error: `squad-report failed: ${errText(e)}` };
   }
 }
 

@@ -96,6 +96,7 @@ describe("rib-squad", () => {
       "squad_open_pr",
       "squad_propose_cast",
       "squad_remember",
+      "squad_report",
       "squad_resolve_review",
       "squad_retire_member",
       "squad_rollback",
@@ -196,7 +197,7 @@ describe("rib-squad", () => {
     expect(schema?.safeParse({ task: "do", maxRounds: 24 }).success).toBe(true);
   });
 
-  it("rejects any action relayed from an HTML canvas (no chart iframe in Phase 0)", async () => {
+  it("rejects any action relayed from an HTML canvas (the report canvas ships no frame actions)", async () => {
     const res = await rib.onAction?.(
       { type: "enter-member", payload: { slug: "lead" }, origin: "canvas-html" },
       bareCtx,

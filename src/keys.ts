@@ -24,3 +24,7 @@ export const SQUAD_RUNS_KEY = "rib:squad:runs";
 // Runs panel's View action loads one archived ledger, republishes this key, and
 // returns an open-canvas effect pointing at it.
 export const RUN_DETAIL_KEY = "rib:squad:run-detail";
+// The deterministic run report — an `html`-canvas page composed from one archived
+// ledger. Registered imperatively like run-detail: the Report action / squad_report
+// tool build the page, republish this key, and return an open-canvas effect.
+export const REPORT_KEY = "rib:squad:report";
