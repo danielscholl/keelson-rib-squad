@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { canvasViewSchema } from "@keelson/shared";
-import { buildRunDetailBoard, ROLLBACK_RUN_ACTION } from "../../src/boards/coordinator.ts";
+import {
+  buildRunDetailBoard,
+  REPORT_RUN_ACTION,
+  ROLLBACK_RUN_ACTION,
+} from "../../src/boards/coordinator.ts";
 import { buildRunsBoard, VIEW_RUN_ACTION } from "../../src/boards/runs.ts";
 import type { CoordinatorLedger } from "../../src/coordinator.ts";
 import type { RunSummary } from "../../src/runs-store.ts";
@@ -30,6 +34,8 @@ describe("buildRunsBoard", () => {
     const view = first?.actions?.[0];
     expect(view?.type).toBe(VIEW_RUN_ACTION);
     expect(view?.payload).toEqual({ id: "2026-07-02T16-14-45-216Z" });
+    const report = first?.actions?.find((a) => a.type === REPORT_RUN_ACTION);
+    expect(report?.payload).toEqual({ runId: "2026-07-02T16-14-45-216Z" });
     expect(cards.items[1]?.pill?.tone).toBe("caution");
   });
 
@@ -107,8 +113,12 @@ describe("buildRunDetailBoard", () => {
     expect(board.title).toBe("Run");
     expect(board.header?.chip).toBe("r1");
     expect(board.header?.status?.label).toBe("done");
-    // A history drawer is read-only: no composer, no actions at all.
-    expect(board.sections.some((s) => s.kind === "actions")).toBe(false);
+    // A history drawer is read-only: no composer; the only verb is the run-report opener.
+    const actions = board.sections.filter((s) => s.kind === "actions");
+    expect(actions).toHaveLength(1);
+    const report = actions[0]?.kind === "actions" ? actions[0].items[0] : undefined;
+    expect(report?.type).toBe(REPORT_RUN_ACTION);
+    expect(report?.payload).toEqual({ runId: "r1" });
     // The full run body is there: standup + gate history + minds + ledger groups.
     const titles = board.sections.map((s) => ("title" in s ? s.title : undefined));
     expect(titles).toContain("Standup");

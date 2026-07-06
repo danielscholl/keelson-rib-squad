@@ -22,6 +22,7 @@ export const COORDINATE_ACTION = "coordinate";
 export const DISPATCH_ACTION = "dispatch";
 export const STOP_COORDINATOR_ACTION = "stop-coordinate";
 export const ROLLBACK_RUN_ACTION = "rollback-run";
+export const REPORT_RUN_ACTION = "squad-report";
 
 const GOAL_CAP = 280;
 const STEP_CAP = 200;
@@ -110,7 +111,7 @@ export function charterDisplay(name: string, charter: string): string {
   return text.replace(/^Cast from [^.]{1,80}\.\s*/i, "");
 }
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
@@ -164,7 +165,19 @@ export function buildRunDetailBoard(
     view: "board",
     title: "Run",
     header: { status: statusPill(ledger.status), chip: id },
-    sections: sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId),
+    sections: [
+      runReportSection(id),
+      ...sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId),
+    ],
+  };
+}
+
+// The one verb the history drawer carries: compose the deterministic styled run
+// report for this archived ledger and open it. Read-only against the archive.
+function runReportSection(id: string): Section {
+  return {
+    kind: "actions",
+    items: [{ type: REPORT_RUN_ACTION, label: "Report", glyph: "▤", payload: { runId: id } }],
   };
 }
 
