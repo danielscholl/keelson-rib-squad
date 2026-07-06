@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.12.0...v0.13.0) (2026-07-06)
+
+
+### Added
+
+* **report:** implement squad run report HTML generation ([#158](https://github.com/danielscholl/keelson-rib-squad/issues/158)) ([5927eba](https://github.com/danielscholl/keelson-rib-squad/commit/5927eba5a5b2c934caf244085fe3c9281176fca0))
+
 ## [0.12.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.11.0...v0.12.0) (2026-07-05)
 
 
