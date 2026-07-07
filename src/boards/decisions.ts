@@ -1,4 +1,5 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
+import { stripMd } from "./coordinator.ts";
 
 // A recalled governed decision/lesson, trimmed to what a card renders. Mirrors the
 // fields of @keelson/shared's recallItemSchema (the squad-decisions recall block
@@ -72,13 +73,13 @@ function cardFor(decision: DecisionItem) {
     fields?: { label: string; value: string }[];
     reason?: { label: string; text: string };
   } = {
-    title: truncate(decision.summary, 120) || "(no summary)",
+    title: truncate(stripMd(decision.summary), 120) || "(no summary)",
     dot: lifecycleTone(decision.lifecycle),
     pill: { label: (decision.type ?? "decision").trim() || "decision" },
     ...(fields.length > 0 ? { fields } : {}),
   };
   const excerpt = decision.content?.trim();
-  if (excerpt) card.reason = { label: "context", text: truncate(excerpt, 200) };
+  if (excerpt) card.reason = { label: "context", text: truncate(stripMd(excerpt), 200) };
   return card;
 }
 

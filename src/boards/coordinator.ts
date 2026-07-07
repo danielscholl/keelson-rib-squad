@@ -1,9 +1,10 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
-import type {
-  CoordinatorEntry,
-  CoordinatorLedger,
-  InFlightTurn,
-  VerificationRecord,
+import {
+  type CoordinatorEntry,
+  type CoordinatorLedger,
+  type InFlightTurn,
+  SHORT_ACKNOWLEDGMENT_RE,
+  type VerificationRecord,
 } from "../coordinator.ts";
 import type { ToolTrace } from "../turn-runner.ts";
 
@@ -23,6 +24,9 @@ export const DISPATCH_ACTION = "dispatch";
 export const STOP_COORDINATOR_ACTION = "stop-coordinate";
 export const ROLLBACK_RUN_ACTION = "rollback-run";
 export const REPORT_RUN_ACTION = "squad-report";
+// The teardown verb: return this scope's whole surface to the empty first moment.
+// Shared with onAction so the action type can't drift from its handler.
+export const RESET_SQUAD_ACTION = "reset-squad";
 
 const GOAL_CAP = 280;
 const STEP_CAP = 200;
@@ -111,6 +115,31 @@ export function charterDisplay(name: string, charter: string): string {
   return text.replace(/^Cast from [^.]{1,80}\.\s*/i, "");
 }
 
+// Like charterDisplay, but for a disclosure body: strips the same markdown markers
+// while PRESERVING the charter's section/paragraph newlines, so "## Role" / "## Mission"
+// / "## Voice" read as separated blocks under the row instead of collapsing to one
+// run-on paragraph (the .cvb-row-detail renderer is pre-wrap). Same self-name and
+// cast-provenance strip as charterDisplay.
+export function charterDetail(name: string, charter: string): string {
+  let text = charter
+    .replace(/```[a-zA-Z]*\n?/g, "")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,;:!?])/gm, "$1$2")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/[^\S\n]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const trimmedName = name.trim();
+  if (trimmedName) {
+    const escaped = trimmedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Consume the name AND its following blank line so the provenance strip below
+    // still anchors at the start.
+    text = text.replace(new RegExp(`^${escaped}\\b\\s*`, "i"), "");
+  }
+  return text.replace(/^Cast from [^.]{1,80}\.\s*/i, "").trim();
+}
+
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
@@ -126,7 +155,10 @@ export function buildCoordinatorBoard(
   // Head every non-active board with the task composer so assigning work is one
   // field away; an ACTIVE run omits it (you're watching, not queuing another).
   const base = sectionsFor(ledger, undefined, tones, scopeId);
-  const sections = ledger.status === "active" ? base : [taskComposerSection(), ...base];
+  // A terminal board leads with the composer and ends with the teardown verb; an
+  // ACTIVE run omits both (you Stop a live run before resetting the scope).
+  const sections =
+    ledger.status === "active" ? base : [taskComposerSection(), ...base, resetSection()];
   return {
     view: "board",
     title: "Run loop",
@@ -321,6 +353,36 @@ function rollbackSection(ledger: CoordinatorLedger, scopeId?: string): Section {
           title: "Preview rollback manifest?",
           body: "The first step calls squad_rollback without confirm:true to render the full C/M/D manifest before any mutation.",
           confirmLabel: "Preview rollback",
+        },
+      },
+    ],
+  };
+}
+
+// Return the scope's whole surface to the empty first moment: retire every member and
+// clear run history, the current run loop, rollback records, and any pending proposal.
+// Project decisions live in host memory and are kept. Rendered only on a terminal
+// board — a live run is Stopped first — so it is reachable exactly when orphaned run
+// state (a done squad that outlived its roster) needs clearing. Carries no scopeId
+// payload: like retire-all, the handler acts on the selected scope (the same scope the
+// selection-bound panels refresh), not a board-baked one.
+function resetSection(): Section {
+  return {
+    kind: "actions",
+    title: "Reset squad",
+    items: [
+      {
+        type: RESET_SQUAD_ACTION,
+        label: "Reset squad…",
+        glyph: "⟲",
+        tone: "warn",
+        destructive: true,
+        inline: true,
+        confirm: {
+          title: "Reset this squad?",
+          body: "Retire every member and clear this scope's run history, current run loop, rollback records, and any pending proposal — returning the surface to its empty state. Project decisions are kept. This cannot be undone.",
+          confirmLabel: "Reset squad",
+          cancelLabel: "Cancel",
         },
       },
     ],
@@ -609,9 +671,29 @@ function visibleFindings(ledger: CoordinatorLedger): string[] {
   return ledger.facts.filter((fact) => !isHiddenFinding(fact, speakers));
 }
 
+// A member often opens a turn with a self-intro ("Edie here.") before the narration;
+// drop it so a preamble test anchors on the real first clause.
+const SELF_INTRO_RE = /^\w+ here[.!]\s*/i;
+// An "I'll …" / "I will …" intent lead — a turn preamble, not a finding. Deliberately
+// narrower than the code arm's full opener set (which also matches "first,"/"now,"/
+// "next,"): those legitimately lead real findings, and hiding a whole fact on them
+// would drop real content. Pure standalone acknowledgments are caught end-anchored.
+const INTENT_LEAD_RE = /^i['’]ll\b|^i will\b/i;
+
+function narrationBody(text: string, speakers: ReadonlySet<string>): string {
+  return stripKnownSpeakerLabels(normalizeSpeakerPrefixes(stripMd(text)), speakers).replace(
+    SELF_INTRO_RE,
+    "",
+  );
+}
+
+function isNarrationOnly(body: string): boolean {
+  return SHORT_ACKNOWLEDGMENT_RE.test(body) || INTENT_LEAD_RE.test(body);
+}
+
 function isHiddenFinding(fact: string, speakers: ReadonlySet<string>): boolean {
-  const body = stripKnownSpeakerLabels(normalizeSpeakerPrefixes(stripMd(fact)), speakers);
-  return body === "(no synthesis)" || /^I will\b/i.test(body);
+  const body = narrationBody(fact, speakers);
+  return body === "(no synthesis)" || isNarrationOnly(body);
 }
 
 function abandonedSection(failedSteps: readonly string[]): Section {
@@ -872,8 +954,8 @@ function ledgerRow(
 
 function isQuietLedgerEntry(e: CoordinatorEntry, speakers: ReadonlySet<string>): boolean {
   if (e.kind !== "dispatch" && e.kind !== "code" && e.kind !== "workflow") return false;
-  const body = stripKnownSpeakerLabels(normalizeSpeakerPrefixes(stripMd(e.text)), speakers);
-  return body === "(no synthesis)" || body.startsWith("(no synthesis) ") || /^I will\b/i.test(body);
+  const body = narrationBody(e.text, speakers);
+  return body === "(no synthesis)" || body.startsWith("(no synthesis) ") || isNarrationOnly(body);
 }
 
 // The expandable body behind a ledger row: the instruction the turn ran under, the

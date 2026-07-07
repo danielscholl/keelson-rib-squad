@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 export type RollbackRefusalReason = "head-rewritten" | "merge-in-progress" | "run-not-rollbackable";
@@ -148,6 +148,12 @@ export async function listRollbackRows(scopeDataHome: string): Promise<RollbackR
   }
   rows.sort((a, b) => b.at.localeCompare(a.at));
   return rows;
+}
+
+// Drop every rollback record for a scope. Idempotent: an absent dir is success,
+// matching how listRollbackRows treats it. Backs the reset verb.
+export async function clearRollbacks(scopeDataHome: string): Promise<void> {
+  await rm(rollbacksDir(scopeDataHome), { recursive: true, force: true });
 }
 
 export async function latestPerformedRollbackRow(

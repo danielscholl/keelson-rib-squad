@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendRollbackRow,
+  clearRollbacks,
   latestPerformedRollbackRow,
   listRollbackRows,
   type RollbackRow,
@@ -81,5 +82,16 @@ describe("rollback store", () => {
     await expect(appendRollbackRow(home, performed({ runId: "../run" }))).rejects.toThrow(
       "unsafe rollback run id",
     );
+  });
+
+  test("clearRollbacks drops every record, idempotently", async () => {
+    await appendRollbackRow(home, performed({ runId: "run-1" }));
+    await appendRollbackRow(home, { type: "noop", runId: "run-2", at: "2026-07-05T00:02:00.000Z" });
+    expect(await listRollbackRows(home)).toHaveLength(2);
+    await clearRollbacks(home);
+    expect(await listRollbackRows(home)).toHaveLength(0);
+    // Idempotent on an absent dir.
+    await clearRollbacks(home);
+    expect(await listRollbackRows(home)).toHaveLength(0);
   });
 });

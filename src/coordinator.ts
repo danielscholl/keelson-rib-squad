@@ -377,6 +377,13 @@ export async function loadLedger(dataHome: string): Promise<CoordinatorLedger | 
   }
 }
 
+// Drop the persisted run-loop ledger for a scope so the Run-loop board reads back as
+// idle. Idempotent (force): an absent file is success, matching loadLedger's ENOENT
+// treatment. Backs the reset verb; a live run must be stopped before this is called.
+export async function clearLedger(dataHome: string): Promise<void> {
+  await rm(ledgerPath(dataHome), { force: true });
+}
+
 function freshLedger(
   task: string,
   scopeId: string | undefined,
@@ -620,7 +627,7 @@ function cap(text: string, n: number): string {
 // never mistaken for narration.
 const CODE_FINDING_NARRATION_RE =
   /^(?:on it|i['’]ll\b|i will\b|let me\b|sure\b|okay\b|ok\b|got it\b|first,?\b|now,?\b|next,?\b|alright\b|here['’]s the plan|let['’]s\b)/i;
-const SHORT_ACKNOWLEDGMENT_RE =
+export const SHORT_ACKNOWLEDGMENT_RE =
   /^(?:on it|sure|okay|ok|got it|alright|will do|sounds good)[.!—-]*$/i;
 
 function touchedFinding(touched?: {

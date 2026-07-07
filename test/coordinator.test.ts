@@ -17,6 +17,7 @@ import {
   actionLabel,
   type CoordinatorEntry,
   type CoordinatorLedger,
+  clearLedger,
   collectIncompleteCommitPaths,
   deriveCodeFinding,
   failStuckTasks,
@@ -338,6 +339,28 @@ describe("ledger persistence", () => {
 
   test("corrupt file loads as undefined (start fresh, no throw)", async () => {
     await writeFile(join(home, "coordinator-ledger.json"), "{ torn json");
+    expect(await loadLedger(home)).toBeUndefined();
+  });
+
+  test("clearLedger removes the ledger so it reads back idle, idempotently", async () => {
+    const ledger: CoordinatorLedger = {
+      task: "ship it",
+      facts: [],
+      plan: [],
+      round: 4,
+      stallCount: 0,
+      resetCount: 0,
+      status: "done",
+      transcript: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    await saveLedger(home, ledger);
+    expect(await loadLedger(home)).toEqual(ledger);
+    await clearLedger(home);
+    expect(await loadLedger(home)).toBeUndefined();
+    // Idempotent: clearing an absent ledger is a no-op, not a throw.
+    await clearLedger(home);
     expect(await loadLedger(home)).toBeUndefined();
   });
 

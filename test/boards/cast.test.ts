@@ -64,8 +64,10 @@ describe("buildCastBoard with a proposal", () => {
     const items = memberRows(buildCastBoard(proposal()));
     expect(items).toHaveLength(2);
     const atlas = items.find((r) => r.chip?.label === "Atlas");
-    expect(atlas?.trailing).toContain("Backend Engineer");
+    // The role leads the summary as "cast as …"; capability + model stay in trailing.
+    expect(atlas?.text).toContain("cast as Backend Engineer");
     expect(atlas?.trailing).toContain("code, read");
+    expect(atlas?.trailing).not.toContain("Backend Engineer");
     const vera = items.find((r) => r.chip?.label === "Vera");
     // A member with no capability tags reads as text-only, never blank.
     expect(vera?.trailing).toContain("text-only");
@@ -101,11 +103,11 @@ describe("buildCastBoard with a proposal", () => {
       }),
     );
     const row = memberRows(board).find((r) => r.chip?.label === "Atlas");
-    expect(row?.text).toBe("Build and ship the search rib.");
-    expect(row?.text).not.toBe("Engineer");
+    expect(row?.text).toBe("cast as Engineer — Build and ship the search rib.");
     // The member's own H1 name is dropped from the disclosed body — the card
-    // never re-introduces its own member.
-    expect(row?.detail).toBe("Role Engineer Mission Build and ship the search rib.");
+    // never re-introduces its own member — and the charter's section newlines are
+    // preserved so it reads as structured blocks, not one run-on paragraph.
+    expect(row?.detail).toBe("Role\n\nEngineer\n\nMission\n\nBuild and ship the search rib.");
     expect(row?.detail).not.toContain("**");
     expect(row?.detail).not.toContain("`");
   });
@@ -123,8 +125,8 @@ describe("buildCastBoard with a proposal", () => {
       }),
     );
     const row = memberRows(board).find((r) => r.chip?.label === "Atlas");
-    expect(row?.text).toBe("Build.");
-    expect(row?.detail).toBe("Mission Build.");
+    expect(row?.text).toBe("cast as Engineer — Build.");
+    expect(row?.detail).toBe("Mission\n\nBuild.");
   });
 
   test("a leading provenance line never becomes the excerpt, even without a Mission section", () => {
@@ -140,7 +142,7 @@ describe("buildCastBoard with a proposal", () => {
       }),
     );
     const row = memberRows(board).find((r) => r.chip?.label === "Keyser");
-    expect(row?.text).toBe("Guard the seams.");
+    expect(row?.text).toBe("cast as Tech Lead — Guard the seams.");
     expect(row?.detail).toBe("Guard the seams.");
   });
 
@@ -168,7 +170,7 @@ describe("buildCastBoard with a proposal", () => {
     const keyser = memberRows(board).find((r) => r.chip?.label === "Keyser");
     expect(keyser?.chip?.tone).toBe("id-blue");
     expect(keyser?.glyph).toBe("id-blue");
-    expect(keyser?.detail).toBe("Mission Guard the seams.");
+    expect(keyser?.detail).toBe("Mission\n\nGuard the seams.");
     expect(keyser?.detail).not.toContain("_");
     const edie = memberRows(board).find((r) => r.chip?.label === "Edie");
     expect(edie?.chip?.tone).toBe("id-olive");

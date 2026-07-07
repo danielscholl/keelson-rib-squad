@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CoordinatorLedger } from "../src/coordinator.ts";
-import { archiveRun, listRuns, loadRun } from "../src/runs-store.ts";
+import { archiveRun, clearRuns, listRuns, loadRun } from "../src/runs-store.ts";
 
 let home: string;
 
@@ -143,5 +143,21 @@ describe("loadRun", () => {
       JSON.stringify({ task: "t", status: "done", transcript: [] }),
     );
     expect(await loadRun(home, "partial")).toBeUndefined();
+  });
+});
+
+describe("clearRuns", () => {
+  test("drops the whole archive so listRuns reads empty", async () => {
+    await archiveRun(home, ledger({ createdAt: "2026-06-30T01:00:00.000Z" }));
+    await archiveRun(home, ledger({ createdAt: "2026-06-30T02:00:00.000Z" }));
+    expect(await listRuns(home)).toHaveLength(2);
+    await clearRuns(home);
+    expect(await listRuns(home)).toHaveLength(0);
+  });
+
+  test("is idempotent on an absent runs dir", async () => {
+    await clearRuns(home);
+    await clearRuns(home);
+    expect(await listRuns(home)).toHaveLength(0);
   });
 });

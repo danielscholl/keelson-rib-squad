@@ -4,6 +4,7 @@ import {
   buildCoordinatorBoard,
   identityTone,
   outcomeTone,
+  RESET_SQUAD_ACTION,
   ROLLBACK_RUN_ACTION,
   STOP_COORDINATOR_ACTION,
   transcriptTrailing,
@@ -102,6 +103,61 @@ describe("buildCoordinatorBoard idle", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.view).toBe("board");
     expect(board.header?.status?.label).toBe("idle");
+  });
+});
+
+describe("Findings narration filter", () => {
+  function findings(over: Partial<CoordinatorLedger>) {
+    const board = buildCoordinatorBoard(ledger({ status: "done", round: 3, ...over }));
+    return rowsTitled(board, "Findings").map((r) => r.text);
+  }
+
+  test("drops a self-intro + I'll preamble, an I'll intent, and pure acknowledgments", () => {
+    expect(
+      findings({
+        facts: [
+          "Edie here. I'll ground this in the SPA code paths.",
+          "I'll refactor the sync client next.",
+          "Sure.",
+          "(no synthesis)",
+          "The retry path drops the backoff cap after the third attempt.",
+        ],
+      }),
+    ).toEqual(["The retry path drops the backoff cap after the third attempt."]);
+  });
+
+  test("keeps a real finding that merely opens with 'Now'/'First' (no over-hiding)", () => {
+    expect(findings({ facts: ["Now the auth check is missing on the delete route."] })).toContain(
+      "Now the auth check is missing on the delete route.",
+    );
+  });
+});
+
+describe("buildCoordinatorBoard reset affordance", () => {
+  function resetItem(board: Board) {
+    return board.sections
+      .flatMap((s) => (s.kind === "actions" ? s.items : []))
+      .find((a) => a.type === RESET_SQUAD_ACTION);
+  }
+
+  test("a terminal board carries a confirm-guarded Reset squad action", () => {
+    const board = buildCoordinatorBoard(ledger({ status: "done", round: 4 }), undefined, "default");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const reset = resetItem(board);
+    expect(reset?.type).toBe(RESET_SQUAD_ACTION);
+    expect(reset?.destructive).toBe(true);
+    expect(reset?.confirm?.title).toBe("Reset this squad?");
+    // No scopeId payload: like retire-all, the handler acts on the selected scope.
+    expect(reset?.payload).toBeUndefined();
+  });
+
+  test("an active run offers no Reset (Stop it first)", () => {
+    const board = buildCoordinatorBoard(ledger({ status: "active", round: 2 }));
+    expect(resetItem(board)).toBeUndefined();
+  });
+
+  test("the idle board offers no Reset (nothing to clear)", () => {
+    expect(resetItem(buildCoordinatorBoard(undefined))).toBeUndefined();
   });
 });
 
@@ -724,12 +780,16 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(board.header?.status?.label).toBe("max rounds");
     expect(rowsTitled(board, "Advisory").length).toBe(1);
     expect(rowsTitled(board, "Verification")[0]?.icon).toBe("✓");
-    // The only actions section is the task composer (start another run); the run
-    // ledger itself carries no interactive actions.
+    // A terminal board is framed by two actions sections — the task composer (start
+    // another run) leads, the teardown verb closes; the run ledger itself carries no
+    // interactive actions between them.
     const actions = board.sections.filter((s) => s.kind === "actions");
-    expect(actions).toHaveLength(1);
+    expect(actions).toHaveLength(2);
     expect(actions[0]?.kind === "actions" ? actions[0].title : undefined).toBe(
       "Give the squad a task",
+    );
+    expect(actions.at(-1)?.kind === "actions" ? actions.at(-1)?.title : undefined).toBe(
+      "Reset squad",
     );
   });
 
