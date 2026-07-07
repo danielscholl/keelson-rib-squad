@@ -1,7 +1,7 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import { themeLabel } from "../casting/themes.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
-import { identityToneForSlot, type Member } from "../types.ts";
+import { IDENTITY_SLOT_TONES, identityToneForSlot, type Member } from "../types.ts";
 import { CAST_PROPOSE_ACTION } from "./cast.ts";
 import { charterDisplay, stripMd } from "./coordinator.ts";
 
@@ -51,6 +51,7 @@ export function buildRosterBoard(members: readonly Member[], pulse?: RosterPulse
   const sections: Section[] = [];
 
   if (pulse) sections.push(pulseSection(pulse));
+  sections.push(seatsSection(members));
 
   if (members.length === 0) {
     sections.push(introSection());
@@ -86,6 +87,16 @@ function pulseSection(pulse: RosterPulse): Section {
   return {
     kind: "rows",
     items: [{ glyph: "brand" as CanvasTone, text: parts.join(" · "), trailing: "pulse" }],
+  };
+}
+
+function seatsSection(members: readonly Member[]): Section {
+  return {
+    kind: "seats",
+    items: IDENTITY_SLOT_TONES.map((tone, slot) => {
+      const member = members.find((m) => m.identitySlot === slot);
+      return member ? { tone, filled: true, label: member.name.trim() || "(unnamed)" } : { tone };
+    }),
   };
 }
 
@@ -305,20 +316,19 @@ function manageSection(count: number): Section {
 
 function journeySection(): Section {
   return {
-    kind: "rows",
-    title: "Squad journey",
+    kind: "journey",
     items: [
       {
-        glyph: "neutral",
-        text: "1 Cast: the scan proposes a team, you approve or discard it",
+        title: "Cast",
+        text: "The scan proposes a team; you approve or discard it.",
       },
       {
-        glyph: "neutral",
-        text: "2 Meet: each member becomes a chat agent you can enter",
+        title: "Meet",
+        text: "Each member becomes a chat agent you can enter and talk to.",
       },
       {
-        glyph: "neutral",
-        text: "3 Run: give the squad a task and the rounds stream in the Run loop panel",
+        title: "Run",
+        text: "Give the squad a task — the loop's rounds and findings stream here.",
       },
     ],
   };

@@ -163,6 +163,10 @@ const COORDINATOR_COLLECTOR = fileURLToPath(
 // scope as the Runs history board. Resolved at module load like the others so the
 // squad-runs bash node runs the right file regardless of cwd; shell-quoted below.
 const RUNS_COLLECTOR = fileURLToPath(new URL("../bin/collect-runs.ts", import.meta.url));
+// The member-count collector: prints the selected scope's active-member count so the
+// squad-decisions render prompt can apply buildDecisionsBoard's members-aware
+// cold-start gating. Resolved at module load like the others; shell-quoted below.
+const MEMBERS_COUNT_COLLECTOR = fileURLToPath(new URL("../bin/count-members.ts", import.meta.url));
 
 // POSIX single-quote: wrap a value and escape any embedded quote so a path
 // (spaces, `$`, backticks, backslashes) reaches `bash -c` literally — never
@@ -231,6 +235,8 @@ const DECISIONS_WF_PROMPT = `You render the squad's governed decision ledger as 
 
 Recalled decisions and lessons (a JSON array; empty if none recorded): $memory.recall.items
 
+Active members in this scope (a bare integer): $members.output
+
 Each item carries: { memoryId, type, summary, content, provenance, scope, createdAt, rankingScore }.
 
 Emit EXACTLY ONE canvas board object as your entire reply — no prose, no code fence. Match this shape exactly:
@@ -238,8 +244,9 @@ ${DECISIONS_BOARD_EXAMPLE}
 
 Rules:
 - One card per recalled item, most relevant first (highest rankingScore). Card title = the item's summary; pill.label = its type; add fields for provenance and the recorded date (createdAt's calendar date, YYYY-MM-DD); put a short excerpt of content on the card's reason line (label "context").
-- If the array is empty, return a board whose only content section is one rows item explaining no decisions are recorded yet.
-- ALWAYS include the final "Record a decision" actions section exactly as shown, so the operator can always add one.
+- If the array is empty AND the member count is 0, return the board with "sections": [] — no cards, no actions; the panel hides until a squad is seated.
+- If the array is empty but members exist, return a board with no cards and only the final "Record a decision" actions section; do not include explanatory cold-start rows.
+- Whenever there is at least one card or member, include the final "Record a decision" actions section exactly as shown, so the operator can always add one.
 - Set header.status.label to the decision count (e.g. "3 decisions", "1 decision", "0 decisions").`;
 
 // The surface-launched assign-work workflows are thin, deterministic wrappers: one
@@ -2205,6 +2212,7 @@ const rib: Rib = {
                 cadenceMs: 120_000,
                 live: true,
                 collapsible: true,
+                hideWhenEmpty: true,
                 glyph: { char: "↻", tone: "info" },
               },
             ],
@@ -2219,6 +2227,7 @@ const rib: Rib = {
                 // keeps a freshly-launched run appearing without a manual refresh.
                 cadenceMs: 120_000,
                 collapsible: true,
+                hideWhenEmpty: true,
                 glyph: { char: "≡", tone: "neutral" },
               },
               {
@@ -2229,6 +2238,7 @@ const rib: Rib = {
                 // discard. squad_propose_cast refreshes it after a scan.
                 collapsible: true,
                 collapsed: false,
+                hideWhenEmpty: true,
                 glyph: { char: "✦", tone: "brand" },
               },
             ],
@@ -2244,6 +2254,7 @@ const rib: Rib = {
                 // Client SWR refreshes it on open/focus (the region has no cadence);
                 // re-open the panel after recording a decision to see it.
                 collapsible: true,
+                hideWhenEmpty: true,
                 glyph: { char: "§", tone: "accent" },
               },
             ],
@@ -2488,7 +2499,15 @@ const rib: Rib = {
           'Use when: you want to see the squad\'s governed decisions and lessons. Triggers: "show decisions", "what have we decided", opening the Decisions panel. Does: recalls decision/lesson rows from the project memory ledger and renders them as a board on the Squad Decisions canvas. NOT for: recording a decision (squad-decide) or a member\'s private memory (squad_remember).',
         nodes: [
           {
+            // Deterministic member count so the render prompt can gate the
+            // cold-start shape the way buildDecisionsBoard does (no members and
+            // no decisions -> sections: [] -> the hideWhenEmpty panel stays hidden).
+            id: "members",
+            bash: `bun ${shQuote(MEMBERS_COUNT_COLLECTOR)} ${shQuote(squadDataHome())}`,
+          },
+          {
             id: "render",
+            depends_on: ["members"],
             memory: {
               recall: {
                 query: "team decisions and lessons",

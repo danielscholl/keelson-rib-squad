@@ -114,17 +114,7 @@ function idleBoard(): CanvasBoardView {
     view: "board",
     title: "Proposed squad",
     header: { status: { label: "no proposal", tone: "neutral" as CanvasTone }, chip: "cast" },
-    sections: [
-      {
-        kind: "rows",
-        items: [
-          {
-            glyph: "neutral",
-            text: "No proposal yet. Cast a squad from the roster; the proposed team appears here before anything is created.",
-          },
-        ],
-      },
-    ],
+    sections: [],
   };
 }
 

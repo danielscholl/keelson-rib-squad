@@ -21,6 +21,16 @@ function cards(board: ReturnType<typeof buildRosterBoard>) {
   if (section?.kind !== "cards") throw new Error("no cards section");
   return section.items;
 }
+function seats(board: ReturnType<typeof buildRosterBoard>) {
+  const section = board.sections.find((s) => s.kind === "seats");
+  if (section?.kind !== "seats") throw new Error("no seats section");
+  return section.items;
+}
+function journey(board: ReturnType<typeof buildRosterBoard>) {
+  const section = board.sections.find((s) => s.kind === "journey");
+  if (section?.kind !== "journey") throw new Error("no journey section");
+  return section.items;
+}
 
 describe("buildRosterBoard cold start", () => {
   test("is a valid board with the roster header at 0 members", () => {
@@ -66,18 +76,38 @@ describe("buildRosterBoard cold start", () => {
   test("no cards section at cold start; the documented sections render", () => {
     const board = buildRosterBoard([]);
     expect(board.sections.some((s) => s.kind === "cards")).toBe(false);
-    expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "actions", "rows"]);
+    expect(board.sections.map((s) => s.kind)).toEqual([
+      "seats",
+      "rows",
+      "actions",
+      "actions",
+      "journey",
+    ]);
+  });
+
+  test("renders exactly five dashed seats in reserved identity order", () => {
+    const board = buildRosterBoard([]);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(seats(board)).toEqual([
+      { tone: "id-blue" },
+      { tone: "id-amber" },
+      { tone: "id-teal" },
+      { tone: "id-rose" },
+      { tone: "id-olive" },
+    ]);
   });
 
   test("leads with framing copy then the hero cast action with a verb label", () => {
     const board = buildRosterBoard([]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const intro = board.sections[0];
+    const intro = board.sections.find((s) => s.kind === "rows");
     expect(intro?.kind).toBe("rows");
     expect(intro?.kind === "rows" ? intro.items[0]?.text : "").toContain(
       "One scan of the repo composes the team",
     );
-    const hero = board.sections[1];
+    const hero = board.sections.find(
+      (s) => s.kind === "actions" && s.title === "Cast a squad from this repo",
+    );
     expect(hero?.kind).toBe("actions");
     expect(hero?.title).toBe("Cast a squad from this repo");
     const cast = hero?.kind === "actions" ? hero.items[0] : undefined;
@@ -95,14 +125,21 @@ describe("buildRosterBoard cold start", () => {
     expect(actionTitles).toEqual(["Cast a squad from this repo", "or seat one member yourself"]);
   });
 
-  test("renders the three-step journey strip beneath authoring", () => {
+  test("renders the first-class three-step journey beneath authoring", () => {
     const board = buildRosterBoard([]);
-    const journey = board.sections.find((s) => s.kind === "rows" && s.title === "Squad journey");
-    expect(journey?.kind).toBe("rows");
-    expect(journey?.kind === "rows" ? journey.items.map((i) => i.text) : []).toEqual([
-      "1 Cast: the scan proposes a team, you approve or discard it",
-      "2 Meet: each member becomes a chat agent you can enter",
-      "3 Run: give the squad a task and the rounds stream in the Run loop panel",
+    expect(journey(board)).toEqual([
+      {
+        title: "Cast",
+        text: "The scan proposes a team; you approve or discard it.",
+      },
+      {
+        title: "Meet",
+        text: "Each member becomes a chat agent you can enter and talk to.",
+      },
+      {
+        title: "Run",
+        text: "Give the squad a task — the loop's rounds and findings stream here.",
+      },
     ]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
@@ -124,6 +161,29 @@ describe("buildRosterBoard populated", () => {
       member({ slug: "d", name: "Dee" }),
     ]);
     expect(cards(board).map((c) => c.dot)).toEqual(["id-blue", "id-amber", "id-olive", "neutral"]);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+  });
+
+  test("seats fill by identity slot; unreserved members fold to neutral cards", () => {
+    const board = buildRosterBoard([
+      member({ slug: "teal", name: "Teal", identitySlot: 2 }),
+      member({ slug: "blue", name: "Blue", identitySlot: 0 }),
+      member({ slug: "amber", name: "Amber", identitySlot: 1 }),
+      member({ slug: "rose", name: "Rose", identitySlot: 3 }),
+      member({ slug: "olive", name: "Olive", identitySlot: 4 }),
+      member({ slug: "six", name: "Sixth" }),
+    ]);
+    expect(seats(board)).toEqual([
+      { tone: "id-blue", filled: true, label: "Blue" },
+      { tone: "id-amber", filled: true, label: "Amber" },
+      { tone: "id-teal", filled: true, label: "Teal" },
+      { tone: "id-rose", filled: true, label: "Rose" },
+      { tone: "id-olive", filled: true, label: "Olive" },
+    ]);
+    expect(cards(board).map((c) => ({ title: c.title, dot: c.dot }))).toContainEqual({
+      title: "Sixth",
+      dot: "neutral",
+    });
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 
@@ -232,6 +292,7 @@ describe("buildRosterBoard pulse", () => {
   test("omitting pulse keeps the historical no-pulse shape", () => {
     const board = buildRosterBoard(two);
     expect(board.sections.some((s) => s.kind === "rows")).toBe(false);
+    expect(board.sections[0]?.kind).toBe("seats");
     expect(JSON.stringify(board)).not.toContain('"pulse"');
   });
 
@@ -252,6 +313,7 @@ describe("buildRosterBoard pulse", () => {
   test("the pulse leads even the cold-start board and stays valid", () => {
     const board = buildRosterBoard([], pulse({ members: 0, active: 0, inactive: 0 }));
     expect(board.sections[0]?.kind).toBe("rows");
+    expect(board.sections[1]?.kind).toBe("seats");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 });

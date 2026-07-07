@@ -81,10 +81,11 @@ describe("buildRunsBoard", () => {
     }
   });
 
-  test("no runs renders the calm idle board", () => {
+  test("no runs renders an empty-content idle board", () => {
     const board = buildRunsBoard([]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status?.label).toBe("no runs");
+    expect(board.sections).toEqual([]);
   });
 });
 

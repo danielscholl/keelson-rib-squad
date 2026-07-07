@@ -46,9 +46,10 @@ describe("buildCastBoard idle", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.view).toBe("board");
     expect(board.header?.status?.label).toBe("no proposal");
-    // No approve/discard verbs when there is nothing to act on.
+    // No approve/discard verbs and no shell rows when there is nothing to act on.
     expect(actionItems(board)).toHaveLength(0);
     expect(board.sections.some((s) => s.kind === "cards")).toBe(false);
+    expect(board.sections).toEqual([]);
   });
 });
 

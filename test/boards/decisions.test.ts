@@ -25,16 +25,17 @@ function cards(board: ReturnType<typeof buildDecisionsBoard>) {
 }
 
 describe("buildDecisionsBoard cold start", () => {
-  test("is a valid board with the ledger header at 0 decisions", () => {
+  test("is a valid hidden-content board with no members and no decisions", () => {
     const board = buildDecisionsBoard([]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.view).toBe("board");
     expect(board.header?.chip).toBe("ledger");
     expect(board.header?.status?.label).toBe("0 decisions");
+    expect(board.sections).toEqual([]);
   });
 
-  test("has no cards section but still offers the record action", () => {
-    const board = buildDecisionsBoard([]);
+  test("has no cards section but still offers the record action when members exist", () => {
+    const board = buildDecisionsBoard([], true);
     expect(board.sections.some((s) => s.kind === "cards")).toBe(false);
     const record = actionItems(board).find((i) => i.type === RECORD_DECISION_ACTION);
     expect(record).toBeDefined();

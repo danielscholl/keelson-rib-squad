@@ -23,17 +23,23 @@ export interface DecisionItem {
 // onAction so the action type can't drift from its handler.
 export const RECORD_DECISION_ACTION = "record-decision";
 
-// Pure: a list of recalled decisions -> a canvas `board`. Zero decisions renders a
-// cold-start row (record the first); >=1 renders one card per decision. Both shapes
-// always carry the "Record a decision" action so the operator can always add one.
+// Pure: a list of recalled decisions -> a canvas `board`. Zero decisions with no
+// members renders no sections so the panel can hide; zero decisions with members
+// keeps only the record action. Populated boards render one card per decision plus
+// the record action.
 // Validated against canvasViewSchema in tests; the producer never parses (validation
 // lives at the binding edge via expectView).
-export function buildDecisionsBoard(decisions: readonly DecisionItem[]): CanvasBoardView {
+export function buildDecisionsBoard(
+  decisions: readonly DecisionItem[],
+  hasMembers = false,
+): CanvasBoardView {
   const sections: CanvasBoardView["sections"] =
     decisions.length === 0
-      ? coldStartSections()
+      ? hasMembers
+        ? [recordSection()]
+        : []
       : [{ kind: "cards", items: decisions.map(cardFor) }];
-  sections.push(recordSection());
+  if (decisions.length > 0) sections.push(recordSection());
   return {
     view: "board",
     title: "Decisions",
@@ -112,20 +118,6 @@ function recordSection(): CanvasBoardView["sections"][number] {
       },
     ],
   };
-}
-
-function coldStartSections(): CanvasBoardView["sections"] {
-  return [
-    {
-      kind: "rows",
-      items: [
-        {
-          glyph: "neutral",
-          text: "No decisions recorded yet. Decisions are the squad's governed shared memory — record one to start the ledger.",
-        },
-      ],
-    },
-  ];
 }
 
 // The calendar date (YYYY-MM-DD) of an RFC3339 timestamp; "" when absent or

@@ -98,11 +98,18 @@ describe("charterDisplay", () => {
 });
 
 describe("buildCoordinatorBoard idle", () => {
-  test("renders a valid calm board with no ledger", () => {
+  test("renders a valid hidden-content board with no members and no ledger", () => {
     const board = buildCoordinatorBoard(undefined);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.view).toBe("board");
     expect(board.header?.status?.label).toBe("idle");
+    expect(board.sections).toEqual([]);
+  });
+
+  test("keeps the task composer when members exist but no run ledger exists", () => {
+    const board = buildCoordinatorBoard(undefined, undefined, undefined, true);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(sectionTitles(board)).toEqual(["Give the squad a task"]);
   });
 });
 

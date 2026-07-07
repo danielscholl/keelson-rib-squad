@@ -15,7 +15,7 @@ The surface has a stable identity:
 |---|---|
 | `id` | `squad` |
 | `title` | `Squad` |
-| `subtitle` | `Author members, cast a squad, assign work` |
+| `subtitle` | `Author members · cast a squad · assign work` |
 | `projectScoped` | `true` |
 
 Because the surface is project-scoped, the host renders its shared
@@ -33,11 +33,14 @@ snapshot key and a workflow that produces it.
 | Header | `rib:squad:roster` | `squad-roster` | 120000 ms | no | no |
 | Row 1, column 1 | `rib:squad:coordinator` | `squad-coordinator` | 120000 ms | yes | yes |
 | Row 2, column 1 | `rib:squad:runs` | `squad-runs` | 120000 ms | no | yes |
-| Row 2, column 2 | `rib:squad:cast` | `squad-cast` | none | no | yes (collapsed by default) |
+| Row 2, column 2 | `rib:squad:cast` | `squad-cast` | none | no | yes |
 | Row 3, column 1 | `rib:squad:decisions` | `squad-decisions` | none | no | yes |
 
-The header (Roster) and row 1 (Run loop) are always visible. Row 2 holds Runs
-and Proposed squad side by side. Row 3 holds Decisions on its own.
+Only the header (Roster) is always visible. The four content panels — Run loop,
+Runs, Proposed squad, and Decisions — set `hideWhenEmpty: true`, so they collapse
+away on a cold start when there is no seated squad and no ledger or proposal
+content. Row 2 holds Runs and Proposed squad side by side when they have content.
+Row 3 holds Decisions on its own.
 
 ### Header: Roster
 
@@ -80,8 +83,9 @@ renders the pending cast-proposal file as a board. It carries **no cadence at
 all**, because the proposal only changes on a propose, approve, or discard
 action; a heartbeat here would poll a file that is idle between those actions.
 The `squad_propose_cast` tool refreshes this key itself once a scan finishes,
-so the panel is current the moment there is something new to show. It is also
-collapsed by default, so an empty proposal does not clutter the row.
+so the panel is current the moment there is something new to show. It is
+collapsible but starts expanded when content exists; with `hideWhenEmpty: true`,
+an empty proposal does not clutter the row.
 
 ### Row 3: Decisions
 

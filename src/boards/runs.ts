@@ -143,17 +143,7 @@ function idleBoard(): CanvasBoardView {
     view: "board",
     title: "Runs",
     header: { status: { label: "no runs", tone: "neutral" as CanvasTone }, chip: "history" },
-    sections: [
-      {
-        kind: "rows",
-        items: [
-          {
-            glyph: "neutral" as CanvasTone,
-            text: "No coordinator runs yet — give the squad a task in the Run loop, and each run is archived here.",
-          },
-        ],
-      },
-    ],
+    sections: [],
   };
 }
 

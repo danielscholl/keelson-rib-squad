@@ -17,6 +17,7 @@ type RawNode = {
   id?: string;
   bash?: string;
   prompt?: string;
+  depends_on?: string[];
   output_schema?: unknown;
   memory?: {
     recall?: { query?: string; limits?: { maxItems?: number } };
@@ -234,6 +235,7 @@ describe("rib-squad", () => {
       ?.flatMap((r) => r.columns)
       .find((c) => c.key === DECISIONS_KEY);
     expect(region?.workflow).toBe("squad-decisions");
+    expect(region?.hideWhenEmpty).toBe(true);
     // Cost-safety: an agent-turn board must NOT carry a cadence (it would burn
     // paid turns on the heartbeat).
     expect(region?.cadenceMs).toBeUndefined();
@@ -254,14 +256,22 @@ describe("rib-squad", () => {
   it("contributes squad-decisions: a bound recall->board render workflow", () => {
     const contribution = wf("squad-decisions");
     expect(contribution?.bindSnapshotKey).toBe(DECISIONS_KEY);
-    const node = nodes("squad-decisions")[0];
+    // A deterministic member-count node feeds the render prompt so its cold-start
+    // gating can't drift from buildDecisionsBoard's members-aware shape.
+    const count = nodes("squad-decisions")[0];
+    expect(count?.id).toBe("members");
+    expect(count?.bash).toContain("count-members.ts");
+    const node = nodes("squad-decisions")[1];
+    expect(node?.depends_on).toEqual(["members"]);
     expect(node?.memory?.recall?.query).toBeTruthy();
     expect(node?.memory?.recall?.limits?.maxItems).toBe(50);
     expect(typeof node?.prompt).toBe("string");
     // The prompt embeds the buildDecisionsBoard contract so the model emits a board
-    // matching the tested builder, and includes the record action.
+    // matching the tested builder, and includes the record action + count input.
     expect(node?.prompt).toContain('"view":"board"');
     expect(node?.prompt).toContain("record-decision");
+    expect(node?.prompt).toContain("$members.output");
+    expect(node?.prompt).toContain('"sections": []');
     expect(node?.output_schema).toBeDefined();
   });
 
@@ -303,6 +313,7 @@ describe("rib-squad", () => {
       ?.flatMap((r) => r.columns)
       .find((c) => c.key === CAST_KEY);
     expect(region?.workflow).toBe("squad-cast");
+    expect(region?.hideWhenEmpty).toBe(true);
     // The cast collector is cheap, but the panel only changes on propose/approve/
     // discard — no heartbeat (it would just re-render the idle board).
     expect(region?.cadenceMs).toBeUndefined();
@@ -352,6 +363,7 @@ describe("rib-squad", () => {
       ?.flatMap((r) => r.columns)
       .find((c) => c.key === COORDINATOR_KEY);
     expect(region?.workflow).toBe("squad-coordinator");
+    expect(region?.hideWhenEmpty).toBe(true);
     expect(region?.live).toBe(true);
     expect(region?.cadenceMs).toBeGreaterThanOrEqual(30_000);
     expect(region?.collapsed ?? false).toBe(false);
@@ -364,6 +376,7 @@ describe("rib-squad", () => {
       ?.flatMap((r) => r.columns)
       .find((c) => c.key === SQUAD_RUNS_KEY);
     expect(region?.workflow).toBe("squad-runs");
+    expect(region?.hideWhenEmpty).toBe(true);
     expect(wf("squad-runs")?.bindSnapshotKey).toBe(SQUAD_RUNS_KEY);
     expect(nodes("squad-runs")[0]?.bash).toContain("collect-runs.ts");
   });
