@@ -161,14 +161,16 @@ export function buildRunDetailBoard(
       ],
     };
   }
+  const body = sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId);
+  const detailBody = body[0]?.kind === "stats" ? body.slice(1) : body;
+  const sections: Section[] = [runReportSection(id), pulseSection(ledger)];
+  pushIf(sections, tokensPerRoundChartSection(ledger.transcript));
+  sections.push(...detailBody);
   return {
     view: "board",
     title: "Run",
     header: { status: statusPill(ledger.status), chip: id },
-    sections: [
-      runReportSection(id),
-      ...sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId),
-    ],
+    sections,
   };
 }
 
@@ -442,6 +444,36 @@ function pulseSection(ledger: CoordinatorLedger): Section {
       ...(tokens > 0
         ? [{ label: "Tokens", value: formatTokens(tokens), tone: "info" as CanvasTone }]
         : []),
+    ],
+  };
+}
+
+function tokensPerRoundChartSection(transcript: readonly CoordinatorEntry[]): Section | undefined {
+  const byRound = new Map<number, { input: number; output: number; hasUsage: boolean }>();
+  for (const e of transcript) {
+    const agg = byRound.get(e.round) ?? { input: 0, output: 0, hasUsage: false };
+    if (e.usage) {
+      agg.input += e.usage.inputTokens;
+      agg.output += e.usage.outputTokens;
+      agg.hasUsage = true;
+    }
+    byRound.set(e.round, agg);
+  }
+  if ([...byRound.values()].filter((round) => round.hasUsage).length < 2) return undefined;
+  const rounds = [...byRound.entries()].sort(([a], [b]) => a - b);
+  return {
+    kind: "chart",
+    title: "Tokens per round",
+    yLabel: "tokens",
+    series: [
+      {
+        label: "input",
+        points: rounds.map(([round, agg]) => ({ x: round, y: agg.input })),
+      },
+      {
+        label: "output",
+        points: rounds.map(([round, agg]) => ({ x: round, y: agg.output })),
+      },
     ],
   };
 }
