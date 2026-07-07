@@ -234,6 +234,7 @@ describe("rib-squad", () => {
       ?.flatMap((r) => r.columns)
       .find((c) => c.key === DECISIONS_KEY);
     expect(region?.workflow).toBe("squad-decisions");
+    expect(region?.hideWhenEmpty).toBe(true);
     // Cost-safety: an agent-turn board must NOT carry a cadence (it would burn
     // paid turns on the heartbeat).
     expect(region?.cadenceMs).toBeUndefined();
@@ -303,6 +304,7 @@ describe("rib-squad", () => {
       ?.flatMap((r) => r.columns)
       .find((c) => c.key === CAST_KEY);
     expect(region?.workflow).toBe("squad-cast");
+    expect(region?.hideWhenEmpty).toBe(true);
     // The cast collector is cheap, but the panel only changes on propose/approve/
     // discard — no heartbeat (it would just re-render the idle board).
     expect(region?.cadenceMs).toBeUndefined();
@@ -352,6 +354,7 @@ describe("rib-squad", () => {
       ?.flatMap((r) => r.columns)
       .find((c) => c.key === COORDINATOR_KEY);
     expect(region?.workflow).toBe("squad-coordinator");
+    expect(region?.hideWhenEmpty).toBe(true);
     expect(region?.live).toBe(true);
     expect(region?.cadenceMs).toBeGreaterThanOrEqual(30_000);
     expect(region?.collapsed ?? false).toBe(false);
@@ -364,6 +367,7 @@ describe("rib-squad", () => {
       ?.flatMap((r) => r.columns)
       .find((c) => c.key === SQUAD_RUNS_KEY);
     expect(region?.workflow).toBe("squad-runs");
+    expect(region?.hideWhenEmpty).toBe(true);
     expect(wf("squad-runs")?.bindSnapshotKey).toBe(SQUAD_RUNS_KEY);
     expect(nodes("squad-runs")[0]?.bash).toContain("collect-runs.ts");
   });
