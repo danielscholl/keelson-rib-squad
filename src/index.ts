@@ -22,6 +22,7 @@ import {
   COORDINATE_ACTION,
   DISPATCH_ACTION,
   REPORT_RUN_ACTION,
+  RESET_SQUAD_ACTION,
   ROLLBACK_RUN_ACTION,
   STOP_COORDINATOR_ACTION,
 } from "./boards/coordinator.ts";
@@ -40,6 +41,7 @@ import { memberCanCode, runCodeTurn } from "./code.ts";
 import { buildSeedFor } from "./compose.ts";
 import {
   type CoordinatorLedger,
+  clearLedger,
   LEDGER_STATUS_ACTIVE,
   loadLedger,
   type RunCoordinatorResult,
@@ -99,10 +101,11 @@ import {
 } from "./rollback.ts";
 import {
   appendRollbackRow,
+  clearRollbacks,
   latestPerformedRollbackRow,
   type RollbackCommit,
 } from "./rollback-store.ts";
-import { listRuns, loadRun, type RunSummary } from "./runs-store.ts";
+import { clearRuns, listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   listScopeMembersDirs,
   readSelectedProject,
@@ -2608,6 +2611,8 @@ const rib: Rib = {
         return stopCoordinateAction(action);
       case ROLLBACK_RUN_ACTION:
         return rollbackRunAction(action);
+      case RESET_SQUAD_ACTION:
+        return resetSquadAction();
       case ASSIGN_CODE_ACTION:
         return assignCodeAction(action);
       case RECORD_DECISION_ACTION:
@@ -2996,6 +3001,63 @@ async function retireAllAction(): Promise<RibActionResult> {
   } catch (e) {
     return { ok: false, error: errText(e) };
   }
+}
+
+// The teardown verb behind the coordinator board's "Reset squad": return the selected
+// scope's whole surface to the empty first moment. Retires every member, then clears the
+// scope's persisted run state (archive, current ledger, rollbacks) and any pending
+// proposal, and refreshes all four panels. Project decisions live in host memory and are
+// deliberately kept (cross-squad, cross-session). Refuses while a run is active — the
+// operator Stops it first, which is why the active board offers no reset.
+async function resetSquadAction(): Promise<RibActionResult> {
+  try {
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    const scopedHome = scopeDataHome(home, scopeId);
+
+    const ledger = await loadLedger(scopedHome).catch(() => undefined);
+    if (activeCoordinateRuns.has(scopeId) || ledger?.status === LEDGER_STATUS_ACTIVE) {
+      return { ok: false, error: "a run is active — stop it before resetting the squad" };
+    }
+
+    const membersRoot = scopeMembersDir(home, scopeId);
+    const members = await readMembers(membersRoot);
+    let retired = 0;
+    for (const m of members) {
+      try {
+        await retireMember(membersRoot, m.slug);
+        retired++;
+      } catch (e) {
+        // Only an already-gone member is expected (a concurrent retire); any other
+        // error is real — free the cast name, refresh, and report a partial teardown.
+        if (!errText(e).includes("not found")) {
+          await retireCastingName(scopedHome, m.slug);
+          await refreshSquadPanels();
+          return { ok: false, error: `reset failed retiring "${m.slug}": ${errText(e)}` };
+        }
+      }
+      await retireCastingName(scopedHome, m.slug);
+    }
+
+    await clearRuns(scopedHome);
+    await clearLedger(scopedHome);
+    await clearRollbacks(scopedHome);
+    await clearProposal(scopedHome);
+
+    await refreshSquadPanels();
+    return { ok: true, data: { retired } };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
+// Re-run the four bound collectors after a scope-wide mutation so every panel re-reads
+// promptly instead of waiting on cadence. Each refresh is best-effort.
+async function refreshSquadPanels(): Promise<void> {
+  await refreshWorkflow?.("squad-roster")?.catch(() => {});
+  await refreshWorkflow?.("squad-cast")?.catch(() => {});
+  await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+  await refreshWorkflow?.("squad-runs")?.catch(() => {});
 }
 
 // Read the persisted proposal as the source of truth so stale board buttons can't

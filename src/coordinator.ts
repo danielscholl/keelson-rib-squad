@@ -377,6 +377,13 @@ export async function loadLedger(dataHome: string): Promise<CoordinatorLedger | 
   }
 }
 
+// Drop the persisted run-loop ledger for a scope so the Run-loop board reads back as
+// idle. Idempotent (force): an absent file is success, matching loadLedger's ENOENT
+// treatment. Backs the reset verb; a live run must be stopped before this is called.
+export async function clearLedger(dataHome: string): Promise<void> {
+  await rm(ledgerPath(dataHome), { force: true });
+}
+
 function freshLedger(
   task: string,
   scopeId: string | undefined,

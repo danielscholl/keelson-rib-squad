@@ -23,6 +23,9 @@ export const DISPATCH_ACTION = "dispatch";
 export const STOP_COORDINATOR_ACTION = "stop-coordinate";
 export const ROLLBACK_RUN_ACTION = "rollback-run";
 export const REPORT_RUN_ACTION = "squad-report";
+// The teardown verb: return this scope's whole surface to the empty first moment.
+// Shared with onAction so the action type can't drift from its handler.
+export const RESET_SQUAD_ACTION = "reset-squad";
 
 const GOAL_CAP = 280;
 const STEP_CAP = 200;
@@ -126,7 +129,10 @@ export function buildCoordinatorBoard(
   // Head every non-active board with the task composer so assigning work is one
   // field away; an ACTIVE run omits it (you're watching, not queuing another).
   const base = sectionsFor(ledger, undefined, tones, scopeId);
-  const sections = ledger.status === "active" ? base : [taskComposerSection(), ...base];
+  // A terminal board leads with the composer and ends with the teardown verb; an
+  // ACTIVE run omits both (you Stop a live run before resetting the scope).
+  const sections =
+    ledger.status === "active" ? base : [taskComposerSection(), ...base, resetSection(scopeId)];
   return {
     view: "board",
     title: "Run loop",
@@ -321,6 +327,35 @@ function rollbackSection(ledger: CoordinatorLedger, scopeId?: string): Section {
           title: "Preview rollback manifest?",
           body: "The first step calls squad_rollback without confirm:true to render the full C/M/D manifest before any mutation.",
           confirmLabel: "Preview rollback",
+        },
+      },
+    ],
+  };
+}
+
+// Return the scope's whole surface to the empty first moment: retire every member and
+// clear run history, the current run loop, rollback records, and any pending proposal.
+// Project decisions live in host memory and are kept. Rendered only on a terminal
+// board — a live run is Stopped first — so it is reachable exactly when orphaned run
+// state (a done squad that outlived its roster) needs clearing.
+function resetSection(scopeId?: string): Section {
+  return {
+    kind: "actions",
+    title: "Reset squad",
+    items: [
+      {
+        type: RESET_SQUAD_ACTION,
+        label: "Reset squad…",
+        glyph: "⟲",
+        tone: "warn",
+        destructive: true,
+        inline: true,
+        payload: { scopeId: scopeId ?? "default" },
+        confirm: {
+          title: "Reset this squad?",
+          body: "Retire every member and clear this scope's run history, current run loop, rollback records, and any pending proposal — returning the surface to its empty state. Project decisions are kept. This cannot be undone.",
+          confirmLabel: "Reset squad",
+          cancelLabel: "Cancel",
         },
       },
     ],

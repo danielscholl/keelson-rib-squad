@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CoordinatorLedger } from "./coordinator.ts";
 
@@ -116,4 +116,10 @@ export async function listRuns(scopeDataHome: string): Promise<RunSummary[]> {
 
   runs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return runs;
+}
+
+// Drop the whole archived-run history for a scope. Idempotent: an absent runs dir is
+// success, matching how listRuns treats it as an empty history. Backs the reset verb.
+export async function clearRuns(scopeDataHome: string): Promise<void> {
+  await rm(runsDir(scopeDataHome), { recursive: true, force: true });
 }

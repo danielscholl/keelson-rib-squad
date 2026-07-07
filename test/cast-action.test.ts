@@ -13,10 +13,29 @@ import type {
 import { DEFAULT_PROJECT_NAME } from "@keelson/shared";
 import { readProposal, writeProposal } from "../src/cast.ts";
 import { loadRegistry, saveRegistry } from "../src/casting/registry.ts";
+import { type CoordinatorLedger, loadLedger, saveLedger } from "../src/coordinator.ts";
 import rib from "../src/index.ts";
 import { listMemberRecords, readMembers, scaffoldMember } from "../src/member-store.ts";
 import { membersDir, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
+import { appendRollbackRow, listRollbackRows } from "../src/rollback-store.ts";
+import { archiveRun, listRuns } from "../src/runs-store.ts";
 import { writeSelectedProject } from "../src/scope.ts";
+
+function terminalLedger(over: Partial<CoordinatorLedger> = {}): CoordinatorLedger {
+  return {
+    task: "add retry/backoff",
+    facts: [],
+    plan: [],
+    round: 4,
+    stallCount: 0,
+    resetCount: 0,
+    status: "done",
+    transcript: [],
+    createdAt: "2026-07-06T00:00:00.000Z",
+    updatedAt: "2026-07-06T00:10:00.000Z",
+    ...over,
+  };
+}
 
 // The cast SCAN lives in the squad_propose_cast tool (invoked by the squad-cast-scan
 // workflow); the cast-propose ACTION only preflights the selection and launches that
@@ -540,5 +559,78 @@ describe("retire action", () => {
     );
     expect(res?.ok).toBe(false); // retireMember throws on the missing dir...
     expect((await loadRegistry(home)).members.ghost?.status).toBe("retired"); // ...name still freed
+  });
+});
+
+describe("reset-squad action", () => {
+  const now = "2026-07-06T00:00:00.000Z";
+
+  // Seed the default scope with every persistent store populated: members, a terminal
+  // run ledger, an archived run, a rollback row, and a pending proposal.
+  async function seedLeftoverState(): Promise<void> {
+    const membersRoot = scopeMembersDir(home, "default");
+    await scaffoldMember(membersRoot, {
+      slug: "keyser",
+      name: "Keyser",
+      role: "Tech Lead",
+      charter: "# Keyser",
+      status: "active",
+      createdAt: now,
+    });
+    await scaffoldMember(membersRoot, {
+      slug: "edie",
+      name: "Edie",
+      role: "Reviewer",
+      charter: "# Edie",
+      status: "active",
+      createdAt: now,
+    });
+    await saveLedger(home, terminalLedger());
+    await archiveRun(home, terminalLedger({ createdAt: "2026-07-05T00:00:00.000Z" }));
+    await appendRollbackRow(home, { type: "noop", runId: "run-1", at: now });
+    await writeProposal(home, {
+      projectId: "default",
+      projectName: "keelson",
+      rootPath: "/repo/keelson",
+      members: [],
+      notes: [],
+      createdAt: now,
+    });
+  }
+
+  test("returns the surface to empty: retires members and clears runs/ledger/rollbacks/proposal", async () => {
+    bootRib([]);
+    await seedLeftoverState();
+
+    const res = await rib.onAction?.({ type: "reset-squad" }, {} as RibContext);
+    expect(res?.ok).toBe(true);
+    if (res?.ok) expect(res.data).toEqual({ retired: 2 });
+
+    // Every persisted store for the scope is now empty — the pristine first moment.
+    expect(await readMembers(scopeMembersDir(home, "default"))).toHaveLength(0);
+    expect(await loadLedger(home)).toBeUndefined();
+    expect(await listRuns(home)).toHaveLength(0);
+    expect(await listRollbackRows(home)).toHaveLength(0);
+    expect(await readProposal(home)).toBeUndefined();
+
+    // All four panels were re-read so the surface repaints to empty immediately.
+    for (const wf of ["squad-roster", "squad-cast", "squad-coordinator", "squad-runs"]) {
+      expect(refreshed).toContain(wf);
+    }
+  });
+
+  test("refuses while a run is active — nothing is cleared", async () => {
+    bootRib([]);
+    await seedLeftoverState();
+    await saveLedger(home, terminalLedger({ status: "active" }));
+
+    const res = await rib.onAction?.({ type: "reset-squad" }, {} as RibContext);
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("run is active");
+
+    // Guard held: the seeded state survives an attempted reset over a live run.
+    expect(await readMembers(scopeMembersDir(home, "default"))).toHaveLength(2);
+    expect(await loadLedger(home)).toBeDefined();
+    expect(await listRuns(home)).toHaveLength(1);
   });
 });
