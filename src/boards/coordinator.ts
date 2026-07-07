@@ -1,9 +1,10 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
-import type {
-  CoordinatorEntry,
-  CoordinatorLedger,
-  InFlightTurn,
-  VerificationRecord,
+import {
+  type CoordinatorEntry,
+  type CoordinatorLedger,
+  type InFlightTurn,
+  SHORT_ACKNOWLEDGMENT_RE,
+  type VerificationRecord,
 } from "../coordinator.ts";
 import type { ToolTrace } from "../turn-runner.ts";
 
@@ -112,6 +113,31 @@ export function charterDisplay(name: string, charter: string): string {
     text = text.replace(new RegExp(`^${escaped}\\b[\\s.:—–-]*`, "i"), "");
   }
   return text.replace(/^Cast from [^.]{1,80}\.\s*/i, "");
+}
+
+// Like charterDisplay, but for a disclosure body: strips the same markdown markers
+// while PRESERVING the charter's section/paragraph newlines, so "## Role" / "## Mission"
+// / "## Voice" read as separated blocks under the row instead of collapsing to one
+// run-on paragraph (the .cvb-row-detail renderer is pre-wrap). Same self-name and
+// cast-provenance strip as charterDisplay.
+export function charterDetail(name: string, charter: string): string {
+  let text = charter
+    .replace(/```[a-zA-Z]*\n?/g, "")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,;:!?])/gm, "$1$2")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/[^\S\n]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const trimmedName = name.trim();
+  if (trimmedName) {
+    const escaped = trimmedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Consume the name AND its following blank line so the provenance strip below
+    // still anchors at the start.
+    text = text.replace(new RegExp(`^${escaped}\\b\\s*`, "i"), "");
+  }
+  return text.replace(/^Cast from [^.]{1,80}\.\s*/i, "").trim();
 }
 
 export function formatTokens(n: number): string {
@@ -644,9 +670,29 @@ function visibleFindings(ledger: CoordinatorLedger): string[] {
   return ledger.facts.filter((fact) => !isHiddenFinding(fact, speakers));
 }
 
+// A member often opens a turn with a self-intro ("Edie here.") before the narration;
+// drop it so a preamble test anchors on the real first clause.
+const SELF_INTRO_RE = /^\w+ here[.!]\s*/i;
+// An "I'll …" / "I will …" intent lead — a turn preamble, not a finding. Deliberately
+// narrower than the code arm's full opener set (which also matches "first,"/"now,"/
+// "next,"): those legitimately lead real findings, and hiding a whole fact on them
+// would drop real content. Pure standalone acknowledgments are caught end-anchored.
+const INTENT_LEAD_RE = /^i['’]ll\b|^i will\b/i;
+
+function narrationBody(text: string, speakers: ReadonlySet<string>): string {
+  return stripKnownSpeakerLabels(normalizeSpeakerPrefixes(stripMd(text)), speakers).replace(
+    SELF_INTRO_RE,
+    "",
+  );
+}
+
+function isNarrationOnly(body: string): boolean {
+  return SHORT_ACKNOWLEDGMENT_RE.test(body) || INTENT_LEAD_RE.test(body);
+}
+
 function isHiddenFinding(fact: string, speakers: ReadonlySet<string>): boolean {
-  const body = stripKnownSpeakerLabels(normalizeSpeakerPrefixes(stripMd(fact)), speakers);
-  return body === "(no synthesis)" || /^I will\b/i.test(body);
+  const body = narrationBody(fact, speakers);
+  return body === "(no synthesis)" || isNarrationOnly(body);
 }
 
 function abandonedSection(failedSteps: readonly string[]): Section {
@@ -907,8 +953,8 @@ function ledgerRow(
 
 function isQuietLedgerEntry(e: CoordinatorEntry, speakers: ReadonlySet<string>): boolean {
   if (e.kind !== "dispatch" && e.kind !== "code" && e.kind !== "workflow") return false;
-  const body = stripKnownSpeakerLabels(normalizeSpeakerPrefixes(stripMd(e.text)), speakers);
-  return body === "(no synthesis)" || body.startsWith("(no synthesis) ") || /^I will\b/i.test(body);
+  const body = narrationBody(e.text, speakers);
+  return body === "(no synthesis)" || body.startsWith("(no synthesis) ") || isNarrationOnly(body);
 }
 
 // The expandable body behind a ledger row: the instruction the turn ran under, the

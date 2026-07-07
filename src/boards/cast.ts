@@ -1,7 +1,7 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { CastProposalRecord } from "../cast.ts";
 import { identityToneForSlot } from "../types.ts";
-import { charterDisplay } from "./coordinator.ts";
+import { charterDetail, charterDisplay } from "./coordinator.ts";
 
 // The verbs the Proposed-squad board offers. Shared with onAction so the action
 // types can't drift from their handlers. cast-propose lives on the roster
@@ -52,21 +52,24 @@ function membersSection(proposal: CastProposalRecord): CanvasBoardView["sections
 }
 
 function rowFor(member: CastProposalRecord["members"][number]) {
-  const charter = charterDisplay(member.name, member.charter);
+  const detail = charterDetail(member.name, member.charter);
   const excerpt = charterExcerpt(member.name, member.charter);
+  const role = member.role.trim() || "Member";
   const tools = member.tools?.length ? member.tools.join(", ") : "text-only";
-  const trailing = [member.role.trim() || "Member", tools, member.model]
-    .filter(Boolean)
-    .join(" · ");
+  const trailing = [tools, member.model].filter(Boolean).join(" · ");
   // The identity assigned at propose time is the identity the member keeps on
   // the roster and in the run boards — the seat the operator approves.
   const tone = identityToneForSlot(member.identitySlot);
+  // Lead the summary with the seat being approved ("cast as Tech Lead"), then the
+  // charter's mission excerpt; the full, section-structured charter opens from the
+  // disclosure. Capability + model stay in the trailing metadata.
+  const summary = excerpt ? `cast as ${role} — ${excerpt}` : `cast as ${role}`;
   return {
     glyph: tone,
     chip: { label: member.name.trim() || "(unnamed)", tone },
-    text: excerpt || "(no charter)",
+    text: summary,
     trailing,
-    ...(charter ? { detail: charter } : {}),
+    ...(detail ? { detail } : {}),
   };
 }
 

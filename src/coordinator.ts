@@ -627,7 +627,7 @@ function cap(text: string, n: number): string {
 // never mistaken for narration.
 const CODE_FINDING_NARRATION_RE =
   /^(?:on it|i['’]ll\b|i will\b|let me\b|sure\b|okay\b|ok\b|got it\b|first,?\b|now,?\b|next,?\b|alright\b|here['’]s the plan|let['’]s\b)/i;
-const SHORT_ACKNOWLEDGMENT_RE =
+export const SHORT_ACKNOWLEDGMENT_RE =
   /^(?:on it|sure|okay|ok|got it|alright|will do|sounds good)[.!—-]*$/i;
 
 function touchedFinding(touched?: {

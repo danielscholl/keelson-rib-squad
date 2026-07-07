@@ -85,4 +85,18 @@ describe("buildDecisionsBoard populated", () => {
     expect(actionItems(board).some((i) => i.type === RECORD_DECISION_ACTION)).toBe(true);
     expect(board.sections[board.sections.length - 1]?.kind).toBe("actions");
   });
+
+  test("strips markdown from the summary title and the context excerpt", () => {
+    const board = buildDecisionsBoard([
+      decision({
+        summary: "Adopt **trunk-based** development",
+        content: "Prefer `main` over long-lived _feature_ branches.",
+      }),
+    ]);
+    const card = cards(board)[0] as { title: string; reason?: { text: string } };
+    expect(card.title).toBe("Adopt trunk-based development");
+    expect(card.reason?.text).toBe("Prefer main over long-lived feature branches.");
+    expect(card.title).not.toContain("*");
+    expect(card.reason?.text).not.toContain("`");
+  });
 });

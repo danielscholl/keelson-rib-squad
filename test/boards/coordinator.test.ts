@@ -106,6 +106,33 @@ describe("buildCoordinatorBoard idle", () => {
   });
 });
 
+describe("Findings narration filter", () => {
+  function findings(over: Partial<CoordinatorLedger>) {
+    const board = buildCoordinatorBoard(ledger({ status: "done", round: 3, ...over }));
+    return rowsTitled(board, "Findings").map((r) => r.text);
+  }
+
+  test("drops a self-intro + I'll preamble, an I'll intent, and pure acknowledgments", () => {
+    expect(
+      findings({
+        facts: [
+          "Edie here. I'll ground this in the SPA code paths.",
+          "I'll refactor the sync client next.",
+          "Sure.",
+          "(no synthesis)",
+          "The retry path drops the backoff cap after the third attempt.",
+        ],
+      }),
+    ).toEqual(["The retry path drops the backoff cap after the third attempt."]);
+  });
+
+  test("keeps a real finding that merely opens with 'Now'/'First' (no over-hiding)", () => {
+    expect(findings({ facts: ["Now the auth check is missing on the delete route."] })).toContain(
+      "Now the auth check is missing on the delete route.",
+    );
+  });
+});
+
 describe("buildCoordinatorBoard reset affordance", () => {
   function resetItem(board: Board) {
     return board.sections
