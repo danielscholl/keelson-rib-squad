@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.13.0...v0.14.0) (2026-07-07)
+
+
+### Added
+
+* **boards:** tokens-per-round chart on the run detail board ([#162](https://github.com/danielscholl/keelson-rib-squad/issues/162)) ([89ce01d](https://github.com/danielscholl/keelson-rib-squad/commit/89ce01dc889e966638a72ba15eb9d70a5b28615a))
+
 ## [0.13.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.12.0...v0.13.0) (2026-07-06)
 
 
