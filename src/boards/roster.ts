@@ -219,24 +219,27 @@ function castSection(): Section {
 }
 
 // The manual escape hatch: author one member at a time — the starter archetypes plus
-// a describe-your-own brief. Each launches the squad-genesis workflow.
+// a describe-your-own brief. Each launches the squad-genesis workflow. Every preset
+// wears the identity seat it will occupy (Lead→id-blue … Tester→id-rose, describe→
+// id-olive): the hue is assigned by slot at cast/author, so the launchpad previews the
+// five seats to fill rather than a flat row of status-neutral buttons.
 function authorSection(): Section {
   return {
     kind: "actions",
     title: "or seat one member yourself",
     items: [
-      ...GENESIS_STARTERS.map((s) => ({
+      ...GENESIS_STARTERS.map((s, i) => ({
         type: "author-archetype",
         label: `${s.name} — ${s.tagline}`,
         glyph: "＋",
-        tone: "neutral" as CanvasTone,
+        tone: identityToneForSlot(i),
         payload: { slug: s.slug },
       })),
       {
         type: "describe-own",
         label: "Describe & author",
         glyph: "✎",
-        tone: "neutral" as CanvasTone,
+        tone: identityToneForSlot(GENESIS_STARTERS.length),
         fields: [
           {
             name: "brief",

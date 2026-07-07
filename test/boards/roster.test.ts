@@ -50,12 +50,15 @@ describe("buildRosterBoard cold start", () => {
       "reviewer",
       "tester",
     ]);
+    // Each preset wears the identity seat it will occupy, in cast order.
+    expect(authors.map((a) => a.tone)).toEqual(["id-blue", "id-amber", "id-teal", "id-rose"]);
   });
 
-  test("a describe-own action carries a multiline brief field", () => {
+  test("a describe-own action carries a multiline brief field and the fifth seat tone", () => {
     const board = buildRosterBoard([]);
     const own = actionItems(board).find((i) => i.type === "describe-own");
     expect(own?.label).toBe("Describe & author");
+    expect(own?.tone).toBe("id-olive");
     expect(own?.fields?.[0]?.name).toBe("brief");
     expect(own?.fields?.[0]?.multiline).toBe(true);
   });
