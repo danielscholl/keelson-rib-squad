@@ -158,7 +158,7 @@ export function buildCoordinatorBoard(
   // A terminal board leads with the composer and ends with the teardown verb; an
   // ACTIVE run omits both (you Stop a live run before resetting the scope).
   const sections =
-    ledger.status === "active" ? base : [taskComposerSection(), ...base, resetSection(scopeId)];
+    ledger.status === "active" ? base : [taskComposerSection(), ...base, resetSection()];
   return {
     view: "board",
     title: "Run loop",
@@ -363,8 +363,10 @@ function rollbackSection(ledger: CoordinatorLedger, scopeId?: string): Section {
 // clear run history, the current run loop, rollback records, and any pending proposal.
 // Project decisions live in host memory and are kept. Rendered only on a terminal
 // board — a live run is Stopped first — so it is reachable exactly when orphaned run
-// state (a done squad that outlived its roster) needs clearing.
-function resetSection(scopeId?: string): Section {
+// state (a done squad that outlived its roster) needs clearing. Carries no scopeId
+// payload: like retire-all, the handler acts on the selected scope (the same scope the
+// selection-bound panels refresh), not a board-baked one.
+function resetSection(): Section {
   return {
     kind: "actions",
     title: "Reset squad",
@@ -376,7 +378,6 @@ function resetSection(scopeId?: string): Section {
         tone: "warn",
         destructive: true,
         inline: true,
-        payload: { scopeId: scopeId ?? "default" },
         confirm: {
           title: "Reset this squad?",
           body: "Retire every member and clear this scope's run history, current run loop, rollback records, and any pending proposal — returning the surface to its empty state. Project decisions are kept. This cannot be undone.",

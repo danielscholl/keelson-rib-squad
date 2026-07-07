@@ -147,7 +147,8 @@ describe("buildCoordinatorBoard reset affordance", () => {
     expect(reset?.type).toBe(RESET_SQUAD_ACTION);
     expect(reset?.destructive).toBe(true);
     expect(reset?.confirm?.title).toBe("Reset this squad?");
-    expect((reset?.payload as { scopeId?: string })?.scopeId).toBe("default");
+    // No scopeId payload: like retire-all, the handler acts on the selected scope.
+    expect(reset?.payload).toBeUndefined();
   });
 
   test("an active run offers no Reset (Stop it first)", () => {
