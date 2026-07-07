@@ -126,6 +126,128 @@ describe("buildRunDetailBoard", () => {
     expect(titles).toContain("Minds");
   });
 
+  test("renders a two-series tokens chart aggregated by numeric round", () => {
+    const board = buildRunDetailBoard(
+      ledger({
+        transcript: [
+          {
+            round: 1,
+            kind: "code",
+            speaker: "atlas",
+            text: "edited",
+            usage: { inputTokens: 100, outputTokens: 20 },
+          },
+          { round: 1, kind: "dispatch", speaker: "nova", text: "read" },
+          {
+            round: 2,
+            kind: "workflow",
+            speaker: "atlas",
+            text: "checked",
+            usage: { inputTokens: 50, outputTokens: 10 },
+          },
+          {
+            round: 2,
+            kind: "code",
+            speaker: "nova",
+            text: "fixed",
+            usage: { inputTokens: 25, outputTokens: 5 },
+          },
+        ],
+      }),
+      "r1",
+    );
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const charts = board.sections.filter((s) => s.kind === "chart");
+    expect(charts).toHaveLength(1);
+    const chart = charts[0];
+    if (chart?.kind !== "chart") throw new Error("no chart section");
+    expect(chart.title).toBe("Tokens per round");
+    expect(chart.yLabel).toBe("tokens");
+    expect(chart.series).toEqual([
+      {
+        label: "input",
+        points: [
+          { x: 1, y: 100 },
+          { x: 2, y: 75 },
+        ],
+      },
+      {
+        label: "output",
+        points: [
+          { x: 1, y: 20 },
+          { x: 2, y: 15 },
+        ],
+      },
+    ]);
+    expect(typeof chart.series[0]?.points[0]?.x).toBe("number");
+  });
+
+  test("omits the tokens chart when fewer than two rounds carry usage", () => {
+    const board = buildRunDetailBoard(
+      ledger({
+        transcript: [
+          {
+            round: 1,
+            kind: "code",
+            speaker: "atlas",
+            text: "edited",
+            usage: { inputTokens: 100, outputTokens: 20 },
+          },
+          { round: 2, kind: "dispatch", speaker: "nova", text: "read" },
+        ],
+      }),
+      "r1",
+    );
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.sections.some((s) => s.kind === "chart")).toBe(false);
+  });
+
+  test("counts missing round usage as zero without NaN points", () => {
+    const board = buildRunDetailBoard(
+      ledger({
+        transcript: [
+          {
+            round: 1,
+            kind: "code",
+            speaker: "atlas",
+            text: "edited",
+            usage: { inputTokens: 100, outputTokens: 20 },
+          },
+          { round: 2, kind: "dispatch", speaker: "nova", text: "read" },
+          {
+            round: 3,
+            kind: "workflow",
+            speaker: "atlas",
+            text: "checked",
+            usage: { inputTokens: 50, outputTokens: 10 },
+          },
+        ],
+      }),
+      "r1",
+    );
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const chart = board.sections.find((s) => s.kind === "chart");
+    if (chart?.kind !== "chart") throw new Error("no chart section");
+    expect(chart.series[0]?.points).toEqual([
+      { x: 1, y: 100 },
+      { x: 2, y: 0 },
+      { x: 3, y: 50 },
+    ]);
+    expect(chart.series[1]?.points).toEqual([
+      { x: 1, y: 20 },
+      { x: 2, y: 0 },
+      { x: 3, y: 10 },
+    ]);
+    for (const series of chart.series) {
+      for (const point of series.points) {
+        expect(Number.isNaN(point.y)).toBe(false);
+      }
+    }
+  });
+
   test("shows every round of the ledger — the archive drill-down never stubs", () => {
     const transcript = Array.from({ length: 8 }, (_, r) => ({
       round: r,
