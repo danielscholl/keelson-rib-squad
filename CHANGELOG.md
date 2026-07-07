@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.14.0...v0.15.0) (2026-07-07)
+
+
+### Added
+
+* **board:** finish the casting screen — seats, journey, content-gated panels ([#168](https://github.com/danielscholl/keelson-rib-squad/issues/168)) ([1eb23f1](https://github.com/danielscholl/keelson-rib-squad/commit/1eb23f184454a0dcfd3921c91a22a442c05d194c))
+* close out the Five Empty Seats squad design review ([#165](https://github.com/danielscholl/keelson-rib-squad/issues/165)) ([ba62e63](https://github.com/danielscholl/keelson-rib-squad/commit/ba62e639686db836cbe8e83f0e76e77a411ae019))
+
 ## [0.14.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.13.0...v0.14.0) (2026-07-07)
 
 
