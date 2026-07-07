@@ -238,7 +238,7 @@ ${DECISIONS_BOARD_EXAMPLE}
 
 Rules:
 - One card per recalled item, most relevant first (highest rankingScore). Card title = the item's summary; pill.label = its type; add fields for provenance and the recorded date (createdAt's calendar date, YYYY-MM-DD); put a short excerpt of content on the card's reason line (label "context").
-- If the array is empty, return a board whose only content section is one rows item explaining no decisions are recorded yet.
+- If the array is empty, return a board with no cards and only the final "Record a decision" actions section; do not include explanatory cold-start rows.
 - ALWAYS include the final "Record a decision" actions section exactly as shown, so the operator can always add one.
 - Set header.status.label to the decision count (e.g. "3 decisions", "1 decision", "0 decisions").`;
 
@@ -2205,6 +2205,7 @@ const rib: Rib = {
                 cadenceMs: 120_000,
                 live: true,
                 collapsible: true,
+                hideWhenEmpty: true,
                 glyph: { char: "↻", tone: "info" },
               },
             ],
@@ -2219,6 +2220,7 @@ const rib: Rib = {
                 // keeps a freshly-launched run appearing without a manual refresh.
                 cadenceMs: 120_000,
                 collapsible: true,
+                hideWhenEmpty: true,
                 glyph: { char: "≡", tone: "neutral" },
               },
               {
@@ -2229,6 +2231,7 @@ const rib: Rib = {
                 // discard. squad_propose_cast refreshes it after a scan.
                 collapsible: true,
                 collapsed: false,
+                hideWhenEmpty: true,
                 glyph: { char: "✦", tone: "brand" },
               },
             ],
@@ -2244,6 +2247,7 @@ const rib: Rib = {
                 // Client SWR refreshes it on open/focus (the region has no cadence);
                 // re-open the panel after recording a decision to see it.
                 collapsible: true,
+                hideWhenEmpty: true,
                 glyph: { char: "§", tone: "accent" },
               },
             ],

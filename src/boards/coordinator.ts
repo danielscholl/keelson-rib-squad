@@ -150,8 +150,9 @@ export function buildCoordinatorBoard(
   ledger: CoordinatorLedger | undefined,
   tones?: IdentityTones,
   scopeId?: string,
+  hasMembers = false,
 ): CanvasBoardView {
-  if (!ledger) return idleBoard();
+  if (!ledger) return idleBoard(hasMembers);
   // Head every non-active board with the task composer so assigning work is one
   // field away; an ACTIVE run omits it (you're watching, not queuing another).
   const base = sectionsFor(ledger, undefined, tones, scopeId);
@@ -1062,23 +1063,12 @@ function detailWhenTruncated(
   return t.length > cap ? { detail: truncate(t, DETAIL_CAP) } : {};
 }
 
-function idleBoard(): CanvasBoardView {
+function idleBoard(hasMembers: boolean): CanvasBoardView {
   return {
     view: "board",
     title: "Run loop",
     header: { status: { label: "idle", tone: "neutral" as CanvasTone }, chip: "coordinator" },
-    sections: [
-      taskComposerSection(),
-      {
-        kind: "rows",
-        items: [
-          {
-            glyph: "neutral" as CanvasTone,
-            text: "No coordinator run yet — give the squad a task above. The loop's plan, findings, abandoned steps, and progress stream here.",
-          },
-        ],
-      },
-    ],
+    sections: hasMembers ? [taskComposerSection()] : [],
   };
 }
 
