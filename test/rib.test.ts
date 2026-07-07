@@ -17,6 +17,7 @@ type RawNode = {
   id?: string;
   bash?: string;
   prompt?: string;
+  depends_on?: string[];
   output_schema?: unknown;
   memory?: {
     recall?: { query?: string; limits?: { maxItems?: number } };
@@ -255,14 +256,22 @@ describe("rib-squad", () => {
   it("contributes squad-decisions: a bound recall->board render workflow", () => {
     const contribution = wf("squad-decisions");
     expect(contribution?.bindSnapshotKey).toBe(DECISIONS_KEY);
-    const node = nodes("squad-decisions")[0];
+    // A deterministic member-count node feeds the render prompt so its cold-start
+    // gating can't drift from buildDecisionsBoard's members-aware shape.
+    const count = nodes("squad-decisions")[0];
+    expect(count?.id).toBe("members");
+    expect(count?.bash).toContain("count-members.ts");
+    const node = nodes("squad-decisions")[1];
+    expect(node?.depends_on).toEqual(["members"]);
     expect(node?.memory?.recall?.query).toBeTruthy();
     expect(node?.memory?.recall?.limits?.maxItems).toBe(50);
     expect(typeof node?.prompt).toBe("string");
     // The prompt embeds the buildDecisionsBoard contract so the model emits a board
-    // matching the tested builder, and includes the record action.
+    // matching the tested builder, and includes the record action + count input.
     expect(node?.prompt).toContain('"view":"board"');
     expect(node?.prompt).toContain("record-decision");
+    expect(node?.prompt).toContain("$members.output");
+    expect(node?.prompt).toContain('"sections": []');
     expect(node?.output_schema).toBeDefined();
   });
 
