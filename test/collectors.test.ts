@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCastBoard } from "../src/boards/cast.ts";
 import { buildCoordinatorBoard } from "../src/boards/coordinator.ts";
-import { buildRosterBoard, type RosterPulse } from "../src/boards/roster.ts";
+import { buildRosterBoard } from "../src/boards/roster.ts";
 import { type CastProposalRecord, readProposal, writeProposal } from "../src/cast.ts";
 import { type CoordinatorLedger, loadLedger, saveLedger } from "../src/coordinator.ts";
 import { type MemberRecord, readMembers, scaffoldMember } from "../src/member-store.ts";
@@ -70,13 +70,7 @@ describe("collector back-compat (no selected-project.json)", () => {
   test("roster collector reads the legacy tree and emits today's board", async () => {
     await scaffoldMember(join(home, "members"), memberRecord());
     const members = await readMembers(join(home, "members"));
-    const pulse: RosterPulse = {
-      members: members.length,
-      active: members.filter((m) => m.status === "active").length,
-      inactive: members.filter((m) => m.status === "inactive").length,
-      codeCapable: members.filter((m) => (m.tools ?? []).includes("code")).length,
-    };
-    const expected = buildRosterBoard(members, pulse);
+    const expected = buildRosterBoard(members);
 
     expect(await readSelectedProject(home)).toBeUndefined();
     expect(await runCollector(ROSTER, home)).toEqual(JSON.parse(JSON.stringify(expected)));
@@ -110,13 +104,7 @@ describe("collector follows the persisted selection", () => {
     await writeSelectedProject(home, { scopeId: "alpha", at: "2026-06-06T00:00:00.000Z" });
 
     const scoped = await readMembers(scopeMembersDir(home, "alpha"));
-    const pulse: RosterPulse = {
-      members: scoped.length,
-      active: scoped.filter((m) => m.status === "active").length,
-      inactive: scoped.filter((m) => m.status === "inactive").length,
-      codeCapable: scoped.filter((m) => (m.tools ?? []).includes("code")).length,
-    };
-    const expected = buildRosterBoard(scoped, pulse);
+    const expected = buildRosterBoard(scoped);
     expect(await runCollector(ROSTER, home)).toEqual(JSON.parse(JSON.stringify(expected)));
   });
 });

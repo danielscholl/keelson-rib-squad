@@ -2,13 +2,14 @@
 /**
  * Roster collector — the producer behind the `squad-roster` workflow. Reads the
  * authored members under the data home and prints a canvas board-view JSON object
- * (one card per member, led by the squad pulse stats), and nothing else, to
- * stdout. Degrades to a valid roster: a missing members/ dir (nothing authored
- * yet) or any read error yields an empty board with no pulse, never a throw.
+ * (one card per member), and nothing else, to stdout. Degrades to a valid roster:
+ * a missing members/ dir (nothing authored yet) or any read error yields an empty
+ * board, never a throw.
  */
-import { buildRosterBoard, type RosterPulse } from "../src/boards/roster.ts";
+import { buildRosterBoard } from "../src/boards/roster.ts";
 import { readMembers } from "../src/member-store.ts";
-import { scopeMembersDir, squadDataHome } from "../src/paths.ts";
+import { scopeDataHome, scopeMembersDir, squadDataHome } from "../src/paths.ts";
+import { readPendingGenesis } from "../src/pending-genesis.ts";
 import { readSelectedProject, selectedScopeId } from "../src/scope.ts";
 
 async function main() {
@@ -24,18 +25,10 @@ async function main() {
   } catch {
     members = [];
   }
-  // A simple pulse computed inline from the members list — omitted on an empty
-  // roster so the cold-start board stays calm.
-  const pulse: RosterPulse | undefined =
-    members.length > 0
-      ? {
-          members: members.length,
-          active: members.filter((m) => m.status === "active").length,
-          inactive: members.filter((m) => m.status === "inactive").length,
-          codeCapable: members.filter((m) => (m.tools ?? []).includes("code")).length,
-        }
-      : undefined;
-  process.stdout.write(JSON.stringify(buildRosterBoard(members, pulse)));
+  // A genesis in flight (a scope-local marker) seats a boot card until the member lands
+  // or the operator dismisses a stall; absent/unreadable degrades to no boot card.
+  const pending = await readPendingGenesis(scopeDataHome(home, scopeId)).catch(() => null);
+  process.stdout.write(JSON.stringify(buildRosterBoard(members, pending)));
 }
 
 await main();

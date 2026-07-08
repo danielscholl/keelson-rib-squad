@@ -1,7 +1,8 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import { themeLabel } from "../casting/themes.ts";
+import type { PendingGenesis } from "../pending-genesis.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
-import { IDENTITY_SLOT_TONES, identityToneForSlot, type Member } from "../types.ts";
+import { IDENTITY_SLOT_COUNT, identityToneForSlot, type Member } from "../types.ts";
 import { CAST_PROPOSE_ACTION } from "./cast.ts";
 import { charterDisplay, stripMd } from "./coordinator.ts";
 
@@ -26,42 +27,38 @@ function memberCanCode(member: Member): boolean {
   return (member.tools ?? []).includes(CODE_CAPABILITY);
 }
 
-// The Squad pulse: team size, the active/inactive split, and how many members can
-// code. Computed from the members list (the collector builds it inline). Rendered as
-// one quiet summary line, not stat tiles — the head chip already carries the count,
-// and four tiles for a handful of members drowned the roster below them.
-export interface RosterPulse {
-  members: number;
-  active: number;
-  inactive: number;
-  codeCapable: number;
-}
-
 // Pure: a roster of members -> a canvas `board`. Cold start (empty scope) shows the
 // launchpad — Cast a whole team from the repo, or author the first member (archetype
 // quick-starts + describe). A populated roster shows the member cards, a single "Add
-// a member" (describe-your-own), and a Manage (retire-all) verb: adding a member is
-// always reachable, but Cast and the archetype quick-picks are cold-start scaffolding
-// — re-casting a live squad is confusing, and once a scope has members you almost
-// always want a specific member (switch the project chip to an empty scope to cast
-// again). `pulse`, when present, leads with a calm stats section. Project selection
-// lives in the host's surface chip (projectScoped), not a board section. Validated
-// against canvasViewSchema in tests.
-export function buildRosterBoard(members: readonly Member[], pulse?: RosterPulse): CanvasBoardView {
+// a member" (describe-your-own), and the retire-all verb: adding a member is always
+// reachable, but Cast and the archetype quick-picks are cold-start scaffolding — re-
+// casting a live squad is confusing, and once a scope has members you almost always
+// want a specific member (switch the project chip to an empty scope to cast again).
+// Identity rides the host head as a roster peek (with the collapse hint) once seated;
+// project selection lives in the host's surface chip (projectScoped), not a board
+// section. Validated against canvasViewSchema in tests.
+export function buildRosterBoard(
+  members: readonly Member[],
+  pending?: PendingGenesis | null,
+  now: number = Date.now(),
+): CanvasBoardView {
   const sections: Section[] = [];
 
-  if (pulse) sections.push(pulseSection(pulse));
-  sections.push(seatsSection(members));
-
-  if (members.length === 0) {
+  if (members.length === 0 && !pending) {
     sections.push(introSection());
     sections.push(castSection());
     sections.push(authorSection());
     sections.push(journeySection());
   } else {
-    sections.push({ kind: "cards", items: members.map(cardFor) });
-    sections.push(addMemberSection());
-    sections.push(manageSection(members.length));
+    // A genesis in flight takes the next free seat as a boot card; the seated cards
+    // compose around it. While a genesis is pending the steady-state Add-a-member +
+    // retire-all verbs are withheld — the boot card carries the moment.
+    const bootItems = pending ? [bootCard(pending, nextFreeSlot(members), now)] : [];
+    sections.push({ kind: "cards", items: [...members.map(cardFor), ...bootItems] });
+    if (!pending) {
+      sections.push(addMemberSection());
+      sections.push(manageSection(members.length));
+    }
   }
 
   return {
@@ -72,31 +69,21 @@ export function buildRosterBoard(members: readonly Member[], pulse?: RosterPulse
         label: `${members.length} ${members.length === 1 ? "member" : "members"}`,
         tone: "brand" as CanvasTone,
       },
-      chip: "roster",
+      // Once members are seated, feed the host head its roster peek (an identity dot
+      // per member, names on hover) and the collapse hint so the panel folds to its
+      // head strip — the host collapses once, a manual toggle wins after. Cold start
+      // emits neither, so the cast launchpad stays open.
+      ...(members.length > 0
+        ? {
+            people: members.map((m) => ({
+              name: m.name.trim() || "(unnamed)",
+              tone: identityToneForSlot(m.identitySlot),
+            })),
+            defaultCollapsed: true,
+          }
+        : {}),
     },
     sections,
-  };
-}
-
-function pulseSection(pulse: RosterPulse): Section {
-  const parts = [
-    `${pulse.active} active`,
-    ...(pulse.inactive > 0 ? [`${pulse.inactive} inactive`] : []),
-    `${pulse.codeCapable} code-capable`,
-  ];
-  return {
-    kind: "rows",
-    items: [{ glyph: "brand" as CanvasTone, text: parts.join(" · "), trailing: "pulse" }],
-  };
-}
-
-function seatsSection(members: readonly Member[]): Section {
-  return {
-    kind: "seats",
-    items: IDENTITY_SLOT_TONES.map((tone, slot) => {
-      const member = members.find((m) => m.identitySlot === slot);
-      return member ? { tone, filled: true, label: member.name.trim() || "(unnamed)" } : { tone };
-    }),
   };
 }
 
@@ -173,9 +160,6 @@ function cardFor(member: Member) {
         glyph: "✕",
         tone: "warn" as CanvasTone,
         destructive: true,
-        // Surface it as a visible (still confirm-guarded) button, not tucked in the
-        // card's ⋯ overflow — retiring one member should be an obvious verb.
-        inline: true,
         payload: { slug: member.slug },
         confirm: {
           title: "Retire member",
@@ -186,6 +170,68 @@ function cardFor(member: Member) {
       },
     ],
   };
+}
+
+// The genesis stall window (seconds): past it, a pending genesis is presumed wedged
+// (the workflow failed without clearing the marker), so the boot card offers a Dismiss.
+const GENESIS_STALL_S = 180;
+
+// The seat being taken while a genesis runs — the squad casting boot screen in keelson's
+// ink: stacked mono lines (the card's `stacked` presentation), each a dim `>` prompt with
+// the readout on the green `ok` tone. Squad assigns the member's name from the cast theme
+// during the turn, so the name (and the theme) stay "calibrating…" here and land with the
+// real card; only the role is honest, and only when a starter archetype was authored. Past
+// the stall window it flips to a warn card with a Dismiss.
+function bootCard(pending: PendingGenesis, slot: number, now: number) {
+  const started = Date.parse(pending.startedAt);
+  // An unparseable startedAt (a hand-edited marker) has no honest elapsed — present it as
+  // stalled so it always carries a Dismiss, never a stuck "NaNs" card.
+  const elapsedS = Number.isFinite(started)
+    ? Math.max(0, Math.floor((now - started) / 1000))
+    : GENESIS_STALL_S;
+  if (elapsedS >= GENESIS_STALL_S) {
+    return {
+      title: "Casting",
+      dot: "warn" as CanvasTone,
+      pill: { label: "stalled", tone: "warn" as CanvasTone },
+      fields: [
+        {
+          value: `casting has not landed in ${Math.floor(elapsedS / 60)}m — the workflow may have failed.`,
+        },
+      ],
+      actions: [
+        { type: "dismiss-genesis", label: "Dismiss", glyph: "✕", tone: "warn" as CanvasTone },
+      ],
+    };
+  }
+  const line = (text: string) => ({ label: ">", value: text, tone: "ok" as CanvasTone });
+  return {
+    title: "Casting…",
+    dot: identityToneForSlot(slot),
+    pill: { label: "authoring", tone: "brand" as CanvasTone },
+    stacked: true,
+    fields: [
+      line("selecting cast…"),
+      line(`seat: ${pending.role ?? "calibrating…"}`),
+      line("name: calibrating…"),
+      line(`charter: calibrating… · ${elapsedS}s`),
+    ],
+  };
+}
+
+// The first identity slot (0..4) no seated member wears, in ramp order — the seat the
+// boot card takes. Past the five hues it folds to the neutral tone (slot ==
+// IDENTITY_SLOT_COUNT), mirroring how an unreserved member's card dot folds.
+function nextFreeSlot(members: readonly Member[]): number {
+  const taken = new Set<number>();
+  for (const m of members) {
+    const slot = m.identitySlot;
+    if (typeof slot === "number" && slot >= 0 && slot < IDENTITY_SLOT_COUNT) taken.add(slot);
+  }
+  for (let slot = 0; slot < IDENTITY_SLOT_COUNT; slot++) {
+    if (!taken.has(slot)) return slot;
+  }
+  return IDENTITY_SLOT_COUNT;
 }
 
 // The framing line above the hero: copy belongs here, not on the action label —
@@ -295,7 +341,6 @@ function addMemberSection(): Section {
 function manageSection(count: number): Section {
   return {
     kind: "actions",
-    title: "Manage",
     items: [
       {
         type: RETIRE_ALL_ACTION,
