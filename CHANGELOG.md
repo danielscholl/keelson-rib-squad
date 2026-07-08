@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.18.0...v0.19.0) (2026-07-08)
+
+
+### Added
+
+* **cast:** seat a casting boot card and hand the moment to the proposal ([#181](https://github.com/danielscholl/keelson-rib-squad/issues/181)) ([0396eb3](https://github.com/danielscholl/keelson-rib-squad/commit/0396eb35753ef32489d0fd2f6495c826e0ca4a87))
+
 ## [0.18.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.17.0...v0.18.0) (2026-07-08)
 
 
