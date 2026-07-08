@@ -44,6 +44,23 @@ describe("pending-genesis store", () => {
     expect(await readPendingGenesis(home)).toBeNull();
   });
 
+  test("kind and error round-trip; a foreign kind and non-string error are dropped", async () => {
+    await writePendingGenesis(
+      { startedAt: "2026-07-08T00:00:00.000Z", kind: "cast", error: "scan failed" },
+      home,
+    );
+    expect(await readPendingGenesis(home)).toEqual({
+      startedAt: "2026-07-08T00:00:00.000Z",
+      kind: "cast",
+      error: "scan failed",
+    });
+    await writeFile(
+      pendingGenesisFile(home),
+      JSON.stringify({ startedAt: "2026-07-08T00:00:00.000Z", kind: "member", error: 7 }),
+    );
+    expect(await readPendingGenesis(home)).toEqual({ startedAt: "2026-07-08T00:00:00.000Z" });
+  });
+
   test("clear removes the marker and is safe to double-call", async () => {
     await writePendingGenesis({ startedAt: "2026-07-08T00:00:00.000Z" }, home);
     await clearPendingGenesis(home);

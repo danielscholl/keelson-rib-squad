@@ -17,9 +17,10 @@ import { type CoordinatorLedger, loadLedger, saveLedger } from "../src/coordinat
 import rib from "../src/index.ts";
 import { listMemberRecords, readMembers, scaffoldMember } from "../src/member-store.ts";
 import { membersDir, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
+import { readPendingGenesis } from "../src/pending-genesis.ts";
 import { appendRollbackRow, listRollbackRows } from "../src/rollback-store.ts";
 import { archiveRun, listRuns } from "../src/runs-store.ts";
-import { writeSelectedProject } from "../src/scope.ts";
+import { selectedScopeId, writeSelectedProject } from "../src/scope.ts";
 
 function terminalLedger(over: Partial<CoordinatorLedger> = {}): CoordinatorLedger {
   return {
@@ -203,11 +204,25 @@ describe("cast-propose action (launches the cast-scan workflow)", () => {
     if (res?.ok) expect((res.data as { workflow: string }).workflow).toBe("squad-cast-scan");
   });
 
+  test("seats a pending cast boot-card marker in the selection scope", async () => {
+    bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    expect(res?.ok).toBe(true);
+    const marker = await readPendingGenesis(scopeDataHome(home, "p1"));
+    expect(marker?.kind).toBe("cast");
+    expect(marker?.error).toBeUndefined();
+    // The boot card shows at once — the roster panel is refreshed on begin.
+    expect(refreshed).toContain("squad-roster");
+  });
+
   test("with no selection but projects available, points the operator at the picker", async () => {
     bootRib([project("p1", "alpha", "/repo/a"), project("p2", "beta", "/repo/b")]);
     const res = await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
     expect(res?.ok).toBe(false);
     if (!res?.ok) expect(res?.error).toContain("select a project in the picker");
+    // A failed preflight seats no boot card.
+    expect(await readPendingGenesis(scopeDataHome(home, selectedScopeId(undefined)))).toBeNull();
   });
 
   test("with no projects at all, tells the operator to add one first", async () => {
@@ -257,6 +272,28 @@ describe("squad_propose_cast tool (runs the confined scan)", () => {
     expect(proposal?.members[0]?.charter.startsWith("# McManus")).toBe(true);
     expect(proposal?.members[0]?.charter).not.toContain("# Atlas");
     expect(refreshed).toContain("squad-cast");
+  });
+
+  test("clears the pending cast marker and refreshes the roster when the proposal lands", async () => {
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    refreshed.length = 0;
+    const out = await runTool(proposeCastTool(tools), {});
+    expect(out.isError).toBe(false);
+    expect(await readPendingGenesis(scopeDataHome(home, "p1"))).toBeNull();
+    expect(refreshed).toContain("squad-roster");
+  });
+
+  test("stamps the pending marker failed (not cleared) when the scan returns garbage", async () => {
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")], "not a proposal");
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await rib.onAction?.({ type: "cast-propose", payload: {} }, {} as RibContext);
+    const out = await runTool(proposeCastTool(tools), {});
+    expect(out.isError).toBe(true);
+    const marker = await readPendingGenesis(scopeDataHome(home, "p1"));
+    expect(marker?.kind).toBe("cast");
+    expect(marker?.error).toContain("roster proposal");
   });
 
   test("carries the operator mission into the scan", async () => {
@@ -465,6 +502,8 @@ describe("approve-cast / discard-cast actions", () => {
     expect(res?.ok).toBe(true);
     expect(await readProposal(scopeDataHome(home, "p1"))).toBeUndefined();
     expect(refreshed).toContain("squad-cast");
+    // The roster refreshes too — its launchpad returns once the proposal is gone.
+    expect(refreshed).toContain("squad-roster");
   });
 
   test("cast↔run scope agree: a team cast for the SELECTED project lands under its scope", async () => {

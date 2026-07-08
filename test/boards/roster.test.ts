@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { canvasViewSchema } from "@keelson/shared";
 import { buildRosterBoard } from "../../src/boards/roster.ts";
+import type { CastProposalRecord } from "../../src/cast.ts";
 import type { PendingGenesis } from "../../src/pending-genesis.ts";
 import { GENESIS_STARTERS } from "../../src/starters.ts";
 import type { Member } from "../../src/types.ts";
@@ -12,6 +13,19 @@ const member = (over: Partial<Member> = {}): Member => ({
   charter: "You are the Lead.",
   status: "active",
   ...over,
+});
+
+const proposal = (count = 5): CastProposalRecord => ({
+  projectId: "p1",
+  projectName: "keelson",
+  rootPath: "/repo/keelson",
+  members: Array.from({ length: count }, (_, i) => ({
+    name: `M${i}`,
+    role: "Member",
+    charter: `# M${i}`,
+  })),
+  notes: [],
+  createdAt: "2026-07-08T00:00:00.000Z",
 });
 
 function actionItems(board: ReturnType<typeof buildRosterBoard>) {
@@ -382,5 +396,76 @@ describe("buildRosterBoard authoring boot card", () => {
   test("an unparseable startedAt presents as stalled (a Dismiss, never a NaN card)", () => {
     const card = boot(buildRosterBoard([], { startedAt: "not-a-date" }, startMs));
     expect(card?.actions?.[0]?.type).toBe("dismiss-genesis");
+  });
+
+  test("a pending cast seats the squad-cast boot card — scan liturgy, no launchpad", () => {
+    const board = buildRosterBoard([], pending({ kind: "cast" }), startMs + 42_000);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.sections.map((s) => s.kind)).toEqual(["cards"]);
+    const card = boot(board);
+    expect(card?.title).toBe("Casting a squad…");
+    expect(card?.pill).toEqual({ label: "casting", tone: "brand" });
+    expect(card?.stacked).toBe(true);
+    const values = card?.fields?.map((f) => f.value);
+    expect(values).toContain("scanning the repo…");
+    expect(values).toContain("team: calibrating…");
+    expect(values).toContain("cast: calibrating… · 42s");
+  });
+
+  test("a cast outlives the member stall window — still casting at 200s, stalled past 330s", () => {
+    const casting = boot(buildRosterBoard([], pending({ kind: "cast" }), startMs + 200_000));
+    expect(casting?.pill).toEqual({ label: "casting", tone: "brand" });
+    const stalled = boot(buildRosterBoard([], pending({ kind: "cast" }), startMs + 331_000));
+    expect(stalled?.pill).toEqual({ label: "stalled", tone: "warn" });
+    expect(stalled?.actions?.[0]?.type).toBe("dismiss-genesis");
+  });
+
+  test("a marker carrying an error flips to the failed card at once", () => {
+    const board = buildRosterBoard(
+      [],
+      pending({ kind: "cast", error: "repo-scan turn error: boom" }),
+      startMs + 5_000,
+    );
+    const card = boot(board);
+    expect(card?.pill).toEqual({ label: "failed", tone: "warn" });
+    expect(card?.fields?.[0]?.value).toContain("repo-scan turn error: boom");
+    expect(card?.actions?.[0]?.type).toBe("dismiss-genesis");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+  });
+});
+
+describe("buildRosterBoard proposal awaiting review", () => {
+  test("an empty roster with a pending proposal hands the moment off — no launchpad", () => {
+    const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), proposal());
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    // One quiet hand-off row; no Cast hero, no archetypes, no journey.
+    expect(board.sections.map((s) => s.kind)).toEqual(["rows"]);
+    expect(actionItems(board)).toEqual([]);
+    const row = board.sections[0]?.kind === "rows" ? board.sections[0].items[0] : undefined;
+    expect(row?.text).toContain("proposed squad of 5 members awaits review");
+  });
+
+  test("a populated roster with a pending proposal withholds add/manage for the hand-off row", () => {
+    const board = buildRosterBoard(
+      [member()],
+      null,
+      Date.parse("2026-07-08T00:00:00.000Z"),
+      proposal(1),
+    );
+    expect(board.sections.map((s) => s.kind)).toEqual(["cards", "rows"]);
+    expect(actionItems(board)).toEqual([]);
+    const rows = board.sections[1];
+    const row = rows?.kind === "rows" ? rows.items[0] : undefined;
+    expect(row?.text).toContain("proposed squad of 1 member awaits");
+  });
+
+  test("a genesis in flight outranks the proposal — the boot card carries the moment", () => {
+    const board = buildRosterBoard(
+      [],
+      { startedAt: "2026-07-08T00:00:00.000Z", kind: "cast" },
+      Date.parse("2026-07-08T00:00:10.000Z"),
+      proposal(),
+    );
+    expect(board.sections.map((s) => s.kind)).toEqual(["cards"]);
   });
 });

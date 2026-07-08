@@ -8,9 +8,15 @@ import { join } from "node:path";
 // The member's NAME is never carried here — squad assigns it from the cast theme during
 // the genesis turn — so the boot card holds "calibrating…" until the real card lands.
 // One marker per scope; a second author in the same scope overwrites it.
+// `kind: "cast"` marks a whole-squad cast scan in flight (squad-cast-scan) — the boot
+// card renders cast liturgy and stalls on the longer scan window; absent means one
+// member's genesis. `error` is a known failure reported by the scan tool: the card
+// flips to its failed state at once instead of waiting out the stall.
 export interface PendingGenesis {
   startedAt: string;
   role?: string;
+  kind?: "cast";
+  error?: string;
 }
 
 // Lives in the scope's own data home (next to members/), so the out-of-process roster
@@ -34,6 +40,8 @@ export async function readPendingGenesis(scopeHome: string): Promise<PendingGene
     return {
       startedAt: p.startedAt,
       ...(typeof p.role === "string" && p.role ? { role: p.role } : {}),
+      ...(p.kind === "cast" ? { kind: "cast" as const } : {}),
+      ...(typeof p.error === "string" && p.error ? { error: p.error } : {}),
     };
   } catch {
     return null;
