@@ -10,6 +10,7 @@ import {
   detectChangeQualityViolations,
 } from "./change-quality.ts";
 import { runCodeTurn } from "./code.ts";
+import { confineBaselineDeletes } from "./confinement.ts";
 import { parseTrailingDirective } from "./control-json.ts";
 import {
   type DispatchOutcome,
@@ -1968,27 +1969,54 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           ? result.code.text.trim() || "(no output)"
           : (result.code.error ?? result.code.status);
       let touched: { files: number; insertions: number; deletions: number } | undefined;
+      let confinementNote: string | undefined;
       if (opts.getExec && project) {
         if (codeBeforeTree) {
           const after = await captureWorkingTreeTree(opts.getExec, project.rootPath).catch(
             () => undefined,
           );
           if (after?.ok) {
+            let codeAfterTree = after.tree;
+            if (ledger.baselineTree) {
+              const confinement = await confineBaselineDeletes(
+                opts.getExec,
+                project.rootPath,
+                ledger.baselineTree,
+                codeAfterTree,
+              );
+              if (confinement.restored.length > 0) {
+                confinementNote = `delete confinement restored baseline file(s) removed by the code turn:\n${confinement.restored.map((p) => `- ${p}`).join("\n")}`;
+                const restoredAfter = await captureWorkingTreeTree(
+                  opts.getExec,
+                  project.rootPath,
+                ).catch(() => undefined);
+                if (restoredAfter?.ok) codeAfterTree = restoredAfter.tree;
+              }
+              if (!confinement.ok) {
+                confinementNote = [
+                  confinementNote,
+                  `delete confinement could not complete: ${confinement.error}`,
+                ]
+                  .filter((note): note is string => Boolean(note))
+                  .join("\n");
+              }
+            }
             touched = await collectTouchedBetween(
               opts.getExec,
               project.rootPath,
               codeBeforeTree,
-              after.tree,
+              codeAfterTree,
             );
           }
         }
         touched ??= await collectTouchedSummary(opts.getExec, project.rootPath);
       }
+      const ledgerText = confinementNote ? `${text}\n\n${confinementNote}` : text;
       ledger = {
         ...ledger,
         facts: foldFacts(ledger.facts, [
           cap(
-            `[${decided.step.speaker ?? "member"} edited code] ${deriveCodeFinding(text, touched)}`,
+            `[${decided.step.speaker ?? "member"} edited code] ${deriveCodeFinding(ledgerText, touched)}`,
             FACT_CAP,
           ),
         ]),
@@ -1997,7 +2025,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           kind: "code",
           ...(decided.step.speaker ? { speaker: decided.step.speaker } : {}),
           instruction: decided.step.instruction,
-          text,
+          text: ledgerText,
           ...(result.code.providerId ? { provider: result.code.providerId } : {}),
           ...(touched ? { touched } : {}),
           ...(result.code.tools ? { tools: result.code.tools } : {}),

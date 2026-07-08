@@ -542,7 +542,10 @@ async function collectBaselineScopedGitDiff(
   const addedPaths = entries
     .filter((entry) => entry.status === "A")
     .map((entry) => entry.paths[0])
-    .filter((path): path is string => Boolean(path) && !binaryPaths.has(path));
+    .filter(
+      (path): path is string =>
+        typeof path === "string" && path.length > 0 && !binaryPaths.has(path),
+    );
   const [changed, added] = await Promise.all([
     readGitDiff(rootPath, ["--find-renames", "--diff-filter=a", baselineTree, current.tree], exec),
     readAddedFileDiff(rootPath, baselineTree, current.tree, addedPaths, exec),

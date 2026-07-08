@@ -1341,6 +1341,53 @@ describe("runCoordinator loop", () => {
       },
     };
   };
+  const fakeConfinementExec = (opts: {
+    baselinePaths: readonly string[];
+    deletedTreePaths: readonly string[];
+    restoredTreePaths?: readonly string[];
+  }): { exec: RibExec; restoreCalls: string[][] } => {
+    const trees = ["baseline-tree", "before-tree", "deleted-tree", "restored-tree", "current-tree"];
+    let writeTreeCalls = 0;
+    const restoreCalls: string[][] = [];
+    const nul = (paths: readonly string[]) => (paths.length > 0 ? `${paths.join("\0")}\0` : "");
+    return {
+      restoreCalls,
+      exec: {
+        runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+        runText: async (cmd, args) => {
+          if (cmd !== "git") return { ok: true as const, data: "", exitCode: 0 };
+          if (args[0] === "add") return { ok: true as const, data: "", exitCode: 0 };
+          if (args[0] === "write-tree") {
+            writeTreeCalls += 1;
+            return {
+              ok: true as const,
+              data: trees[Math.min(writeTreeCalls - 1, trees.length - 1)] ?? "current-tree",
+              exitCode: 0,
+            };
+          }
+          if (args[0] === "rev-parse") return { ok: true as const, data: "", exitCode: 0 };
+          if (args[0] === "ls-tree") {
+            const tree = String(args.at(-1));
+            const paths =
+              tree === "baseline-tree"
+                ? opts.baselinePaths
+                : tree === "deleted-tree"
+                  ? opts.deletedTreePaths
+                  : (opts.restoredTreePaths ?? opts.deletedTreePaths);
+            return { ok: true as const, data: nul(paths), exitCode: 0 };
+          }
+          if (args[0] === "restore") {
+            restoreCalls.push(args.map(String));
+            return { ok: true as const, data: "", exitCode: 0 };
+          }
+          if (args[0] === "status" || args[0] === "diff") {
+            return { ok: true as const, data: "", exitCode: 0 };
+          }
+          return { ok: true as const, data: "", exitCode: 0 };
+        },
+      },
+    };
+  };
   const codeThenDone = () =>
     queuedRun([
       'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
@@ -1422,6 +1469,50 @@ describe("runCoordinator loop", () => {
     const codeEntry = res.ledger.transcript.find((e) => e.kind === "code");
     expect(res.status).toBe("done");
     expect(codeEntry?.touched).toEqual({ files: 1, insertions: 7, deletions: 2 });
+  });
+
+  test("code arm restores baseline files deleted by a code turn", async () => {
+    const { exec, restoreCalls } = fakeConfinementExec({
+      baselinePaths: ["operator.txt"],
+      deletedTreePaths: [],
+      restoredTreePaths: ["operator.txt"],
+    });
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "removed stray file" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: exec,
+    });
+
+    expect(res.status).toBe("done");
+    expect(restoreCalls).toEqual([["restore", "--source", "baseline-tree", "--", "operator.txt"]]);
+    const entry = res.ledger.transcript.find((e) => e.kind === "code");
+    expect(entry?.text).toContain("delete confinement restored baseline file(s)");
+    expect(entry?.text).toContain("operator.txt");
+  });
+
+  test("code arm allows deleting a file created during the run", async () => {
+    const { exec, restoreCalls } = fakeConfinementExec({
+      baselinePaths: ["operator.txt"],
+      deletedTreePaths: ["operator.txt"],
+    });
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "created then removed temp.txt" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: exec,
+    });
+
+    expect(res.status).toBe("done");
+    expect(restoreCalls).toEqual([]);
+    const entry = res.ledger.transcript.find((e) => e.kind === "code");
+    expect(entry?.text).not.toContain("delete confinement");
   });
 
   test("default code arm defers the full matrix only when verify is configured", async () => {
