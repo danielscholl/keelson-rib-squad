@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.16.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.15.0...v0.16.0) (2026-07-08)
+
+
+### Added
+
+* **dispatch:** inline the bounded review diff for text-only members ([#176](https://github.com/danielscholl/keelson-rib-squad/issues/176)) ([2ffce62](https://github.com/danielscholl/keelson-rib-squad/commit/2ffce620a6f90518bbad54b2329839f9ae2bb290))
+
+
+### Fixed
+
+* **coordinator:** cap verify entries at VERDICT_CAP not ENTRY_CAP ([#169](https://github.com/danielscholl/keelson-rib-squad/issues/169)) ([5630821](https://github.com/danielscholl/keelson-rib-squad/commit/5630821bd8efe3af42cfb821884cb39763293114))
+* **coordinator:** confine code-turn deletes and scope review diff to run baseline ([#170](https://github.com/danielscholl/keelson-rib-squad/issues/170)) ([7312bba](https://github.com/danielscholl/keelson-rib-squad/commit/7312bba13b726aeff6e207b95f23bd20cef9a8ab))
+* **coordinator:** make round-0 dispatch grounding plan-aware ([#172](https://github.com/danielscholl/keelson-rib-squad/issues/172)) ([691c738](https://github.com/danielscholl/keelson-rib-squad/commit/691c738c5b13fce28102e7b836f674040f948a99))
+* **coordinator:** steer edit-intent dispatches toward the code arm ([#173](https://github.com/danielscholl/keelson-rib-squad/issues/173)) ([5bce21a](https://github.com/danielscholl/keelson-rib-squad/commit/5bce21a6ca43c1a24e592e982eeafa5d20135280))
+
 ## [0.15.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.14.0...v0.15.0) (2026-07-07)
 
 
