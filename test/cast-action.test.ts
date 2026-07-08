@@ -17,7 +17,7 @@ import { type CoordinatorLedger, loadLedger, saveLedger } from "../src/coordinat
 import rib from "../src/index.ts";
 import { listMemberRecords, readMembers, scaffoldMember } from "../src/member-store.ts";
 import { membersDir, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
-import { readPendingGenesis } from "../src/pending-genesis.ts";
+import { readPendingGenesis, writePendingGenesis } from "../src/pending-genesis.ts";
 import { appendRollbackRow, listRollbackRows } from "../src/rollback-store.ts";
 import { archiveRun, listRuns } from "../src/runs-store.ts";
 import { selectedScopeId, writeSelectedProject } from "../src/scope.ts";
@@ -294,6 +294,20 @@ describe("squad_propose_cast tool (runs the confined scan)", () => {
     const marker = await readPendingGenesis(scopeDataHome(home, "p1"));
     expect(marker?.kind).toBe("cast");
     expect(marker?.error).toContain("roster proposal");
+  });
+
+  test("a direct call never clobbers a member-genesis boot card, on failure or success", async () => {
+    // A member genesis is in flight (marker without kind) when squad_propose_cast is
+    // invoked directly — its boot card must survive both tool outcomes untouched.
+    const memberMarker = { startedAt: "2026-07-08T00:00:00.000Z", role: "Engineer" };
+    const failing = bootRib([project("p1", "keelson", "/repo/keelson")], "not a proposal");
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await writePendingGenesis(memberMarker, scopeDataHome(home, "p1"));
+    expect((await runTool(proposeCastTool(failing), {})).isError).toBe(true);
+    expect(await readPendingGenesis(scopeDataHome(home, "p1"))).toEqual(memberMarker);
+    const succeeding = bootRib([project("p1", "keelson", "/repo/keelson")]);
+    expect((await runTool(proposeCastTool(succeeding), {})).isError).toBe(false);
+    expect(await readPendingGenesis(scopeDataHome(home, "p1"))).toEqual(memberMarker);
   });
 
   test("carries the operator mission into the scan", async () => {

@@ -219,20 +219,34 @@ async function endGenesis(scopeHome: string): Promise<void> {
   await clearPendingGenesis(scopeHome).catch(() => {});
 }
 
-// Flip the boot card to its failed state: keep the marker but stamp the known error on
-// it, so the next roster frame renders the failed card (with its Dismiss) instead of
-// waiting out the stall window. The tick stops — a failed card is static. No marker
-// (already dismissed, or a direct tool call nobody is watching) is a no-op. Fail-soft.
-async function failGenesis(scopeHome: string, error: string): Promise<void> {
+// Flip the CAST boot card to its failed state: keep the marker but stamp the known
+// error on it, so the next roster frame renders the failed card (with its Dismiss)
+// instead of waiting out the stall window. The tick stops — a failed card is static.
+// Only cast markers are touched: a member-genesis marker in the same scope (a direct
+// squad_propose_cast call racing a genesis) is left alone, as is an absent marker
+// (already dismissed, or a tool call nobody is watching). Fail-soft.
+async function failCast(scopeHome: string, error: string): Promise<void> {
   try {
     const pending = await readPendingGenesis(scopeHome);
-    if (!pending) return;
+    if (pending?.kind !== "cast") return;
     stopGenesisTick();
     await writePendingGenesis({ ...pending, error }, scopeHome);
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
   } catch (e) {
     console.error(`[rib-squad] pending-genesis fail-mark failed: ${errText(e)}`);
   }
+}
+
+// Drop the cast boot card once the proposal has landed. The same cast-only guard as
+// failCast: a member-genesis marker (and its live tick) survives a direct cast call.
+async function endCast(scopeHome: string): Promise<void> {
+  try {
+    const pending = await readPendingGenesis(scopeHome);
+    if (pending && pending.kind !== "cast") return;
+  } catch {
+    // an unreadable marker reads as none — clearing it is the safe outcome
+  }
+  await endGenesis(scopeHome);
 }
 const activeCoordinateRuns = new Map<string, AbortController>();
 
@@ -2259,9 +2273,9 @@ async function proposeCastForSelection(
       projects.length > 0
         ? "select a project in the picker to cast a team for it"
         : "add a project first (keelson project add), then cast a team for it";
-    // No-op when nothing is pending (a direct tool call); flips a seated boot card
-    // to failed when the selection vanished between the action and this run.
-    await failGenesis(scopeDataHome(home, selectedScopeId(selection)), error);
+    // No-op when nothing is pending (a direct tool call); flips a seated cast boot
+    // card to failed when the selection vanished between the action and this run.
+    await failCast(scopeDataHome(home, selectedScopeId(selection)), error);
     return { ok: false, error };
   }
   // A provider-listing hiccup must not block casting — degrade to unpinned members.
@@ -2283,16 +2297,16 @@ async function proposeCastForSelection(
     ...(providers !== undefined ? { providers } : {}),
   });
   if (!result.ok) {
-    // A known scan failure flips the boot card to its failed state at once.
-    await failGenesis(scopedHome, result.error);
+    // A known scan failure flips the cast boot card to its failed state at once.
+    await failCast(scopedHome, result.error);
     return { ok: false, error: result.error };
   }
   const pending = await readProposal(scopedHome);
   if (pending) await retireProposalNames(scopedHome, pending);
   const proposal = await themedProposal(scopedHome, result.proposal);
   await writeProposal(scopedHome, proposal);
-  // The proposal has landed — drop the boot card as the Proposed panel appears.
-  await endGenesis(scopedHome);
+  // The proposal has landed — drop the cast boot card as the Proposed panel appears.
+  await endCast(scopedHome);
   await refreshWorkflow?.("squad-cast");
   await refreshWorkflow?.("squad-roster");
   return { ok: true, projectName: scanProject.name, count: proposal.members.length };
