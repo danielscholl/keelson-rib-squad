@@ -216,6 +216,7 @@ const LIVE_TRACE_THROTTLE_MS = 2000;
 const MAX_FACTS = 60; // ledger keeps the most recent facts
 const MAX_TRANSCRIPT = 40; // bounded so the prompt + file stay sane
 const ENTRY_CAP = 1500; // per-transcript-entry char cap
+const VERDICT_CAP = 8000; // per-review-verdict transcript char cap
 const MAX_FAILED = 20; // bounded list of recently-abandoned steps surfaced on a re-plan
 const STEP_DESC_CAP = 200; // per-swept-step char cap so the re-plan prompt stays compact
 const PLAN_CONTEXT_ROW_CAP = 12;
@@ -1082,7 +1083,10 @@ function appendEntry(
   transcript: readonly CoordinatorEntry[],
   entry: CoordinatorEntry,
 ): CoordinatorEntry[] {
-  return [...transcript, { ...entry, text: cap(entry.text, ENTRY_CAP) }].slice(-MAX_TRANSCRIPT);
+  const limit = entry.kind === "verify" ? VERDICT_CAP : ENTRY_CAP;
+  // Verify entries feed reviewer verdicts into the manager prompt; prose keeps the tighter cap.
+  const text = entry.text.length > limit ? `${entry.text.slice(0, limit - 1)}…` : entry.text;
+  return [...transcript, { ...entry, text }].slice(-MAX_TRANSCRIPT);
 }
 
 // The execute steps (dispatch/code/workflow) attempted since the last re-plan boundary —
