@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.19.0...v0.19.1) (2026-07-08)
+
+
+### Fixed
+
+* **panels:** refresh coordinator panel when the member set changes ([#183](https://github.com/danielscholl/keelson-rib-squad/issues/183)) ([24544b6](https://github.com/danielscholl/keelson-rib-squad/commit/24544b6742dc021ed86c25d0acbfac6078f47b97))
+
 ## [0.19.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.18.0...v0.19.0) (2026-07-08)
 
 
