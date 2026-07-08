@@ -540,8 +540,9 @@ ${factsBlock}
 Recent progress:
 ${renderTranscript(ledger.transcript)}
 
-Assess the state, then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
+Assess the state in one or two sentences of PROSE first (your reasoning is recorded), then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to continue: {"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"<member slug>","instruction":"<the single next instruction for that member>","plan":["step","step"],"facts":["any new finding"]}
+- when the Current plan above reads "(no plan yet)", the progress directive MUST include a non-empty "plan".
 - when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}${needsNote}
 - if the task requires per-item dispositions, carry them ON the done directive itself — {"action":"done","summary":"...","dispositions":[{"threadRef":"...","disposition":"fixed|declined","note":"..."}]} — never in the prose.
 Set "satisfied" true only when the goal is genuinely complete. Pick next_speaker from the members above. Keep the instruction to ONE concrete step.`;

@@ -637,6 +637,19 @@ describe("runCoordinator loop", () => {
     expect(seen[0]?.prompt).not.toMatch(/do NOT .*search .*for any other repository/i);
   });
 
+  test("asks the manager for prose reasoning and a round-zero plan", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.prompt).toContain("(no plan yet)");
+    expect(seen[0]?.prompt).toContain("one or two sentences of PROSE first");
+    expect(seen[0]?.prompt).toContain('progress directive MUST include a non-empty "plan"');
+  });
+
   test("dispatches the next step then ends, folding the synthesis into facts", async () => {
     const d = fakeDispatch("built it");
     const res = await runCoordinator({
@@ -2355,9 +2368,10 @@ describe("runCoordinator loop", () => {
     // The manager delegates and members can't see the manager's context, so the recalled
     // memory must ride the dispatch instruction or it never reaches the agent doing the work.
     const prompts: string[] = [];
-    const memory = capturingMemory([], [
-      recalledDecision("prefer the in-process fallback over a network call"),
-    ]);
+    const memory = capturingMemory(
+      [],
+      [recalledDecision("prefer the in-process fallback over a network call")],
+    );
     const coordinatorReplies = [
       'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"do the step"}',
       'done\n{"action":"done","summary":"shipped"}',
