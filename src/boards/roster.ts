@@ -1,4 +1,5 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
+import type { CastProposalRecord } from "../cast.ts";
 import { themeLabel } from "../casting/themes.ts";
 import type { PendingGenesis } from "../pending-genesis.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
@@ -37,18 +38,28 @@ function memberCanCode(member: Member): boolean {
 // Identity rides the host head as a roster peek (with the collapse hint) once seated;
 // project selection lives in the host's surface chip (projectScoped), not a board
 // section. Validated against canvasViewSchema in tests.
+//
+// The moment-carrier rule: exactly one thing owns the operator's next move. A genesis
+// in flight → the boot card. A proposal awaiting review → the Proposed-squad panel
+// (the roster offers no authoring verbs, so a second cast can't start mid-review).
+// Neither → the launchpad (cold start) or the steady-state add/manage verbs.
 export function buildRosterBoard(
   members: readonly Member[],
   pending?: PendingGenesis | null,
   now: number = Date.now(),
+  proposal?: CastProposalRecord | null,
 ): CanvasBoardView {
   const sections: Section[] = [];
 
   if (members.length === 0 && !pending) {
-    sections.push(introSection());
-    sections.push(castSection());
-    sections.push(authorSection());
-    sections.push(journeySection());
+    if (proposal) {
+      sections.push(awaitingSection(proposal.members.length));
+    } else {
+      sections.push(introSection());
+      sections.push(castSection());
+      sections.push(authorSection());
+      sections.push(journeySection());
+    }
   } else {
     // A genesis in flight takes the next free seat as a boot card; the seated cards
     // compose around it. While a genesis is pending the steady-state Add-a-member +
@@ -56,8 +67,12 @@ export function buildRosterBoard(
     const bootItems = pending ? [bootCard(pending, nextFreeSlot(members), now)] : [];
     sections.push({ kind: "cards", items: [...members.map(cardFor), ...bootItems] });
     if (!pending) {
-      sections.push(addMemberSection());
-      sections.push(manageSection(members.length));
+      if (proposal) {
+        sections.push(awaitingSection(proposal.members.length));
+      } else {
+        sections.push(addMemberSection());
+        sections.push(manageSection(members.length));
+      }
     }
   }
 
@@ -178,21 +193,39 @@ function cardFor(member: Member) {
 // The genesis stall window (seconds): past it, a pending genesis is presumed wedged
 // (the workflow failed without clearing the marker), so the boot card offers a Dismiss.
 const GENESIS_STALL_S = 180;
+// A cast scan legitimately runs to its 300s timeout (cast.ts DEFAULT_SCAN_TIMEOUT_MS),
+// so the squad-cast boot card stalls later — past the scan timeout plus grace.
+const CAST_STALL_S = 330;
 
 // The seat being taken while a genesis runs — the squad casting boot screen in keelson's
 // ink: stacked mono lines (the card's `stacked` presentation), each a dim `>` prompt with
 // the readout on the green `ok` tone. Squad assigns the member's name from the cast theme
 // during the turn, so the name (and the theme) stay "calibrating…" here and land with the
 // real card; only the role is honest, and only when a starter archetype was authored. Past
-// the stall window it flips to a warn card with a Dismiss.
+// the stall window it flips to a warn card with a Dismiss. A `kind: "cast"` marker seats
+// the whole-squad variant (scan liturgy, longer stall); a marker carrying `error` flips
+// to the failed card at once — a known failure never waits out the stall.
 function bootCard(pending: PendingGenesis, slot: number, now: number) {
+  const isCast = pending.kind === "cast";
+  if (pending.error) {
+    return {
+      title: "Casting",
+      dot: "warn" as CanvasTone,
+      pill: { label: "failed", tone: "warn" as CanvasTone },
+      fields: [{ value: truncate(pending.error, 200) }],
+      actions: [
+        { type: "dismiss-genesis", label: "Dismiss", glyph: "✕", tone: "warn" as CanvasTone },
+      ],
+    };
+  }
+  const stallS = isCast ? CAST_STALL_S : GENESIS_STALL_S;
   const started = Date.parse(pending.startedAt);
   // An unparseable startedAt (a hand-edited marker) has no honest elapsed — present it as
   // stalled so it always carries a Dismiss, never a stuck "NaNs" card.
   const elapsedS = Number.isFinite(started)
     ? Math.max(0, Math.floor((now - started) / 1000))
-    : GENESIS_STALL_S;
-  if (elapsedS >= GENESIS_STALL_S) {
+    : stallS;
+  if (elapsedS >= stallS) {
     return {
       title: "Casting",
       dot: "warn" as CanvasTone,
@@ -208,6 +241,19 @@ function bootCard(pending: PendingGenesis, slot: number, now: number) {
     };
   }
   const line = (text: string) => ({ label: ">", value: text, tone: "ok" as CanvasTone });
+  if (isCast) {
+    return {
+      title: "Casting a squad…",
+      dot: identityToneForSlot(slot),
+      pill: { label: "casting", tone: "brand" as CanvasTone },
+      stacked: true,
+      fields: [
+        line("scanning the repo…"),
+        line("team: calibrating…"),
+        line(`cast: calibrating… · ${elapsedS}s`),
+      ],
+    };
+  }
   return {
     title: "Casting…",
     dot: identityToneForSlot(slot),
@@ -235,6 +281,21 @@ function nextFreeSlot(members: readonly Member[]): number {
     if (!taken.has(slot)) return slot;
   }
   return IDENTITY_SLOT_COUNT;
+}
+
+// The hand-off row while a proposal awaits review: the Proposed-squad panel below
+// carries Approve/Discard, so the roster says where the moment lives and offers
+// nothing that could fork it.
+function awaitingSection(count: number): Section {
+  return {
+    kind: "rows",
+    items: [
+      {
+        glyph: "brand",
+        text: `A proposed squad of ${count} member${count === 1 ? "" : "s"} awaits review below — Approve & scaffold to seat it, or Discard to cast again.`,
+      },
+    ],
+  };
 }
 
 // The framing line above the hero: copy belongs here, not on the action label —

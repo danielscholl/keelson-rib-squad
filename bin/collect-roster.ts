@@ -7,6 +7,7 @@
  * board, never a throw.
  */
 import { buildRosterBoard } from "../src/boards/roster.ts";
+import { readProposal } from "../src/cast.ts";
 import { readMembers } from "../src/member-store.ts";
 import { scopeDataHome, scopeMembersDir, squadDataHome } from "../src/paths.ts";
 import { readPendingGenesis } from "../src/pending-genesis.ts";
@@ -26,9 +27,12 @@ async function main() {
     members = [];
   }
   // A genesis in flight (a scope-local marker) seats a boot card until the member lands
-  // or the operator dismisses a stall; absent/unreadable degrades to no boot card.
-  const pending = await readPendingGenesis(scopeDataHome(home, scopeId)).catch(() => null);
-  process.stdout.write(JSON.stringify(buildRosterBoard(members, pending)));
+  // or the operator dismisses a stall; absent/unreadable degrades to no boot card. A
+  // pending cast proposal hands the moment to the Proposed-squad panel (no launchpad).
+  const scopedHome = scopeDataHome(home, scopeId);
+  const pending = await readPendingGenesis(scopedHome).catch(() => null);
+  const proposal = await readProposal(scopedHome).catch(() => undefined);
+  process.stdout.write(JSON.stringify(buildRosterBoard(members, pending, Date.now(), proposal)));
 }
 
 await main();
