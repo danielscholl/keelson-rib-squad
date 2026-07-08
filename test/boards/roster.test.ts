@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { canvasViewSchema } from "@keelson/shared";
-import { buildRosterBoard, type RosterPulse } from "../../src/boards/roster.ts";
+import { buildRosterBoard } from "../../src/boards/roster.ts";
+import type { PendingGenesis } from "../../src/pending-genesis.ts";
 import { GENESIS_STARTERS } from "../../src/starters.ts";
 import type { Member } from "../../src/types.ts";
 
@@ -21,11 +22,6 @@ function cards(board: ReturnType<typeof buildRosterBoard>) {
   if (section?.kind !== "cards") throw new Error("no cards section");
   return section.items;
 }
-function seats(board: ReturnType<typeof buildRosterBoard>) {
-  const section = board.sections.find((s) => s.kind === "seats");
-  if (section?.kind !== "seats") throw new Error("no seats section");
-  return section.items;
-}
 function journey(board: ReturnType<typeof buildRosterBoard>) {
   const section = board.sections.find((s) => s.kind === "journey");
   if (section?.kind !== "journey") throw new Error("no journey section");
@@ -37,8 +33,12 @@ describe("buildRosterBoard cold start", () => {
     const board = buildRosterBoard([]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.view).toBe("board");
-    expect(board.header?.chip).toBe("roster");
+    // The redundant ROSTER slug chip is gone; the head carries the count + title.
+    expect(board.header?.chip).toBeUndefined();
     expect(board.header?.status?.label).toBe("0 members");
+    // Cold start emits no roster peek or collapse hint — the cast launchpad stays open.
+    expect(board.header?.people).toBeUndefined();
+    expect(board.header?.defaultCollapsed).toBeUndefined();
   });
 
   test("the secondary authoring group mirrors GENESIS_STARTERS in order", () => {
@@ -76,25 +76,8 @@ describe("buildRosterBoard cold start", () => {
   test("no cards section at cold start; the documented sections render", () => {
     const board = buildRosterBoard([]);
     expect(board.sections.some((s) => s.kind === "cards")).toBe(false);
-    expect(board.sections.map((s) => s.kind)).toEqual([
-      "seats",
-      "rows",
-      "actions",
-      "actions",
-      "journey",
-    ]);
-  });
-
-  test("renders exactly five dashed seats in reserved identity order", () => {
-    const board = buildRosterBoard([]);
-    expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(seats(board)).toEqual([
-      { tone: "id-blue" },
-      { tone: "id-amber" },
-      { tone: "id-teal" },
-      { tone: "id-rose" },
-      { tone: "id-olive" },
-    ]);
+    // No seats row anymore — identity moved to the head (and it's absent at cold start).
+    expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "actions", "journey"]);
   });
 
   test("leads with framing copy then the hero cast action with a verb label", () => {
@@ -164,7 +147,7 @@ describe("buildRosterBoard populated", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 
-  test("seats fill by identity slot; unreserved members fold to neutral cards", () => {
+  test("populated head carries the roster peek + collapse hint; unreserved members fold to neutral", () => {
     const board = buildRosterBoard([
       member({ slug: "teal", name: "Teal", identitySlot: 2 }),
       member({ slug: "blue", name: "Blue", identitySlot: 0 }),
@@ -173,13 +156,17 @@ describe("buildRosterBoard populated", () => {
       member({ slug: "olive", name: "Olive", identitySlot: 4 }),
       member({ slug: "six", name: "Sixth" }),
     ]);
-    expect(seats(board)).toEqual([
-      { tone: "id-blue", filled: true, label: "Blue" },
-      { tone: "id-amber", filled: true, label: "Amber" },
-      { tone: "id-teal", filled: true, label: "Teal" },
-      { tone: "id-rose", filled: true, label: "Rose" },
-      { tone: "id-olive", filled: true, label: "Olive" },
+    // One identity dot per member (names revealed on hover), in list order; a sixth
+    // past the five hues folds to the neutral tone — mirroring its card dot.
+    expect(board.header?.people).toEqual([
+      { name: "Teal", tone: "id-teal" },
+      { name: "Blue", tone: "id-blue" },
+      { name: "Amber", tone: "id-amber" },
+      { name: "Rose", tone: "id-rose" },
+      { name: "Olive", tone: "id-olive" },
+      { name: "Sixth", tone: "neutral" },
     ]);
+    expect(board.header?.defaultCollapsed).toBe(true);
     expect(cards(board).map((c) => ({ title: c.title, dot: c.dot }))).toContainEqual({
       title: "Sixth",
       dot: "neutral",
@@ -236,8 +223,8 @@ describe("buildRosterBoard populated", () => {
     const retire = actions.find((a) => a.type === "retire");
     expect(retire).toMatchObject({ type: "retire", destructive: true, payload: { slug: "lead" } });
     expect(retire?.confirm?.confirmLabel).toBe("Retire");
-    // Surfaced inline (a visible confirm-guarded button), not tucked in the ⋯ overflow.
-    expect(retire?.inline).toBe(true);
+    // Destructive: tucked in the card's ⋯ overflow (no inline), still confirm-guarded.
+    expect(retire?.inline ?? false).toBe(false);
     expect(actions.findIndex((a) => a.type === "retire")).toBe(actions.length - 1);
   });
 
@@ -271,67 +258,21 @@ describe("buildRosterBoard populated", () => {
   });
 });
 
-describe("buildRosterBoard pulse", () => {
-  const two = [member({ slug: "a", name: "Ada" }), member({ slug: "b", name: "Bo" })];
-  const pulse = (over: Partial<RosterPulse> = {}): RosterPulse => ({
-    members: 2,
-    active: 2,
-    inactive: 0,
-    codeCapable: 0,
-    ...over,
-  });
-
-  function pulseRow(board: ReturnType<typeof buildRosterBoard>) {
-    const first = board.sections[0];
-    if (first?.kind !== "rows") throw new Error("sections[0] is not a rows section");
-    const item = first.items[0];
-    if (!item) throw new Error("pulse row missing");
-    return item;
-  }
-
-  test("omitting pulse keeps the historical no-pulse shape", () => {
-    const board = buildRosterBoard(two);
-    expect(board.sections.some((s) => s.kind === "rows")).toBe(false);
-    expect(board.sections[0]?.kind).toBe("seats");
-    expect(JSON.stringify(board)).not.toContain('"pulse"');
-  });
-
-  test("with pulse, sections[0] is one quiet summary line — never stat tiles", () => {
-    const board = buildRosterBoard(two, pulse({ active: 1, inactive: 1, codeCapable: 1 }));
-    expect(board.sections.some((s) => s.kind === "stats")).toBe(false);
-    const row = pulseRow(board);
-    expect(row.text).toBe("1 active · 1 inactive · 1 code-capable");
-    expect(row.trailing).toBe("pulse");
-    expect(canvasViewSchema.safeParse(board).success).toBe(true);
-  });
-
-  test("a zero inactive count is omitted from the summary line", () => {
-    const row = pulseRow(buildRosterBoard(two, pulse({ active: 2, inactive: 0, codeCapable: 1 })));
-    expect(row.text).toBe("2 active · 1 code-capable");
-  });
-
-  test("the pulse leads even the cold-start board and stays valid", () => {
-    const board = buildRosterBoard([], pulse({ members: 0, active: 0, inactive: 0 }));
-    expect(board.sections[0]?.kind).toBe("rows");
-    expect(board.sections[1]?.kind).toBe("seats");
-    expect(canvasViewSchema.safeParse(board).success).toBe(true);
-  });
-});
-
 describe("buildRosterBoard persistent verbs", () => {
-  test("a populated roster shows a single Add-a-member + Manage — Cast and archetypes are cold-start only", () => {
+  test("a populated roster shows a single Add-a-member + retire-all — Cast and archetypes are cold-start only", () => {
     const board = buildRosterBoard([member()]);
     const titles = board.sections
       .filter((s) => s.kind === "actions")
       .map((s) => (s.kind === "actions" ? s.title : undefined));
     expect(titles).toContain("Add a member");
-    expect(titles).toContain("Manage");
     // Cast + the archetype quick-picks are cold-start scaffolding, not steady state.
     expect(titles).not.toContain("Cast a squad from this repo");
     expect(titles).not.toContain("or seat one member yourself");
     const items = actionItems(board);
     expect(items.some((i) => i.type === "cast-propose")).toBe(false);
     expect(items.filter((i) => i.type === "author-archetype")).toHaveLength(0);
+    // The retire-all verb is present (now a title-less, quiet actions section).
+    expect(items.some((i) => i.type === "retire-all")).toBe(true);
     // Adding a member is still reachable — one describe-your-own genesis launch.
     const add = items.find((i) => i.type === "describe-own");
     expect(add?.fields?.[0]?.name).toBe("brief");
@@ -348,12 +289,15 @@ describe("buildRosterBoard persistent verbs", () => {
     expect(items.some((i) => i.type === "describe-own")).toBe(true);
   });
 
-  test("a Manage section offers retire-all only when there are members, with a count in the confirm", () => {
-    const cold = buildRosterBoard([]);
-    expect(cold.sections.some((s) => s.kind === "actions" && s.title === "Manage")).toBe(false);
+  test("the retire-all verb appears only when there are members, quiet and with a count in the confirm", () => {
+    const hasRetireAll = (b: ReturnType<typeof buildRosterBoard>) =>
+      b.sections.find((s) => s.kind === "actions" && s.items.some((i) => i.type === "retire-all"));
+    expect(hasRetireAll(buildRosterBoard([]))).toBeUndefined();
     const board = buildRosterBoard([member({ slug: "a" }), member({ slug: "b", name: "Bo" })]);
-    const manage = board.sections.find((s) => s.kind === "actions" && s.title === "Manage");
+    const manage = hasRetireAll(board);
     expect(manage?.kind).toBe("actions");
+    // Quiet: no "Manage" section title anymore.
+    expect(manage?.kind === "actions" ? manage.title : "unset").toBeUndefined();
     const retireAll = manage?.kind === "actions" ? manage.items[0] : undefined;
     expect(retireAll?.type).toBe("retire-all");
     expect(retireAll?.destructive).toBe(true);
@@ -369,5 +313,74 @@ describe("buildRosterBoard persistent verbs", () => {
     expect(assign?.fields?.[0]?.multiline).toBe(true);
     const textOnly = cards(buildRosterBoard([member({ slug: "verbal" })]))[0];
     expect(textOnly?.actions?.some((a) => a.type === "assign-code")).toBe(false);
+  });
+});
+
+describe("buildRosterBoard authoring boot card", () => {
+  const START = "2026-07-08T00:00:00.000Z";
+  const startMs = Date.parse(START);
+  const pending = (over: Partial<PendingGenesis> = {}): PendingGenesis => ({
+    startedAt: START,
+    ...over,
+  });
+
+  // The boot card is the last card in the section — seated cards compose before it.
+  function boot(board: ReturnType<typeof buildRosterBoard>) {
+    const section = board.sections.find((s) => s.kind === "cards");
+    if (section?.kind !== "cards") throw new Error("no cards section");
+    return section.items[section.items.length - 1];
+  }
+
+  test("a pending genesis on an empty roster seats a boot card and no launchpad", () => {
+    const board = buildRosterBoard([], pending({ role: "Engineer" }), startMs + 6_000);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    // No cold-start launchpad while authoring the first member — just the boot card.
+    expect(board.sections.map((s) => s.kind)).toEqual(["cards"]);
+    const card = boot(board);
+    expect(card?.title).toBe("Casting…");
+    expect(card?.pill).toEqual({ label: "authoring", tone: "brand" });
+    expect(card?.stacked).toBe(true);
+    // The archetype role is honest; name + theme calibrate; the elapsed count advances.
+    const values = card?.fields?.map((f) => f.value);
+    expect(values).toContain("seat: Engineer");
+    expect(values).toContain("name: calibrating…");
+    expect(values).toContain("charter: calibrating… · 6s");
+  });
+
+  test("a freeform brief (no role) calibrates the seat too", () => {
+    const card = boot(buildRosterBoard([], pending(), startMs + 1_000));
+    expect(card?.fields?.map((f) => f.value)).toContain("seat: calibrating…");
+  });
+
+  test("the boot card takes the next free identity slot's tone", () => {
+    // Slot 0 is taken → the boot card wears slot 1 (amber).
+    const card = boot(
+      buildRosterBoard([member({ slug: "a", identitySlot: 0 })], pending(), startMs + 1_000),
+    );
+    expect(card?.dot).toBe("id-amber");
+  });
+
+  test("while pending, the steady-state Add-a-member + retire-all verbs are withheld", () => {
+    const board = buildRosterBoard([member({ slug: "a" })], pending(), startMs + 1_000);
+    const items = board.sections.flatMap((s) => (s.kind === "actions" ? s.items : []));
+    expect(items.some((i) => i.type === "describe-own")).toBe(false);
+    expect(items.some((i) => i.type === "retire-all")).toBe(false);
+    // The seated member and the boot card both render.
+    const section = board.sections.find((s) => s.kind === "cards");
+    expect(section?.kind === "cards" ? section.items.length : 0).toBe(2);
+  });
+
+  test("past the stall window the boot card flips to a warn card with a Dismiss", () => {
+    const board = buildRosterBoard([], pending({ role: "Engineer" }), startMs + 200_000);
+    const card = boot(board);
+    expect(card?.dot).toBe("warn");
+    expect(card?.pill).toEqual({ label: "stalled", tone: "warn" });
+    expect(card?.actions?.[0]?.type).toBe("dismiss-genesis");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+  });
+
+  test("an unparseable startedAt presents as stalled (a Dismiss, never a NaN card)", () => {
+    const card = boot(buildRosterBoard([], { startedAt: "not-a-date" }, startMs));
+    expect(card?.actions?.[0]?.type).toBe("dismiss-genesis");
   });
 });

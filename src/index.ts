@@ -79,6 +79,11 @@ import {
   setSquadDataHome,
   squadDataHome,
 } from "./paths.ts";
+import {
+  clearPendingGenesis,
+  type PendingGenesis,
+  writePendingGenesis,
+} from "./pending-genesis.ts";
 import { squadPolicies } from "./policies.ts";
 import { validateProviderPin } from "./provider-pins.ts";
 import { buildRunReportHtml, reportSummaryLine } from "./report.ts";
@@ -142,6 +147,63 @@ let runDetailBoard: CanvasBoardView | undefined;
 // run-detail — registered in registerTools, cleared and unregistered in dispose.
 let unregisterReport: (() => void) | undefined;
 let reportHtml: string | undefined;
+
+// The genesis boot-card ticker. While a genesis runs (a scope-local pending marker on
+// disk), the rib re-publishes the roster every GENESIS_TICK_MS so the boot card's elapsed
+// count advances and the live head dot pulses. Bounded to the stall window; timers unref so
+// they never hold the process open, and stopGenesisTick clears them on emit / dismiss /
+// dispose.
+const GENESIS_TICK_MS = 2_500;
+const GENESIS_STALL_MS = 180_000;
+let genesisTicker: ReturnType<typeof setInterval> | undefined;
+let genesisTickerDeadline: ReturnType<typeof setTimeout> | undefined;
+
+function tickRoster(): void {
+  void refreshWorkflow?.("squad-roster")?.catch(() => {});
+}
+
+function startGenesisTick(): void {
+  stopGenesisTick();
+  tickRoster(); // show the boot card at once
+  genesisTicker = setInterval(tickRoster, GENESIS_TICK_MS);
+  genesisTicker.unref?.();
+  genesisTickerDeadline = setTimeout(() => {
+    tickRoster(); // one last frame flips the card to its stalled state
+    if (genesisTicker) clearInterval(genesisTicker);
+    genesisTicker = undefined;
+  }, GENESIS_STALL_MS);
+  genesisTickerDeadline.unref?.();
+}
+
+function stopGenesisTick(): void {
+  if (genesisTicker) clearInterval(genesisTicker);
+  if (genesisTickerDeadline) clearTimeout(genesisTickerDeadline);
+  genesisTicker = undefined;
+  genesisTickerDeadline = undefined;
+}
+
+// Begin a genesis: persist the scope's pending marker (role known for a starter, absent
+// for a freeform brief) and start the boot-card tick. Fail-soft — a marker write failure
+// just skips the boot card, never blocks the genesis workflow the caller is about to run.
+async function beginGenesis(scopeHome: string, info: { role?: string }): Promise<void> {
+  try {
+    const marker: PendingGenesis = {
+      startedAt: new Date().toISOString(),
+      ...(info.role ? { role: info.role } : {}),
+    };
+    await writePendingGenesis(marker, scopeHome);
+    startGenesisTick();
+  } catch (e) {
+    console.error(`[rib-squad] pending-genesis write failed: ${errText(e)}`);
+  }
+}
+
+// End the boot card: stop the tick and clear the scope's marker so the next roster frame
+// shows the real seat (a completed genesis) or drops the card (a dismissed one). Fail-soft.
+async function endGenesis(scopeHome: string): Promise<void> {
+  stopGenesisTick();
+  await clearPendingGenesis(scopeHome).catch(() => {});
+}
 const activeCoordinateRuns = new Map<string, AbortController>();
 
 // Absolute path to the roster collector, resolved at module load so the workflow
@@ -504,6 +566,9 @@ function makeEmitMemberTool(
           existing.length,
         );
         await scaffoldMember(scopeMembersDir(home, scopeId), record);
+        // A genesis landing clears its scope's boot card (marker + tick), so the refresh
+        // below shows the real seat instead of the calibrating placeholder.
+        await endGenesis(scopeDataHome(home, scopeId));
         // Re-run the bound squad-roster collector so the new member appears
         // promptly instead of waiting on cadence. Fail-soft (the seam resolves on
         // error and is absent on an older harness) — never throw.
@@ -2184,6 +2249,9 @@ const rib: Rib = {
       id: SQUAD_SURFACE_ID,
       title: "Squad",
       subtitle: "Author members · cast a squad · assign work",
+      // Squad is an authoring console, not snapshot panels to lift into chat — drop
+      // the host's per-region ✦/◻/⤢ chrome on every Squad panel.
+      hideRegionActions: true,
       // Opt into the host's project picker: the surface header renders the shared
       // ProjectChip and, on select, dispatches this rib's select-project action.
       projectScoped: true,
@@ -2610,6 +2678,8 @@ const rib: Rib = {
         return authorArchetypeAction(action);
       case "describe-own":
         return describeOwnAction(action);
+      case "dismiss-genesis":
+        return dismissGenesisAction();
       case CAST_PROPOSE_ACTION:
         return castProposeAction(action);
       case APPROVE_CAST_ACTION:
@@ -2669,6 +2739,7 @@ const rib: Rib = {
 
   dispose: () => {
     setSquadDataHome(undefined);
+    stopGenesisTick();
     refreshWorkflow = undefined;
     runAgentTurn = undefined;
     getProjects = undefined;
@@ -2746,16 +2817,25 @@ async function selectProjectAction(action: RibAction): Promise<RibActionResult> 
   }
 }
 
-// Author one of the starter archetypes: launch squad-genesis with the starter's
-// brief, the same path describe-own takes.
-function authorArchetypeAction(action: RibAction): RibActionResult {
+// Author one of the starter archetypes: seat a boot card (its role known, the name
+// assigned from the cast theme during the turn), launch squad-genesis, and stay on the
+// surface (stay: true) so the operator watches the seat fill instead of jumping to Workflows.
+async function authorArchetypeAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const slug = asNonEmptyString(payload.slug);
   const starter = GENESIS_STARTERS.find((s) => s.slug === slug);
   if (!starter) return { ok: false, error: `unknown archetype: ${slug || "(none)"}` };
+  const home = squadDataHome();
+  const scopeId = selectedScopeId(await readSelectedProject(home));
+  await beginGenesis(scopeDataHome(home, scopeId), { role: starter.role });
   return {
     ok: true,
-    data: { effect: "run-workflow", workflow: "squad-genesis", args: { brief: starter.brief } },
+    data: {
+      effect: "run-workflow",
+      workflow: "squad-genesis",
+      stay: true,
+      args: { brief: starter.brief },
+    },
   };
 }
 
@@ -2763,19 +2843,34 @@ function authorArchetypeAction(action: RibAction): RibActionResult {
 // clamp it before it rides into a billed genesis run.
 const MAX_BRIEF_CHARS = 2000;
 
-// Author from a freeform brief: launch squad-genesis with the brief.
-function describeOwnAction(action: RibAction): RibActionResult {
+// Author from a freeform brief: seat a boot card (no role yet — the workflow authors it),
+// launch squad-genesis, and stay on the surface so the operator watches the seat fill.
+async function describeOwnAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const brief = asNonEmptyString(payload.brief);
   if (!brief) return { ok: false, error: "Describe the member first — who should it be?" };
+  const home = squadDataHome();
+  const scopeId = selectedScopeId(await readSelectedProject(home));
+  await beginGenesis(scopeDataHome(home, scopeId), {});
   return {
     ok: true,
     data: {
       effect: "run-workflow",
       workflow: "squad-genesis",
+      stay: true,
       args: { brief: brief.slice(0, MAX_BRIEF_CHARS) },
     },
   };
+}
+
+// Dismiss a stalled genesis boot card: clear the scope's pending marker (and stop the
+// tick) so the roster drops the card, then refresh so it disappears at once. Fail-soft.
+async function dismissGenesisAction(): Promise<RibActionResult> {
+  const home = squadDataHome();
+  const scopeId = selectedScopeId(await readSelectedProject(home));
+  await endGenesis(scopeDataHome(home, scopeId));
+  await refreshWorkflow?.("squad-roster")?.catch(() => {});
+  return { ok: true };
 }
 
 // The operator-typed mission is unbounded, user-controlled input; clamp it before
