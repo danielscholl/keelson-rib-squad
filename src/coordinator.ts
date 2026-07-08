@@ -9,7 +9,7 @@ import {
   type DiffTokenNetCounts,
   detectChangeQualityViolations,
 } from "./change-quality.ts";
-import { runCodeTurn } from "./code.ts";
+import { memberCanCode, runCodeTurn } from "./code.ts";
 import { confineBaselineDeletes } from "./confinement.ts";
 import { parseTrailingDirective } from "./control-json.ts";
 import {
@@ -480,6 +480,16 @@ function renderTranscriptEntry(e: CoordinatorEntry): string {
   return `coordinator: ${e.text}`;
 }
 
+// Editing verbs in an instruction — a code-capable member handed one of these through
+// the read-only dispatch arm can only stall (#89). Word-boundary anchored so "written"
+// in prose won't trip it; the hint it drives is advisory, so a rare false positive costs
+// only a prompt line, never a misrouted turn.
+const EDIT_INTENT =
+  /\b(write|writes|writing|edit|edits|editing|create|creates|creating|add|adds|adding|implement|implements|implementing|modify|modifies|modifying|refactor|refactors|refactoring|patch|patches|patching|fix|fixes|fixing|update|updates|updating|delete|deletes|deleting|remove|removes|removing|rename|renames|renaming)\b/i;
+function instructionHasEditIntent(instruction: string | undefined): boolean {
+  return !!instruction && EDIT_INTENT.test(instruction);
+}
+
 function coordinatorPrompt(
   ledger: CoordinatorLedger,
   roster: readonly Member[],
@@ -514,20 +524,34 @@ function coordinatorPrompt(
     ledger.outcomeRepeat && ledger.outcomeRepeat.count >= REPEAT_STALL_AT
       ? `\n⚠ The last step produced an IDENTICAL outcome ${ledger.outcomeRepeat.count} rounds running. Re-dispatching it will not help — change approach: a different member, a different step, or investigate the blocker. Do NOT repeat the same instruction to the same member.\n`
       : "";
+  // Route-by-intent nudge (#89): a code-capable member sent through the read-only dispatch
+  // arm for an editing step can only stall — surface the mismatch the very next round so
+  // the manager re-issues with "mode":"code" before the repeat cap burns rounds on it.
+  const lastExec = [...ledger.transcript]
+    .reverse()
+    .find((e) => e.kind === "dispatch" || e.kind === "code" || e.kind === "workflow");
+  const codeArmHint =
+    canCode &&
+    lastExec?.kind === "dispatch" &&
+    lastExec.speaker &&
+    memberCanCode(roster.find((m) => m.slug === lastExec.speaker) ?? { tools: [] }) &&
+    instructionHasEditIntent(lastExec.instruction)
+      ? `\n⚠ ${lastExec.speaker} carries the "code" tool but ran read-only last round for what reads as an editing step. The read-only dispatch arm cannot modify the repo — if that step needs file edits, re-issue it with "mode":"code" for ${lastExec.speaker}.\n`
+      : "";
   const groundingBlock = project
     ? `\nGROUNDING:\nBound project: "${project.name}" — repository root: ${project.rootPath}. Every code step is CONFINED to this repository (the member is dropped into it). Refer to files by their path within this project; do NOT name, guess, or search the filesystem for any other repository or path.\n`
     : "";
   // The code arm is only offered when a project is bound (the turn is confined to it);
   // a code-tagged member then EDITS the repo instead of just reasoning.
   const codeNote = canCode
-    ? '\n- to have a code-capable member EDIT the project repo for a step, add "mode":"code" (the next_speaker MUST have the "code" tool); omit it (or "mode":"dispatch") for a reasoning/analysis step.'
+    ? '\n- to have a code-capable member EDIT the project repo, add "mode":"code" (the next_speaker MUST have the "code" tool). If a step asks a code-capable member to create, edit, write, refactor, or delete files (e.g. writing tests), you MUST set "mode":"code" — the default read-only dispatch arm cannot modify the repo. Omit "mode" (or use "dispatch") only for a reasoning/analysis step.'
     : "";
   const workflowNote =
     '\n- to author a REUSABLE workflow (a DAG) for recurring/deterministic sub-work, add "mode":"workflow" with an instruction describing what it should do.';
   const needsNote =
     '\n- if the members above lack a capability this goal needs, add "needs":["<the missing specialist, e.g. a security reviewer>"] so the operator can cast them. This is a non-blocking recommendation — keep going with the best available member; do NOT wait.';
   return `Goal:\n${ledger.task}
-${replanNote}${repeatNote}${groundingBlock}
+${replanNote}${repeatNote}${codeArmHint}${groundingBlock}
 Members you may assign (use the slug as next_speaker):
 ${renderRoster(roster)}
 
