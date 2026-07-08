@@ -480,10 +480,8 @@ function renderTranscriptEntry(e: CoordinatorEntry): string {
   return `coordinator: ${e.text}`;
 }
 
-// Editing verbs in an instruction — a code-capable member handed one of these through
-// the read-only dispatch arm can only stall (#89). Word-boundary anchored so "written"
-// in prose won't trip it; the hint it drives is advisory, so a rare false positive costs
-// only a prompt line, never a misrouted turn.
+// Word-boundary anchored, and only ever drives an advisory hint — a false positive
+// costs one prompt line, never a misrouted turn.
 const EDIT_INTENT =
   /\b(write|writes|writing|edit|edits|editing|create|creates|creating|add|adds|adding|implement|implements|implementing|modify|modifies|modifying|refactor|refactors|refactoring|patch|patches|patching|fix|fixes|fixing|update|updates|updating|delete|deletes|deleting|remove|removes|removing|rename|renames|renaming)\b/i;
 function instructionHasEditIntent(instruction: string | undefined): boolean {
@@ -524,9 +522,8 @@ function coordinatorPrompt(
     ledger.outcomeRepeat && ledger.outcomeRepeat.count >= REPEAT_STALL_AT
       ? `\n⚠ The last step produced an IDENTICAL outcome ${ledger.outcomeRepeat.count} rounds running. Re-dispatching it will not help — change approach: a different member, a different step, or investigate the blocker. Do NOT repeat the same instruction to the same member.\n`
       : "";
-  // Route-by-intent nudge (#89): a code-capable member sent through the read-only dispatch
-  // arm for an editing step can only stall — surface the mismatch the very next round so
-  // the manager re-issues with "mode":"code" before the repeat cap burns rounds on it.
+  // Surfaces a dispatch/code-arm mismatch the very next round, ahead of the slower
+  // outcome-repeat cap, so an edit-intent step isn't re-dispatched read-only.
   const lastExec = [...ledger.transcript]
     .reverse()
     .find((e) => e.kind === "dispatch" || e.kind === "code" || e.kind === "workflow");
