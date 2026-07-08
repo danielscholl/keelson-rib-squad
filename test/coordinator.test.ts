@@ -1630,9 +1630,7 @@ describe("runCoordinator loop", () => {
 
   test("review gate: a long BLOCK verdict keeps its tail in the next manager prompt", async () => {
     const tailSentinel = "TAILMARK src/z.ts:99 concrete defect";
-    const longBlockSynthesis =
-      `RAI VERDICT: BLOCK\n${"points 1 & 2 PASS; no blocker here.\n".repeat(50)}` +
-      tailSentinel;
+    const longBlockSynthesis = `RAI VERDICT: BLOCK\n${"points 1 & 2 PASS; no blocker here.\n".repeat(50)}${tailSentinel}`;
     expect(longBlockSynthesis.indexOf(tailSentinel)).toBeGreaterThan(1500);
     const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
 
