@@ -1697,8 +1697,7 @@ describe("runCoordinator loop", () => {
         if (args[0] === "diff" && args.includes("--")) {
           return {
             ok: true as const,
-            data:
-              "diff --git a/new.ts b/new.ts\nnew file mode 100644\n--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1 @@\n+export const createdInRun = true;\n",
+            data: "diff --git a/new.ts b/new.ts\nnew file mode 100644\n--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1 @@\n+export const createdInRun = true;\n",
             exitCode: 0,
           };
         }

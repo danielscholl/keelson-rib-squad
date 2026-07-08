@@ -446,7 +446,9 @@ export async function captureDiffUnderReview(
   return await collectGitDiff(root, normalizeDiffCaptureOptions(optionsOrExec));
 }
 
-function normalizeDiffCaptureOptions(optionsOrExec?: RibExec | DiffCaptureOptions): DiffCaptureOptions {
+function normalizeDiffCaptureOptions(
+  optionsOrExec?: RibExec | DiffCaptureOptions,
+): DiffCaptureOptions {
   if (!optionsOrExec) return {};
   if ("runText" in optionsOrExec) return { exec: optionsOrExec };
   return optionsOrExec;
@@ -508,9 +510,7 @@ async function collectGitDiff(rootPath: string, options: DiffCaptureOptions = {}
   );
   const trackedSection =
     tracked.length > 0 ? capDiffSection(tracked.join("\n\n"), trackedBudget, "tracked diff") : "";
-  return [trackedSection, untrackedSection, binarySection]
-    .filter((s) => s.length > 0)
-    .join("\n\n");
+  return [trackedSection, untrackedSection, binarySection].filter((s) => s.length > 0).join("\n\n");
 }
 
 async function collectBaselineScopedGitDiff(
