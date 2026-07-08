@@ -26,6 +26,7 @@ import {
   MAX_VERIFY_FAILURES,
   parseCoordinatorDirective,
   provenanceLines,
+  renderTranscript,
   runCoordinator,
   saveLedger,
   withPlanContext,
@@ -1625,6 +1626,73 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.transcript.some((e) => e.kind === "verify" && e.text.includes("BLOCK"))).toBe(
       true,
     );
+  });
+
+  test("review gate: a long BLOCK verdict keeps its tail in the next manager prompt", async () => {
+    const tailSentinel = "TAILMARK src/z.ts:99 concrete defect";
+    const longBlockSynthesis = `RAI VERDICT: BLOCK\n${"points 1 & 2 PASS; no blocker here.\n".repeat(50)}${tailSentinel}`;
+    expect(longBlockSynthesis.indexOf(tailSentinel)).toBeGreaterThan(1500);
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+
+    await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(
+        [
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
+          'done\n{"action":"done","summary":"shipped"}',
+        ],
+        seen,
+      ),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch(longBlockSynthesis).fn,
+      limits: { maxRounds: 4 },
+    });
+
+    const persisted = await loadLedger(home);
+    const verify = persisted?.transcript.find((e) => e.kind === "verify" && e.verdict === "block");
+    expect(verify?.text.length).toBeGreaterThan(1500);
+    expect(verify?.text).toContain(tailSentinel);
+    expect(renderTranscript(persisted?.transcript ?? [])).toContain(tailSentinel);
+    expect(seen.slice(2).some((req) => req.prompt.includes(tailSentinel))).toBe(true);
+  });
+
+  test("review gate: verify transcript entries cap at the verdict ceiling", async () => {
+    const overlongBlockSynthesis = `RAI VERDICT: BLOCK\n${"v".repeat(8100)}`;
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch(overlongBlockSynthesis).fn,
+      limits: { maxRounds: 3 },
+    });
+
+    const verify = res.ledger.transcript.find((e) => e.kind === "verify" && e.verdict === "block");
+    expect(verify?.text.length).toBe(8000);
+    expect(verify?.text.endsWith("…")).toBe(true);
+  });
+
+  test("transcript append keeps non-verify entries capped at the prose ceiling", async () => {
+    const tailSentinel = "NON_VERIFY_TAILMARK";
+    const longSynthesis = `${"dispatch prose ".repeat(120)}${tailSentinel}`;
+    expect(longSynthesis.indexOf(tailSentinel)).toBeGreaterThan(1500);
+
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"explain","mode":"dispatch"}',
+        'ok\n{"action":"done","summary":"finished it"}',
+      ]),
+      dispatch: fakeDispatch(longSynthesis).fn,
+    });
+
+    const dispatch = res.ledger.transcript.find((e) => e.kind === "dispatch");
+    expect(dispatch?.text.length).toBe(1500);
+    expect(dispatch?.text).not.toContain(tailSentinel);
+    expect(dispatch?.text.endsWith("…")).toBe(true);
   });
 
   test("review gate: a BLOCK review attributes the blocking reviewer", async () => {
