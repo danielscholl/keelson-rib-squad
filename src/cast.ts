@@ -2,6 +2,13 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { RibAgentTurn, RibAgentTurnResult, RibContext } from "@keelson/shared";
 import { errText, z } from "@keelson/shared";
+import { type CastingOptionsView, castingOptions } from "./casting/options.ts";
+import {
+  type LlmCastProposal,
+  llmCastProposalSchema,
+  loadRegistry,
+  resolveThemingConfig,
+} from "./casting/registry.ts";
 import { assignableProviders, validateProviderPin } from "./provider-pins.ts";
 import { normalizeIdentitySlot, normalizeToolAllowlist } from "./types.ts";
 
@@ -37,6 +44,10 @@ const castMemberSchema = z.object({
   toolAllowlist: z.array(z.string()).optional(),
   model: z.string().optional(),
   provider: z.string().optional(),
+  // The casting decision for this member, from the SAME scan turn — informed by
+  // the casting-context block scanPrompt renders. Consumed by themedProposal
+  // (index.ts) right after the scan returns; never itself persisted.
+  castAs: llmCastProposalSchema.optional(),
 });
 export const castProposalSchema = z.object({
   members: z.array(castMemberSchema).min(1),
@@ -54,10 +65,15 @@ export interface CastProposalMember {
   model?: string;
   provider?: string;
   themeId?: string;
+  themeLabel?: string;
   personality?: string;
   backstory?: string;
   originalName?: string;
   identitySlot?: number;
+  // Transient: the scan turn's casting decision, read by themedProposal and
+  // replaced by themeId/themeLabel/personality/backstory before the proposal is
+  // written to disk — never round-trips through writeProposal/readProposal.
+  castAs?: LlmCastProposal;
 }
 
 // The pending proposal persisted to cast-proposal.json and rendered by the
@@ -89,6 +105,11 @@ export interface ProposeCastOptions {
   // these — matched to its role, leaning overpowered. Empty/omitted leaves members
   // unpinned (the harness default provider serves every turn).
   providers?: ReturnType<NonNullable<RibContext["getProviders"]>>;
+  // The selection's scoped data home — read here (before the scan turn runs) to
+  // build the casting-context block the whole team is cast from in one pass,
+  // rather than one runAgentTurn call per proposed member. Omitted degrades to a
+  // fresh/untheed registry (loadRegistry reads a blank path as "no file yet").
+  dataHome?: string;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
 }
@@ -96,11 +117,50 @@ export interface ProposeCastOptions {
 const SCAN_SYSTEM =
   "You are a staffing architect for a Keelson Squad — a small team of persistent AI agents an operator talks to directly. You inspect a real software project and propose the team best suited to the work in it. You read the repository to staff it well; you never modify it.";
 
+// Render the squad's casting state as prompt text so the SAME scan turn that
+// proposes the team can also cast it — no second runAgentTurn per member. Mirrors
+// the guidance genesis's squad_casting_options tool result carries, minus the
+// tool-call step (the scan turn is read-only/confined and can't call rib tools).
+function castingContextBlock(ctx: CastingOptionsView): string {
+  if (ctx.mode === "off") return "";
+  const active = ctx.activeTheme
+    ? `Active ensemble: "${ctx.activeTheme.label}" (id "${ctx.activeTheme.id}"), ${ctx.activeTheme.remainingCapacity} character(s) still free — prefer reusing it while it has room.`
+    : "No ensemble active yet for this squad — this cast starts fresh.";
+  const history =
+    ctx.themeHistory.length > 0
+      ? ` Used before (oldest first, prefer freshness): ${ctx.themeHistory.join(", ")}.`
+      : "";
+  const catalog = ctx.catalog
+    .map((t) => `"${t.label}" (id "${t.id}"): ${t.characterNames.join(", ")}`)
+    .join("; ");
+  const custom =
+    ctx.customThemes.length > 0
+      ? ` This squad has already invented: ${ctx.customThemes
+          .map(
+            (t) =>
+              `"${t.label}" (id "${t.id}", ${t.remainingCapacity} free): ${t.characterNames.join(", ")}`,
+          )
+          .join("; ")}.`
+      : "";
+  const taken =
+    ctx.takenCharacterNames.length > 0
+      ? ` Already-taken character names (never reuse, and never repeat one across members in THIS proposal): ${ctx.takenCharacterNames.join(", ")}.`
+      : "";
+  const pin = ctx.pin
+    ? ` The operator has pinned casting to "${ctx.pin}" — only cast within that exact ensemble (invent it via castAs.newThemeLabel matching the pin if it isn't a known ensemble yet).`
+    : "";
+  return `
+
+Casting context: ${active}${history}${custom}${taken}${pin}
+Catalog ensembles (inspiration, not a limit — invent a fresh one via castAs.newThemeLabel if it fits the project better): ${catalog}`;
+}
+
 function scanPrompt(
   projectName: string,
   mission: string | undefined,
   maxMembers: number,
   providers: readonly { id: string; displayName?: string }[],
+  castingContext: CastingOptionsView,
 ): string {
   const missionBlock = mission
     ? `\nThe operator's mission for this squad:\n---\n${mission}\n---\n`
@@ -115,17 +175,22 @@ function scanPrompt(
   · generic / triage / support roles → "copilot" on its default model (omit "model")
   If a preferred provider is not in the AVAILABLE list, fall back to the strongest available one. A model REQUIRES its provider: if you set "model", set "provider" too; you may set "provider" alone (a vendor pin that uses the provider's default model). If unsure of a provider's exact model id, pin the provider alone and omit "model".`
       : "";
+  const castingBlock = castingContextBlock(castingContext);
+  const castInstructions =
+    castingContext.mode === "off"
+      ? ""
+      : `\n- castAs (optional): a themed cast for this member — set castAs.themeId to reuse an ensemble (the active one, another catalog id, or one this squad already invented) with a characterName from ITS listed characters, or castAs.newThemeLabel to invent a fresh ensemble (never both) with any characterName. Every member's characterName must be distinct from every other member's in this same proposal, and from the already-taken names above. Always include personality and backstory in your own words. Spoiler/tone guard: prefer a character's earliest, most neutral identity (not a later-earned title or a twist/reveal name); do not cast a character whose reputation clashes with the role. Omit castAs for a member you'd rather leave with a plain name.`;
   const jsonExample =
     providers.length > 0
-      ? `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"provider":"claude","model":"claude-opus-4-8"}],"summary":"one line describing the team"}`
-      : `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"]}],"summary":"one line describing the team"}`;
+      ? `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"provider":"claude","model":"claude-opus-4-8","castAs":{"themeId":"...","characterName":"...","personality":"...","backstory":"..."}}],"summary":"one line describing the team"}`
+      : `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"castAs":{"themeId":"...","characterName":"...","personality":"...","backstory":"..."}}],"summary":"one line describing the team"}`;
   return `Inspect the project at the current working directory ("${projectName}"). Use the read-only tools (Read, Glob, Grep) to learn what it actually is: its languages and frameworks, how the code is laid out, its docs, tests, and CI. Read enough to staff it well — do not modify anything.
-${missionBlock}
+${missionBlock}${castingBlock}
 Propose the SMALL team (typically 3-5 members, never more than ${maxMembers}) best suited to THIS project and mission. For each member decide:
-- name: a short proper handle (a person-like name, NOT a job title)
+- name: a short proper handle (a person-like name, NOT a job title) — this is the plain fallback used verbatim if casting is off or your castAs is rejected, so make it sensible on its own
 - role: a 1-4 word role title (e.g. "Backend Engineer", "Reviewer", "Tech Lead")
 - charter: a Markdown identity doc with these sections in order — "# <name>", "## Role", "## Mission", "## Voice" — grounded in what you actually found in the repo (name the real frameworks/dirs you saw). Be honest: do not invent tools, credentials, or capabilities the member will not have.
-- tools: capability tags that decide how this member can later be routed. Use ONLY these tags: "code" (may modify the repo) and "read" (may read the repo). An implementer/engineer gets ["code","read"]; a reviewer, lead, planner, or PM gets ["read"] or [] (text-only). Reserve "code" for true implementers — most members are text-only or read-only.${assignBlock}
+- tools: capability tags that decide how this member can later be routed. Use ONLY these tags: "code" (may modify the repo) and "read" (may read the repo). An implementer/engineer gets ["code","read"]; a reviewer, lead, planner, or PM gets ["read"] or [] (text-only). Reserve "code" for true implementers — most members are text-only or read-only.${assignBlock}${castInstructions}
 
 Return EXACTLY ONE JSON object as your entire reply — no prose, no code fence:
 ${jsonExample}`;
@@ -145,12 +210,19 @@ export async function proposeCast(opts: ProposeCastOptions): Promise<ProposeCast
   const maxMembers = Math.max(1, opts.maxMembers ?? MAX_CAST_MEMBERS);
   const mission = opts.mission?.trim() || undefined;
   const availableProviders = assignableProviders(opts.providers ?? []);
+  // Casting context is read ONCE, up front — a registry-load hiccup degrades to
+  // "off" the same way castingOptions/loadRegistry already fail-soft elsewhere,
+  // never blocking the scan itself.
+  const castingCtx = castingOptions(
+    await loadRegistry(opts.dataHome ?? ""),
+    resolveThemingConfig(),
+  );
 
   const outcome = await runScanTurn(
     opts.runAgentTurn,
     {
       system: SCAN_SYSTEM,
-      prompt: scanPrompt(opts.project.name, mission, maxMembers, availableProviders),
+      prompt: scanPrompt(opts.project.name, mission, maxMembers, availableProviders, castingCtx),
       cwd: root,
       allowedDirectories: [root],
       allowedTools: [...SCAN_TOOLS],
@@ -215,6 +287,7 @@ function normalizeMember(
       ...(toolAllowlist ? { toolAllowlist } : {}),
       ...(pin.provider ? { provider: pin.provider } : {}),
       ...(pin.provider && pin.model ? { model: pin.model } : {}),
+      ...(m.castAs ? { castAs: m.castAs } : {}),
     },
     ...(note ? { note } : {}),
   };
@@ -381,6 +454,7 @@ function normalizeStoredMember(m: CastProposalMember, index: number): CastPropos
       ? { model: m.model }
       : {}),
     ...(typeof m.themeId === "string" && m.themeId ? { themeId: m.themeId } : {}),
+    ...(typeof m.themeLabel === "string" && m.themeLabel ? { themeLabel: m.themeLabel } : {}),
     ...(typeof m.personality === "string" && m.personality ? { personality: m.personality } : {}),
     ...(typeof m.backstory === "string" && m.backstory ? { backstory: m.backstory } : {}),
     ...(typeof m.originalName === "string" && m.originalName

@@ -14,7 +14,7 @@ export interface ThemeUsage {
   activeCountByTheme: Readonly<Record<string, number>>;
 }
 
-function capacityLeft(theme: Theme, usage: ThemeUsage): number {
+export function capacityLeft(theme: Theme, usage: ThemeUsage): number {
   return theme.characters.length - (usage.activeCountByTheme[theme.id] ?? 0);
 }
 

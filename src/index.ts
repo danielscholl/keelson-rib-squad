@@ -31,9 +31,14 @@ import { ASSIGN_CODE_ACTION, RETIRE_ALL_ACTION, SELECT_PROJECT_ACTION } from "./
 import { VIEW_RUN_ACTION } from "./boards/runs.ts";
 import type { CastProposalMember, CastProposalRecord } from "./cast.ts";
 import { clearProposal, proposeCast, readProposal, writeProposal } from "./cast.ts";
+import { castingOptions } from "./casting/options.ts";
 import {
   assignThemedIdentity,
   foldThemedCharter,
+  type LlmCastProposal,
+  llmCastProposalSchema,
+  loadRegistry,
+  resolveThemingConfig,
   retireCastingName,
   themeLabel,
 } from "./casting/registry.ts";
@@ -250,17 +255,19 @@ function snapshotProjects(): void {
 }
 
 // Genesis as a workflow: one agent turn reads a freeform brief, authors the
-// charter, and persists the member by calling the squad_emit_member tool (the
-// deterministic write seam). It publishes no snapshot — its product is files on
-// disk, which the squad-roster collector then reflects. The board's author
-// actions pass the brief as $inputs.brief; a CLI `/workflow run squad-genesis
-// <brief>` passes it as $ARGUMENTS, so the prompt reads both. The model is scoped
-// to the one emit tool (rib tools are default-off in workflow prompt nodes).
+// charter, casts the member (a second, read-only tool call in the SAME turn — no
+// extra provider round trip), and persists the member by calling the
+// squad_emit_member tool (the deterministic write seam). It publishes no
+// snapshot — its product is files on disk, which the squad-roster collector then
+// reflects. The board's author actions pass the brief as $inputs.brief; a CLI
+// `/workflow run squad-genesis <brief>` passes it as $ARGUMENTS, so the prompt
+// reads both. The model is scoped to the read tool + the one write tool (rib
+// tools are default-off in workflow prompt nodes).
 const GENESIS_WF_PROMPT = `You are authoring the founding identity of a new persistent agent — a "member" of a Keelson Squad, a team of agents an operator talks to directly.
 
 Brief: $inputs.brief $ARGUMENTS
 
-From the brief, decide the member's name, a short role title (1-4 words — e.g. "Tech Lead", "Backend Engineer" — a label for a roster pill, NOT a sentence), and write an honest founding charter. Do NOT invent tools, credentials, or capabilities it does not have; describe who it is, what it is for, and how it works.
+From the brief, decide the member's name, a short role title (1-4 words — e.g. "Tech Lead", "Backend Engineer" — a label for a roster pill, NOT a sentence), and write an honest founding charter. Do NOT invent tools, credentials, or capabilities it does not have; describe who it is, what it is for, and how it works. The name you decide here is the plain fallback used verbatim if casting is off or unavailable, so make it a sensible name on its own — not dependent on being cast.
 
 Compose:
 - charter: Markdown for the member's charter.md, with these sections in order:
@@ -269,7 +276,12 @@ Compose:
     ## Mission  — what it exists to do
     ## Voice    — how it speaks (tone, length, habits)
 
-Then call the squad_emit_member tool EXACTLY ONCE with { name, role, charter } to persist the member — do NOT print the JSON as your reply. After the tool returns, reply with EXACTLY one line: "Authored <name> (<slug>)", using the name you authored and the tool-returned slug verbatim.`;
+Then call squad_casting_options to see the squad's casting state, and decide whether to cast this member:
+- If it returns {"mode":"off"}, skip casting — do not include castAs.
+- Otherwise, prefer reusing the active ensemble (activeTheme) while it has remainingCapacity, picking a free character whose role fits (set castAs.themeId to activeTheme.id). If it has no room, or none of its characters fit this role, either pick a fitting catalog ensemble (castAs.themeId, one of catalog[].id — the catalog is inspiration, not a limit) or invent a fresh one grounded in the brief/project (castAs.newThemeLabel, a short recognizable movie/TV/book universe name — never both themeId and newThemeLabel). Pick a characterName that is NOT in takenCharacterNames and, for an existing ensemble, IS one of its listed characterNames (inventing a new character is only valid for a brand-new ensemble via newThemeLabel). Write a short personality and backstory for it in your own words. If a pin is present, only cast within that exact ensemble (invent it via newThemeLabel matching the pin if it isn't a known ensemble yet).
+- Spoiler/tone guard: prefer the character's earliest, most neutral identity (not a later-earned title or a twist/reveal name); do not cast a character whose reputation clashes with the role (e.g. a betrayer as a "trusted reviewer"); keep it workplace-appropriate.
+
+Then call the squad_emit_member tool EXACTLY ONCE with { name, role, charter, castAs? } to persist the member — do NOT print the JSON as your reply. After the tool returns, reply with EXACTLY one line: "Authored <name> (<slug>)", using the name you authored and the tool-returned slug verbatim.`;
 
 // The exact board shape the squad-decisions prompt must emit, generated from the
 // pure builder so the worked example can't drift from buildDecisionsBoard (the
@@ -383,12 +395,14 @@ async function themedRecord(
     provider?: string;
     tools?: readonly string[];
     toolAllowlist?: readonly string[];
+    castAs?: LlmCastProposal;
   },
   identitySlot: number,
 ): Promise<MemberRecord> {
   const id = await assignThemedIdentity(dataHome, {
     proposedName: base.name,
     role: base.role,
+    ...(base.castAs ? { llmProposal: base.castAs } : {}),
   });
   return {
     slug: id.slug,
@@ -399,6 +413,7 @@ async function themedRecord(
     createdAt: base.createdAt,
     identitySlot: identitySlotForIndex(identitySlot),
     ...(id.themeId ? { themeId: id.themeId } : {}),
+    ...(id.themeLabel ? { themeLabel: id.themeLabel } : {}),
     ...(id.personality ? { personality: id.personality } : {}),
     ...(id.backstory ? { backstory: id.backstory } : {}),
     ...(id.originalName !== id.name ? { originalName: id.originalName } : {}),
@@ -416,6 +431,7 @@ function foldedCharter(
   id: {
     name: string;
     themeId?: string;
+    themeLabel?: string;
     personality?: string;
     backstory?: string;
   },
@@ -425,7 +441,7 @@ function foldedCharter(
         name: id.name,
         personality: id.personality,
         backstory: id.backstory ?? "",
-        themeLabel: themeLabel(id.themeId) ?? id.themeId,
+        themeLabel: id.themeLabel ?? themeLabel(id.themeId) ?? id.themeId,
       })
     : charter;
 }
@@ -441,6 +457,7 @@ async function themedProposal(
     const id = await assignThemedIdentity(dataHome, {
       proposedName: m.name,
       role: m.role,
+      ...(m.castAs ? { llmProposal: m.castAs } : {}),
     });
     if (id.originalName !== id.name) renames.push([id.originalName, id.name]);
     members.push({
@@ -453,6 +470,7 @@ async function themedProposal(
       ...(m.provider ? { provider: m.provider } : {}),
       ...(m.provider && m.model ? { model: m.model } : {}),
       ...(id.themeId ? { themeId: id.themeId } : {}),
+      ...(id.themeLabel ? { themeLabel: id.themeLabel } : {}),
       ...(id.personality ? { personality: id.personality } : {}),
       ...(id.backstory ? { backstory: id.backstory } : {}),
       originalName: id.originalName,
@@ -489,6 +507,10 @@ const memberEmitSchema = z.object({
   provider: z.string().optional(),
   tools: z.array(z.string()).optional(),
   toolAllowlist: z.array(z.string()).optional(),
+  // The casting decision from the SAME authoring turn, informed by a prior
+  // squad_casting_options call. Optional: absent/rejected falls through to the
+  // deterministic engine (see assignThemedIdentity).
+  castAs: llmCastProposalSchema.optional(),
 });
 
 function makeEmitMemberTool(
@@ -515,6 +537,7 @@ function makeEmitMemberTool(
         toolAllowlist,
         model: rawModel,
         provider: rawProvider,
+        castAs,
       } = parsed.data;
       try {
         const home = squadDataHome();
@@ -562,6 +585,7 @@ function makeEmitMemberTool(
               : {}),
             ...(dedupedTools.length > 0 ? { tools: dedupedTools } : {}),
             ...(dedupedToolAllowlist ? { toolAllowlist: dedupedToolAllowlist } : {}),
+            ...(castAs ? { castAs } : {}),
           },
           existing.length,
         );
@@ -620,6 +644,48 @@ function makeListMembersTool(projectsSeam?: RibContext["getProjects"]): ToolDefi
         emitResult(ctx, JSON.stringify({ members }));
       } catch (e) {
         emitResult(ctx, `squad_list_members failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+const castingOptionsSchema = z.object({ project: z.string().optional() });
+
+// Read-only casting context, called by the SAME turn that authors a member's
+// name/role/charter (genesis) or a whole proposed team (auto-cast) before it
+// decides a themed identity — the fold-into-the-existing-turn design: no second
+// provider round trip, just a second tool call inside the one turn already
+// running. Fail-soft by construction (loadRegistry never throws, and any other
+// hiccup degrades to an "off" view) because the genesis workflow node keeps
+// fail_on_tool_error: true, which is turn-scoped — this tool must never be the
+// reason that flag fires.
+function makeCastingOptionsTool(projectsSeam?: RibContext["getProjects"]): ToolDefinition {
+  return {
+    name: "squad_casting_options",
+    description:
+      "Read-only casting context for authoring a member's themed identity: the squad's active ensemble (with remaining capacity), the ensembles it has used before (oldest first, for freshness), the 8 catalog ensembles as inspiration (id/label/character names only — you are not limited to these), any ensemble this squad has already invented, every character name already taken, and any operator-pinned ensemble (KEELSON_SQUAD_THEME). Call this BEFORE deciding a member's cast, then pass your decision as `castAs` to squad_emit_member (genesis) or in the proposal (auto-cast). `project` (optional id/name) selects the scope like squad_list_members. Never fails: a missing/corrupt registry, or theming turned off, reads as `{mode:\"off\"}` — author a plain name instead.",
+    inputSchema: castingOptionsSchema,
+    async execute(input, ctx) {
+      const parsed = castingOptionsSchema.safeParse(input);
+      const project = parsed.success ? asNonEmptyString(parsed.data.project) : "";
+      try {
+        const home = squadDataHome();
+        const selection = await readSelectedProject(home);
+        const resolution = resolveRunScope(projectsSeam, project, selection);
+        const scopeId = resolution.ok ? resolution.scopeId : DEFAULT_SCOPE_ID;
+        const reg = await loadRegistry(scopeDataHome(home, scopeId));
+        emitResult(ctx, JSON.stringify(castingOptions(reg, resolveThemingConfig())));
+      } catch {
+        emitResult(
+          ctx,
+          JSON.stringify({
+            mode: "off",
+            themeHistory: [],
+            catalog: [],
+            customThemes: [],
+            takenCharacterNames: [],
+          }),
+        );
       }
     },
   };
@@ -2179,15 +2245,18 @@ async function proposeCastForSelection(
   } catch {
     providers = [];
   }
+  // Resolved before the scan runs (not after) so the scan turn can be handed the
+  // squad's casting context and cast the whole team in this one pass.
+  const scopeId = selectedScopeId(selection);
+  const scopedHome = scopeDataHome(home, scopeId);
   const result = await proposeCast({
     runAgentTurn,
     project: { id: scanProject.id, name: scanProject.name, rootPath: scanProject.rootPath },
+    dataHome: scopedHome,
     ...(mission ? { mission: mission.slice(0, MAX_MISSION_CHARS) } : {}),
     ...(providers !== undefined ? { providers } : {}),
   });
   if (!result.ok) return { ok: false, error: result.error };
-  const scopeId = selectedScopeId(selection);
-  const scopedHome = scopeDataHome(home, scopeId);
   const pending = await readProposal(scopedHome);
   if (pending) await retireProposalNames(scopedHome, pending);
   const proposal = await themedProposal(scopedHome, result.proposal);
@@ -2413,11 +2482,15 @@ const rib: Rib = {
       validate: expectView(SQUAD_RUNS_KEY, "board"),
     },
     {
-      // Genesis as a workflow: one prompt turn authors the charter and calls
-      // squad_emit_member to persist it. No bindSnapshotKey/validate — genesis
-      // writes files (the roster collector reflects them), it does not publish a
-      // board. allowed_tools scopes the turn to the single write seam: rib tools
-      // are default-off in workflow prompt nodes, so it must opt in by name.
+      // Genesis as a workflow: one prompt turn reads casting context, authors the
+      // charter, and calls squad_emit_member to persist it. No bindSnapshotKey/
+      // validate — genesis writes files (the roster collector reflects them), it
+      // does not publish a board. allowed_tools scopes the turn to the read tool +
+      // the write seam: rib tools are default-off in workflow prompt nodes, so
+      // both must opt in by name. squad_casting_options is written fail-soft
+      // (never emits isError) specifically so it can share this node's
+      // fail_on_tool_error: true with squad_emit_member without a casting-context
+      // hiccup wrongly failing the whole run.
       definition: {
         name: "squad-genesis",
         description:
@@ -2430,7 +2503,7 @@ const rib: Rib = {
             // slug collision; fail_on_tool_error makes that error fail the run
             // instead of reporting SUCCEEDED with no member written.
             fail_on_tool_error: true,
-            allowed_tools: ["squad_emit_member"],
+            allowed_tools: ["squad_casting_options", "squad_emit_member"],
           },
         ],
       },
@@ -2629,6 +2702,7 @@ const rib: Rib = {
     snapshotProjects();
     return [
       makeEmitMemberTool(ctx.refreshWorkflow, ctx.getProjects),
+      makeCastingOptionsTool(ctx.getProjects),
       makeListMembersTool(ctx.getProjects),
       makeRetireMemberTool(ctx.refreshWorkflow, ctx.getProjects),
       makeRememberTool(),
@@ -3198,6 +3272,7 @@ async function approveCastAction(): Promise<RibActionResult> {
         createdAt: at,
         identitySlot: m.identitySlot ?? identitySlotForIndex(i),
         ...(m.themeId ? { themeId: m.themeId } : {}),
+        ...(m.themeLabel ? { themeLabel: m.themeLabel } : {}),
         ...(m.personality ? { personality: m.personality } : {}),
         ...(m.backstory ? { backstory: m.backstory } : {}),
         originalName: m.originalName ?? m.name,

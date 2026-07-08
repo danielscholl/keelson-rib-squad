@@ -95,7 +95,10 @@ export function buildRosterBoard(
 function cardFor(member: Member) {
   const fields: { label: string; value: string }[] = [];
   if (member.themeId) {
-    fields.push({ label: "cast", value: themeLabel(member.themeId) ?? member.themeId });
+    fields.push({
+      label: "cast",
+      value: member.themeLabel ?? themeLabel(member.themeId) ?? member.themeId,
+    });
   }
   fields.push({ label: "charter", value: rosterCharterExcerpt(member) });
   if (member.model) fields.push({ label: "model", value: member.model });

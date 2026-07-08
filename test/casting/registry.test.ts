@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   assignThemedIdentity,
   type CastingRegistry,
+  CUSTOM_THEME_CAPACITY,
   foldThemedCharter,
   loadRegistry,
   resolveThemingConfig,
@@ -160,6 +161,240 @@ describe("assignThemedIdentity", () => {
     );
     expect(id.themeId).toBe("firefly");
     expect(id.name).toBe("Mal");
+  });
+});
+
+describe("assignThemedIdentity with an llmProposal", () => {
+  test("invents a new custom ensemble from newThemeLabel", async () => {
+    const id = await assignThemedIdentity(home, {
+      proposedName: "Atlas",
+      role: "Engineer",
+      llmProposal: {
+        newThemeLabel: "Apollo 13",
+        characterName: "Gene Kranz",
+        personality: "Unflappable under pressure.",
+        backstory: "Flight director who brings the crew home.",
+      },
+    });
+    expect(id.name).toBe("Gene Kranz");
+    expect(id.themeLabel).toBe("Apollo 13");
+    expect(id.personality).toBe("Unflappable under pressure.");
+
+    const reg = await loadRegistry(home);
+    expect(reg.activeThemeId).toBe(id.themeId);
+    expect(reg.customThemes?.[id.themeId!]?.label).toBe("Apollo 13");
+    expect(reg.customThemes?.[id.themeId!]?.characters.map((c) => c.name)).toEqual(["Gene Kranz"]);
+  });
+
+  test("reuses an already-invented custom ensemble by id, growing its roster", async () => {
+    const first = await assignThemedIdentity(home, {
+      proposedName: "Atlas",
+      role: "Lead",
+      llmProposal: {
+        newThemeLabel: "Apollo 13",
+        characterName: "Gene Kranz",
+        personality: "p",
+        backstory: "b",
+      },
+    });
+    const second = await assignThemedIdentity(home, {
+      proposedName: "Bob",
+      role: "Engineer",
+      llmProposal: {
+        themeId: first.themeId,
+        characterName: "Jim Lovell",
+        personality: "p2",
+        backstory: "b2",
+      },
+    });
+    expect(second.themeId).toBe(first.themeId);
+    expect(second.themeLabel).toBe("Apollo 13");
+    const reg = await loadRegistry(home);
+    expect(reg.customThemes?.[first.themeId!]?.characters.map((c) => c.name).sort()).toEqual([
+      "Gene Kranz",
+      "Jim Lovell",
+    ]);
+  });
+
+  test("a proposal whose characterName is already taken falls through to the deterministic engine", async () => {
+    await assignThemedIdentity(home, { proposedName: "Atlas", role: "Engineer" }); // -> McManus (rung 1)
+    const id = await assignThemedIdentity(home, {
+      proposedName: "Bob",
+      role: "Reviewer",
+      llmProposal: {
+        themeId: "usual-suspects",
+        characterName: "McManus",
+        personality: "p",
+        backstory: "b",
+      },
+    });
+    expect(id.themeId).toBe("usual-suspects");
+    expect(id.name).not.toBe("McManus");
+  });
+
+  test("a static-theme proposal naming an unknown character falls through to the deterministic engine", async () => {
+    const id = await assignThemedIdentity(home, {
+      proposedName: "Atlas",
+      role: "Engineer",
+      llmProposal: {
+        themeId: "usual-suspects",
+        characterName: "Neo",
+        personality: "p",
+        backstory: "b",
+      },
+    });
+    expect(id.themeId).toBe("usual-suspects");
+    expect(id.name).not.toBe("Neo");
+  });
+
+  test("a malformed llmProposal (blank characterName) falls through to the deterministic engine", async () => {
+    const id = await assignThemedIdentity(home, {
+      proposedName: "Atlas",
+      role: "Engineer",
+      llmProposal: {
+        newThemeLabel: "Some Show",
+        characterName: "   ",
+        personality: "p",
+        backstory: "b",
+      },
+    });
+    expect(id.themeId).toBe("usual-suspects");
+    // No custom theme was minted from the rejected proposal.
+    expect((await loadRegistry(home)).customThemes).toBeUndefined();
+  });
+
+  test("an absent llmProposal behaves exactly like the deterministic-only call", async () => {
+    const id = await assignThemedIdentity(home, { proposedName: "Atlas", role: "Engineer" });
+    expect(id.themeId).toBe("usual-suspects");
+    expect(id.name).toBe("McManus");
+  });
+
+  test("a pin mismatch (proposal invents a different ensemble) falls through to the pinned ensemble", async () => {
+    const id = await assignThemedIdentity(
+      home,
+      {
+        proposedName: "Atlas",
+        role: "Tech Lead",
+        llmProposal: {
+          newThemeLabel: "Some Other Show",
+          characterName: "Nobody",
+          personality: "p",
+          backstory: "b",
+        },
+      },
+      { mode: "themed", pin: "firefly" },
+    );
+    expect(id.themeId).toBe("firefly");
+    expect(id.name).toBe("Mal");
+  });
+
+  test("a proposal inventing exactly the pinned (not-yet-known) ensemble is accepted", async () => {
+    const id = await assignThemedIdentity(
+      home,
+      {
+        proposedName: "Atlas",
+        role: "Tech Lead",
+        llmProposal: {
+          newThemeLabel: "Apollo 13",
+          characterName: "Gene Kranz",
+          personality: "p",
+          backstory: "b",
+        },
+      },
+      { mode: "themed", pin: "Apollo 13" },
+    );
+    expect(id.name).toBe("Gene Kranz");
+    expect(id.themeLabel).toBe("Apollo 13");
+  });
+
+  test("name-stability outranks a fresh, different llmProposal on re-cast", async () => {
+    const first = await assignThemedIdentity(home, {
+      proposedName: "Atlas",
+      role: "Engineer",
+      llmProposal: {
+        newThemeLabel: "Apollo 13",
+        characterName: "Gene Kranz",
+        personality: "p",
+        backstory: "b",
+      },
+    });
+    const again = await assignThemedIdentity(home, {
+      proposedName: "Atlas",
+      role: "Engineer",
+      llmProposal: {
+        newThemeLabel: "A Totally Different Show",
+        characterName: "Someone Else",
+        personality: "p2",
+        backstory: "b2",
+      },
+    });
+    expect(again.name).toBe(first.name);
+    expect(again.themeId).toBe(first.themeId);
+    // characterInRegistry resolves the custom theme's stored voice, not the fresh proposal's.
+    expect(again.personality).toBe(first.personality);
+  });
+
+  test("retire frees a custom-themed character for reuse and links lineage, without duplicating the roster", async () => {
+    const first = await assignThemedIdentity(home, {
+      proposedName: "Atlas",
+      role: "Lead",
+      llmProposal: {
+        newThemeLabel: "Apollo 13",
+        characterName: "Gene Kranz",
+        personality: "original voice",
+        backstory: "b",
+      },
+    });
+    await retireCastingName(home, first.slug);
+
+    const reused = await assignThemedIdentity(home, {
+      proposedName: "Carl",
+      role: "Lead",
+      llmProposal: {
+        themeId: first.themeId,
+        characterName: "Gene Kranz",
+        personality: "a different voice",
+        backstory: "different",
+      },
+    });
+    expect(reused.name).toBe("Gene Kranz");
+    expect(reused.slug).toBe(first.slug);
+    // The custom theme's canonical character (voice included) is reused verbatim,
+    // not overwritten by the new proposal's wording.
+    expect(reused.personality).toBe("original voice");
+
+    const reg = await loadRegistry(home);
+    expect(reg.members[first.slug]?.status).toBe("active");
+    expect(reg.members[first.slug]?.previousName).toBe("Atlas");
+    expect(reg.customThemes?.[first.themeId!]?.characters).toHaveLength(1);
+    const archived = Object.values(reg.members).find((e) => e.status === "retired");
+    expect(archived?.succeededBy).toBe(first.slug);
+  });
+
+  test("a custom theme rejects growth past CUSTOM_THEME_CAPACITY, falling through to the deterministic engine", async () => {
+    const themeId = "packed-show";
+    const characters = Array.from({ length: CUSTOM_THEME_CAPACITY }, (_, i) => ({
+      name: `Character ${i}`,
+      personality: "p",
+      backstory: "b",
+      preferredRoles: [],
+    }));
+    await saveRegistry(home, {
+      version: 1,
+      activeThemeId: themeId,
+      themeHistory: [themeId],
+      members: {},
+      customThemes: { [themeId]: { label: "Packed Show", characters } },
+    });
+
+    const id = await assignThemedIdentity(home, {
+      proposedName: "Atlas",
+      role: "Engineer",
+      llmProposal: { themeId, characterName: "Character 11", personality: "p", backstory: "b" },
+    });
+    // "packed-show" is a custom theme, invisible to the static-only deterministic
+    // rung — it rolls to the catalog head instead of growing past capacity.
+    expect(id.themeId).toBe("usual-suspects");
   });
 });
 

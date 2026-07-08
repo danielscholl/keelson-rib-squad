@@ -89,6 +89,11 @@ export interface Member {
   // voice (also folded into the charter), and originalName the proposed name casting
   // replaced. All optional/back-compat — a pre-casting or opted-out member has none.
   themeId?: string;
+  // The theme's human label, resolved at cast time against both the static catalog
+  // and any squad-invented custom ensemble. Optional/back-compat: a pre-existing
+  // record only has themeId, and readers fall back to the static themeLabel(id)
+  // lookup for those.
+  themeLabel?: string;
   personality?: string;
   backstory?: string;
   originalName?: string;

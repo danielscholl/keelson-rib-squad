@@ -29,6 +29,7 @@ export interface MemberRecord {
   // Themed-casting identity (#16) — persisted so the roster card and the charter
   // composer carry the character's voice. Optional/back-compat.
   themeId?: string;
+  themeLabel?: string;
   personality?: string;
   backstory?: string;
   originalName?: string;
@@ -150,6 +151,9 @@ export async function listMemberRecords(
           : {}),
         ...(toolAllowlist ? { toolAllowlist } : {}),
         ...(typeof rec.themeId === "string" && rec.themeId ? { themeId: rec.themeId } : {}),
+        ...(typeof rec.themeLabel === "string" && rec.themeLabel
+          ? { themeLabel: rec.themeLabel }
+          : {}),
         ...(typeof rec.personality === "string" && rec.personality
           ? { personality: rec.personality }
           : {}),
@@ -183,6 +187,7 @@ export async function readMembers(membersRoot: string): Promise<Member[]> {
     ...(r.tools && r.tools.length > 0 ? { tools: r.tools } : {}),
     ...(r.toolAllowlist && r.toolAllowlist.length > 0 ? { toolAllowlist: r.toolAllowlist } : {}),
     ...(r.themeId ? { themeId: r.themeId } : {}),
+    ...(r.themeLabel ? { themeLabel: r.themeLabel } : {}),
     ...(r.personality ? { personality: r.personality } : {}),
     ...(r.backstory ? { backstory: r.backstory } : {}),
     ...(r.originalName ? { originalName: r.originalName } : {}),

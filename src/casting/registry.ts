@@ -1,8 +1,18 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "@keelson/shared";
 import { slugify } from "../genesis.ts";
 import { assignCharacter, type ThemeUsage, themeSelectionOrder } from "./engine.ts";
-import { findTheme, type Theme, type ThemeCharacter, themeById, themeLabel } from "./themes.ts";
+import {
+  type CanonicalRole,
+  canonicalRole,
+  findTheme,
+  THEMES,
+  type Theme,
+  type ThemeCharacter,
+  themeById,
+  themeLabel,
+} from "./themes.ts";
 
 // The persistent casting registry — the squad's cast list under the data home. It
 // records the active ensemble(s) and, per member slug, which character that member
@@ -28,6 +38,25 @@ export interface CastingEntry {
   succeededBy?: string;
 }
 
+// A character within an LLM-invented ensemble — same shape as a static
+// ThemeCharacter, grown one entry at a time as members are cast into it.
+export interface CustomThemeCharacter {
+  name: string;
+  personality: string;
+  backstory: string;
+  preferredRoles: CanonicalRole[];
+}
+
+// An LLM-invented ensemble, persisted per squad (not part of the static THEMES
+// catalog). Created the first time an LLM proposal names a `newThemeLabel`;
+// capped at CUSTOM_THEME_CAPACITY so it can exhaust and rotate like a static one.
+export interface CustomTheme {
+  label: string;
+  characters: CustomThemeCharacter[];
+}
+
+export const CUSTOM_THEME_CAPACITY = 10;
+
 export interface CastingRegistry {
   version: 1;
   // The squad's current ensemble — reused until exhausted, then rolled.
@@ -37,7 +66,30 @@ export interface CastingRegistry {
   // Keyed by member slug for active members; retired entries are archived under a
   // bookkeeping key so a reused name keeps both ends of its lineage.
   members: Record<string, CastingEntry>;
+  // LLM-invented ensembles, keyed by minted theme id. Omitted when empty.
+  customThemes?: Record<string, CustomTheme>;
 }
+
+// A casting decision proposed by an LLM turn (genesis or auto-cast), fed into
+// assignThemedIdentity as a preferred rung ahead of the deterministic engine. Set
+// `themeId` to reuse a known ensemble (static or already-invented custom), or
+// `newThemeLabel` to invent one — never both. Validated by llmCastProposalSchema
+// so the genesis/cast-scan tool schemas share one shape.
+export interface LlmCastProposal {
+  themeId?: string;
+  newThemeLabel?: string;
+  characterName: string;
+  personality: string;
+  backstory: string;
+}
+
+export const llmCastProposalSchema = z.object({
+  themeId: z.string().min(1).optional(),
+  newThemeLabel: z.string().min(1).optional(),
+  characterName: z.string().min(1),
+  personality: z.string().min(1),
+  backstory: z.string().min(1),
+});
 
 const REGISTRY_FILE = "casting-registry.json";
 
@@ -69,6 +121,35 @@ export async function loadRegistry(dataHome: string): Promise<CastingRegistry> {
         ...(typeof e.succeededBy === "string" ? { succeededBy: e.succeededBy } : {}),
       };
     }
+    const rawCustomThemes =
+      parsed.customThemes && typeof parsed.customThemes === "object" ? parsed.customThemes : {};
+    const customThemes: Record<string, CustomTheme> = {};
+    for (const [id, t] of Object.entries(rawCustomThemes as Record<string, Partial<CustomTheme>>)) {
+      if (typeof t !== "object" || t === null) continue;
+      if (typeof t.label !== "string" || !t.label || !Array.isArray(t.characters)) continue;
+      const characters: CustomThemeCharacter[] = [];
+      for (const c of t.characters as Partial<CustomThemeCharacter>[]) {
+        if (typeof c !== "object" || c === null) continue;
+        if (
+          typeof c.name !== "string" ||
+          !c.name ||
+          typeof c.personality !== "string" ||
+          typeof c.backstory !== "string"
+        ) {
+          continue;
+        }
+        characters.push({
+          name: c.name,
+          personality: c.personality,
+          backstory: c.backstory,
+          preferredRoles: Array.isArray(c.preferredRoles)
+            ? c.preferredRoles.filter((r): r is CanonicalRole => typeof r === "string")
+            : [],
+        });
+      }
+      customThemes[id] = { label: t.label, characters };
+    }
+
     return {
       version: 1,
       ...(typeof parsed.activeThemeId === "string" ? { activeThemeId: parsed.activeThemeId } : {}),
@@ -76,6 +157,7 @@ export async function loadRegistry(dataHome: string): Promise<CastingRegistry> {
         ? parsed.themeHistory.filter((x): x is string => typeof x === "string")
         : [],
       members,
+      ...(Object.keys(customThemes).length > 0 ? { customThemes } : {}),
     };
   } catch {
     return emptyRegistry(); // corrupt JSON reads as empty, never throws
@@ -109,7 +191,7 @@ function withRegistryLock<T>(dataHome: string, fn: () => Promise<T>): Promise<T>
   return run;
 }
 
-function usageOf(reg: CastingRegistry): ThemeUsage {
+export function usageOf(reg: CastingRegistry): ThemeUsage {
   const activeCountByTheme: Record<string, number> = {};
   for (const e of Object.values(reg.members)) {
     if (e.status === "active") {
@@ -123,7 +205,7 @@ function usageOf(reg: CastingRegistry): ThemeUsage {
   };
 }
 
-function activeNames(reg: CastingRegistry): Set<string> {
+export function activeNames(reg: CastingRegistry): Set<string> {
   const names = new Set<string>();
   for (const e of Object.values(reg.members)) {
     if (e.status === "active") names.add(e.themedName);
@@ -165,6 +247,37 @@ function findRetiredByName(
 
 function characterIn(themeId: string, name: string): ThemeCharacter | undefined {
   return themeById(themeId)?.characters.find((c) => c.name === name);
+}
+
+// Registry-aware sibling of characterIn: also checks a squad's custom (LLM-
+// invented) ensembles, so re-casting the same proposed name for a member
+// previously cast into a custom theme still returns its personality/backstory.
+function characterInRegistry(
+  reg: CastingRegistry,
+  themeId: string,
+  name: string,
+): ThemeCharacter | undefined {
+  return (
+    characterIn(themeId, name) ??
+    reg.customThemes?.[themeId]?.characters.find((c) => c.name === name)
+  );
+}
+
+function resolveThemeLabel(reg: CastingRegistry, themeId: string): string {
+  return themeById(themeId)?.label ?? reg.customThemes?.[themeId]?.label ?? themeId;
+}
+
+// Resolve an operator's theme pin against a squad's custom ensembles too (match
+// by id or label, case-insensitive) — the companion to themes.ts's findTheme,
+// which only searches the static catalog.
+function findCustomTheme(reg: CastingRegistry, idOrLabel: string): Theme | undefined {
+  const needle = idOrLabel.trim().toLowerCase();
+  for (const [id, t] of Object.entries(reg.customThemes ?? {})) {
+    if (id.toLowerCase() === needle || t.label.toLowerCase() === needle) {
+      return { id, label: t.label, characters: t.characters };
+    }
+  }
+  return undefined;
 }
 
 // The data home holds members/ (one dir per member) alongside the registry; a
@@ -214,6 +327,10 @@ export interface ThemedIdentity {
   name: string;
   slug: string;
   themeId?: string;
+  // The theme's human label, resolved against both the static catalog and a
+  // squad's custom ensembles — persisted downstream so callers with no registry
+  // access (e.g. the pure roster board) never have to re-derive it.
+  themeLabel?: string;
   personality?: string;
   backstory?: string;
   // The proposed name the caller handed in (always present, even when theming is off
@@ -228,9 +345,17 @@ export interface ThemedIdentity {
 // character, reserves it (uniqueness + lineage), and persists. Slug-collision-safe
 // against member dirs already on disk. Theming off / fully exhausted falls back to
 // the proposed name.
+//
+// `llmProposal`, when supplied, is tried FIRST (after name-stability, before the
+// deterministic walk): an LLM-authored theme/character that passes the same
+// uniqueness checks as the deterministic engine is reserved directly, letting a
+// squad's ensemble be reused, rerolled, or invented rather than permanently
+// limited to the static catalog. Any rejection (invalid, colliding, pin mismatch,
+// or simply absent) falls straight through to the unchanged deterministic engine —
+// the LLM path is additive, never a replacement for the tested fallback.
 export function assignThemedIdentity(
   dataHome: string,
-  input: { proposedName: string; role: string },
+  input: { proposedName: string; role: string; llmProposal?: LlmCastProposal },
   config: ThemingConfig = resolveThemingConfig(),
 ): Promise<ThemedIdentity> {
   // `off` touches no registry, so it needs no lock; everything else does a
@@ -248,7 +373,7 @@ export function assignThemedIdentity(
 
 async function assignThemedIdentityLocked(
   dataHome: string,
-  input: { proposedName: string; role: string },
+  input: { proposedName: string; role: string; llmProposal?: LlmCastProposal },
   config: ThemingConfig,
 ): Promise<ThemedIdentity> {
   const proposedName = input.proposedName.trim() || "member";
@@ -257,14 +382,16 @@ async function assignThemedIdentityLocked(
 
   // Name stability: a live member already cast for this proposed name keeps its
   // character, so re-casting the same project is idempotent (the existing member is
-  // then skipped on disk rather than duplicated under a new name).
+  // then skipped on disk rather than duplicated under a new name) — this outranks a
+  // fresh llmProposal exactly as it already outranks the deterministic walk.
   const stable = findActiveByOriginal(reg, proposedName);
   if (stable) {
-    const ch = characterIn(stable.entry.themeId, stable.entry.themedName);
+    const ch = characterInRegistry(reg, stable.entry.themeId, stable.entry.themedName);
     return {
       name: stable.entry.themedName,
       slug: stable.slug,
       themeId: stable.entry.themeId,
+      themeLabel: resolveThemeLabel(reg, stable.entry.themeId),
       ...(ch ? { personality: ch.personality, backstory: ch.backstory } : {}),
       originalName: proposedName,
     };
@@ -273,6 +400,20 @@ async function assignThemedIdentityLocked(
   const existing = await existingMemberSlugs(dataHome);
   const takenSlugs = new Set<string>([...existing, ...activeSlugs(reg)]);
   const takenNames = activeNames(reg);
+
+  if (input.llmProposal) {
+    const resolved = resolveLlmProposal(
+      reg,
+      input.llmProposal,
+      input.role,
+      config,
+      takenNames,
+      takenSlugs,
+    );
+    if (resolved) {
+      return reserveThemedIdentity(dataHome, reg, resolved, proposedName);
+    }
+  }
 
   // A pin forces one ensemble; otherwise walk the selection order, rolling to the
   // next ensemble when the current one has no free character for the role.
@@ -297,13 +438,146 @@ async function assignThemedIdentityLocked(
     return { name: proposedName, slug, originalName: proposedName };
   }
 
-  const { theme, char } = chosen;
+  return reserveThemedIdentity(
+    dataHome,
+    reg,
+    {
+      theme: { id: chosen.theme.id, label: chosen.theme.label },
+      char: chosen.char,
+      isNewCustomCharacter: false,
+    },
+    proposedName,
+  );
+}
+
+// Validate and resolve an LLM-authored proposal against the squad's current
+// registry state. Returns undefined on ANY rejection (malformed, colliding name,
+// pin mismatch, unknown theme id, or a static theme that doesn't actually carry
+// the named character — static rosters are fixed in v1, only custom ensembles
+// grow) so the caller falls straight through to the deterministic engine.
+function resolveLlmProposal(
+  reg: CastingRegistry,
+  proposal: LlmCastProposal,
+  role: string,
+  config: ThemingConfig,
+  takenNames: ReadonlySet<string>,
+  takenSlugs: ReadonlySet<string>,
+):
+  | { theme: { id: string; label: string }; char: ThemeCharacter; isNewCustomCharacter: boolean }
+  | undefined {
+  const characterName = proposal.characterName.trim();
+  if (!characterName) return undefined;
+  if (takenNames.has(characterName)) return undefined;
+  if (takenSlugs.has(slugify(characterName))) return undefined;
+
+  let themeId = proposal.themeId?.trim() || undefined;
+  let newLabel = proposal.newThemeLabel?.trim() || undefined;
+  if (!themeId && newLabel) {
+    // Reuse an ensemble the label already names (static or custom) instead of
+    // minting a duplicate universe under a fresh id.
+    themeId = findTheme(newLabel)?.id ?? findCustomTheme(reg, newLabel)?.id;
+    if (themeId) newLabel = undefined;
+  }
+  if (!themeId && !newLabel) return undefined; // named nothing usable
+
+  if (config.pin) {
+    const pinned = findTheme(config.pin) ?? findCustomTheme(reg, config.pin);
+    if (pinned) {
+      if (themeId !== pinned.id) return undefined;
+    } else {
+      // The pin itself isn't a known theme yet — only accept a proposal that
+      // invents exactly that universe.
+      if (!newLabel || newLabel.toLowerCase() !== config.pin.trim().toLowerCase()) return undefined;
+    }
+  }
+
+  if (themeId) {
+    const staticTheme = themeById(themeId);
+    if (staticTheme) {
+      const char = staticTheme.characters.find((c) => c.name === characterName);
+      return char
+        ? {
+            theme: { id: staticTheme.id, label: staticTheme.label },
+            char,
+            isNewCustomCharacter: false,
+          }
+        : undefined;
+    }
+    const custom = reg.customThemes?.[themeId];
+    if (!custom) return undefined;
+    const existingChar = custom.characters.find((c) => c.name === characterName);
+    if (existingChar) {
+      return {
+        theme: { id: themeId, label: custom.label },
+        char: existingChar,
+        isNewCustomCharacter: false,
+      };
+    }
+    if (custom.characters.length >= CUSTOM_THEME_CAPACITY) return undefined;
+    return {
+      theme: { id: themeId, label: custom.label },
+      char: newCustomCharacter(characterName, proposal, role),
+      isNewCustomCharacter: true,
+    };
+  }
+
+  // Minting a brand-new custom theme.
+  const id = uniqueThemeId(slugify(newLabel!), reg);
+  return {
+    theme: { id, label: newLabel! },
+    char: newCustomCharacter(characterName, proposal, role),
+    isNewCustomCharacter: true,
+  };
+}
+
+function newCustomCharacter(name: string, proposal: LlmCastProposal, role: string): ThemeCharacter {
+  return {
+    name,
+    personality: proposal.personality,
+    backstory: proposal.backstory,
+    preferredRoles: [canonicalRole(role)],
+  };
+}
+
+function uniqueThemeId(base: string, reg: CastingRegistry): string {
+  const taken = new Set<string>([
+    ...THEMES.map((t) => t.id),
+    ...Object.keys(reg.customThemes ?? {}),
+  ]);
+  return uniqueSlug(base, taken);
+}
+
+// Shared reservation tail for both the LLM rung and the deterministic-engine rung:
+// record ensemble (re)activation, grow a custom theme's roster when the character
+// is new, splice retire/reuse lineage, persist, and return the settled identity.
+async function reserveThemedIdentity(
+  dataHome: string,
+  reg: CastingRegistry,
+  chosen: {
+    theme: { id: string; label: string };
+    char: ThemeCharacter;
+    isNewCustomCharacter: boolean;
+  },
+  proposedName: string,
+): Promise<ThemedIdentity> {
+  const { theme, char, isNewCustomCharacter } = chosen;
   const slug = slugify(char.name);
 
   // Record the ensemble's (re)activation for the LRU rule when it changes.
   if (reg.activeThemeId !== theme.id) {
     reg.activeThemeId = theme.id;
     reg.themeHistory.push(theme.id);
+  }
+
+  if (isNewCustomCharacter) {
+    const custom = reg.customThemes?.[theme.id] ?? { label: theme.label, characters: [] };
+    custom.characters.push({
+      name: char.name,
+      personality: char.personality,
+      backstory: char.backstory,
+      preferredRoles: char.preferredRoles,
+    });
+    reg.customThemes = { ...(reg.customThemes ?? {}), [theme.id]: custom };
   }
 
   // Lineage: reusing a freed (retired) character links the two — archive the retired
@@ -327,6 +601,7 @@ async function assignThemedIdentityLocked(
     name: char.name,
     slug,
     themeId: theme.id,
+    themeLabel: theme.label,
     personality: char.personality,
     backstory: char.backstory,
     originalName: proposedName,
@@ -334,7 +609,7 @@ async function assignThemedIdentityLocked(
 }
 
 function pinnedOrder(pin: string, reg: CastingRegistry): Theme[] {
-  const theme = findTheme(pin);
+  const theme = findTheme(pin) ?? findCustomTheme(reg, pin);
   return theme ? [theme] : themeSelectionOrder(usageOf(reg));
 }
 
