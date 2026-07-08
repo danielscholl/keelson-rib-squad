@@ -632,10 +632,13 @@ function makeEmitMemberTool(
         // A genesis landing clears its scope's boot card (marker + tick), so the refresh
         // below shows the real seat instead of the calibrating placeholder.
         await endGenesis(scopeDataHome(home, scopeId));
-        // Re-run the bound squad-roster collector so the new member appears
-        // promptly instead of waiting on cadence. Fail-soft (the seam resolves on
-        // error and is absent on an older harness) — never throw.
+        // Re-run the bound collectors so the new member appears promptly instead of
+        // waiting on cadence. The coordinator panel is member-gated (hideWhenEmpty), so
+        // seating the first member must refresh it too or its Run-loop composer stays
+        // hidden. Fail-soft (the seam resolves on error and is absent on an older
+        // harness) — never throw.
         await refresh?.("squad-roster");
+        await refresh?.("squad-coordinator");
         emitResult(
           ctx,
           JSON.stringify({
@@ -767,6 +770,8 @@ function makeRetireMemberTool(
         // Free the cast name so the ensemble can reuse it (fail-soft, never throws).
         await retireCastingName(scopedHome, parsed.data.slug);
         await refresh?.("squad-roster");
+        // Retiring the last member re-hides the member-gated coordinator panel.
+        await refresh?.("squad-coordinator");
         emitResult(ctx, JSON.stringify({ ok: true, slug: parsed.data.slug }));
       } catch (e) {
         // retireMember throws when the dir is already gone — but a registry entry can
@@ -3336,8 +3341,10 @@ async function approveCastAction(): Promise<RibActionResult> {
     }
     const outcome = await scaffoldRoster(scopeMembersDir(home, scopeId), records);
     await clearProposal(scopedHome);
-    await refreshWorkflow?.("squad-roster");
-    await refreshWorkflow?.("squad-cast");
+    // Seating a squad flips the coordinator/runs panels' member-gate (hideWhenEmpty),
+    // so refresh every bound collector — not just roster/cast — or the Run-loop panel
+    // stays hidden until its own cadence tick.
+    await refreshSquadPanels();
     return {
       ok: true,
       data: {
@@ -3399,6 +3406,8 @@ async function retireAction(action: RibAction): Promise<RibActionResult> {
     // Free the cast name so the ensemble can reuse it (fail-soft, never throws).
     await retireCastingName(scopedHome, slug);
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
+    // Retiring the last member re-hides the member-gated coordinator panel.
+    await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
     return { ok: true, data: { slug } };
   } catch (e) {
     // retireMember throws when the dir is already gone, but a registry entry can linger

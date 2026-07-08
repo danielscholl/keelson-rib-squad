@@ -442,9 +442,12 @@ describe("approve-cast / discard-cast actions", () => {
     expect(records.find((m) => m.originalName === "Vera")?.identitySlot).toBe(1);
     // The whole roster is cast from ONE ensemble (a coherent squad).
     expect(new Set(members.map((m) => m.themeId)).size).toBe(1);
-    // The proposal was consumed; the roster + cast panels refreshed.
+    // The proposal was consumed; the roster + cast panels refreshed. The member-gated
+    // coordinator panel refreshes too, so the Run-loop panel appears as the squad seats
+    // instead of lagging to its cadence tick.
     expect(await readProposal(scopeDataHome(home, "p1"))).toBeUndefined();
     expect(refreshed).toContain("squad-roster");
+    expect(refreshed).toContain("squad-coordinator");
   });
 
   test("approve fails closed with no pending proposal", async () => {
