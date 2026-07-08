@@ -650,6 +650,86 @@ describe("runCoordinator loop", () => {
     expect(seen[0]?.prompt).toContain('progress directive MUST include a non-empty "plan"');
   });
 
+  const coderRoster = (): Member[] => [
+    {
+      slug: "atlas",
+      name: "atlas",
+      role: "Engineer",
+      charter: "x",
+      status: "active",
+      tools: ["code", "read"],
+    },
+  ];
+
+  test("states code-arm routing as an imperative for editing steps (#89)", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.prompt).toMatch(/must set "mode":"code"/i);
+  });
+
+  test("nudges toward the code arm when a code-capable member ran read-only for an edit (#89)", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      roster: coderRoster(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(
+        [
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"write the three behavioral tests"}',
+          'done\n{"action":"done","summary":"shipped"}',
+        ],
+        seen,
+      ),
+      dispatch: fakeDispatch("read-only means I can only give you the additions").fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[1]?.prompt).toContain("atlas");
+    expect(seen[1]?.prompt).toMatch(/re-issue .*"mode":"code"/i);
+  });
+
+  test("does not nudge when the read-only step was analytical, not editing (#89)", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      roster: coderRoster(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(
+        [
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"analyze why the suite is stalling"}',
+          'done\n{"action":"done","summary":"shipped"}',
+        ],
+        seen,
+      ),
+      dispatch: fakeDispatch("here is the analysis").fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[1]?.prompt).not.toMatch(/re-issue .*"mode":"code"/i);
+  });
+
+  test("does not nudge when the read-only member cannot code (#89)", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: capturingQueuedRun(
+        [
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"write the tests"}',
+          'done\n{"action":"done","summary":"shipped"}',
+        ],
+        seen,
+      ),
+      dispatch: fakeDispatch("only text here").fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[1]?.prompt).not.toMatch(/re-issue .*"mode":"code"/i);
+  });
+
   test("dispatches the next step then ends, folding the synthesis into facts", async () => {
     const d = fakeDispatch("built it");
     const res = await runCoordinator({
