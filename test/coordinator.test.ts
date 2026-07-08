@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type {
   MemoryTools,
   MessageChunk,
@@ -91,6 +93,80 @@ function fakeDispatch(synthesis = "did the work") {
 
 function project(id: string, name: string, rootPath: string) {
   return { id, name, rootPath, createdAt: NOW };
+}
+
+const execFileAsync = promisify(execFile);
+
+// A git repo with one committed file and an uncommitted edit, so a review dispatch has a
+// real working-tree diff to capture (mirrors dispatch.test.ts's seedProjectRepoWithDiff).
+async function seedRepoWithDiff(dir: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "limits.ts"), "export const DEFAULT_LIMIT = 10;\n");
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+  await execFileAsync("git", ["config", "user.name", "Coord Test"], { cwd: dir });
+  await execFileAsync("git", ["add", "limits.ts"], { cwd: dir });
+  await execFileAsync("git", ["commit", "-m", "init"], { cwd: dir });
+  await writeFile(join(dir, "limits.ts"), "export const DEFAULT_LIMIT = 11;\n");
+  return dir;
+}
+
+// Drive the REAL dispatch closure (no injected dispatch) through one manager-directed
+// dispatch to `member`, then done. Returns the request captured for the member's own turn.
+async function runReviewDispatch(
+  member: Member,
+  instruction: string,
+  repo: string,
+  membersRoot: string,
+): Promise<{
+  status: string;
+  memberReq: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0] | undefined;
+}> {
+  const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+  const directive = JSON.stringify({
+    action: "progress",
+    satisfied: false,
+    progress: true,
+    next_speaker: member.slug,
+    instruction,
+  });
+  const res = await runCoordinator({
+    membersRoot,
+    dataHome: membersRoot,
+    roster: [member],
+    task: "run a project review",
+    now: () => NOW,
+    project: project("p", "demo", repo),
+    runAgentTurn: capturingQueuedRun(
+      [`go\n${directive}`, "reviewed", 'ok\n{"action":"done","summary":"finished it"}'],
+      seen,
+    ),
+    // No-op reflection keeps loop-close from spending an extra turn on the reply queue.
+    reflectAtClose: async () => [],
+  } as Parameters<typeof runCoordinator>[0]);
+  return { status: res.status, memberReq: seen.find((r) => r.system?.includes("## Identity")) };
+}
+
+function textOnlyMember(slug: string): Member {
+  return {
+    slug,
+    name: slug,
+    role: "Reviewer",
+    charter: `I am ${slug}.`,
+    status: "active",
+    tools: [],
+  };
+}
+
+function readCapableMember(slug: string): Member {
+  return {
+    slug,
+    name: slug,
+    role: "Reviewer",
+    charter: `I am ${slug}.`,
+    status: "active",
+    tools: ["read"],
+  };
 }
 
 function registeredTool(tools: readonly ToolDefinition[], name: string): ToolDefinition {
@@ -648,6 +724,71 @@ describe("runCoordinator loop", () => {
     expect(seen[0]?.prompt).toContain("(no plan yet)");
     expect(seen[0]?.prompt).toContain("one or two sentences of PROSE first");
     expect(seen[0]?.prompt).toContain('progress directive MUST include a non-empty "plan"');
+  });
+
+  test("teaches the inline-material and no-transcript dispatch contracts (#110)", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.prompt).toContain("MUST carry the material to review INLINE");
+    expect(seen[0]?.prompt).toContain("transcript content does NOT travel between dispatches");
+  });
+
+  test("inlines the bounded diff for a review dispatched to a text-only member (#110)", async () => {
+    const repo = await seedRepoWithDiff(join(home, "review-inline"));
+    const { status, memberReq } = await runReviewDispatch(
+      textOnlyMember("solo"),
+      "Review the current project diff and refute it.",
+      repo,
+      home,
+    );
+    expect(status).toBe("done");
+    expect(memberReq).toBeDefined();
+    // The bounded diff is carried inline in the member's brief...
+    expect(memberReq?.prompt).toContain("## CODE DIFF UNDER REVIEW");
+    expect(memberReq?.prompt).toContain("diff --git");
+    expect(memberReq?.prompt).toContain("DEFAULT_LIMIT = 11");
+    expect(memberReq?.prompt).toContain("no filesystem access");
+    // ...and inlineReviewDiff means NO repo-read grant is paired with it.
+    expect(memberReq?.cwd).toBeUndefined();
+    expect(memberReq?.allowedDirectories).toBeUndefined();
+    expect(memberReq?.allowedTools).toBeUndefined();
+  });
+
+  test("a review dispatched to a read-capable member reads the repo, not an inline diff (#110)", async () => {
+    const repo = await seedRepoWithDiff(join(home, "review-read"));
+    const { status, memberReq } = await runReviewDispatch(
+      readCapableMember("scout"),
+      "Review the current project diff and refute it.",
+      repo,
+      home,
+    );
+    expect(status).toBe("done");
+    expect(memberReq).toBeDefined();
+    // inlineReviewDiff is NOT set: the member is granted read-tools confined to the repo.
+    expect(memberReq?.prompt).not.toContain("no filesystem access");
+    expect(memberReq?.cwd).toBe(repo);
+    expect(memberReq?.allowedTools).toContain("Read");
+  });
+
+  test("a non-review dispatch to a text-only member does not inline a diff (#110)", async () => {
+    const repo = await seedRepoWithDiff(join(home, "review-none"));
+    const { status, memberReq } = await runReviewDispatch(
+      textOnlyMember("solo"),
+      "Summarize the current change for the changelog.",
+      repo,
+      home,
+    );
+    expect(status).toBe("done");
+    expect(memberReq).toBeDefined();
+    // Not review-shaped: no diff is captured and inlineReviewDiff stays off (repo reads granted).
+    expect(memberReq?.prompt).not.toContain("## CODE DIFF UNDER REVIEW");
+    expect(memberReq?.prompt).not.toContain("no filesystem access");
+    expect(memberReq?.cwd).toBe(repo);
   });
 
   const coderRoster = (): Member[] => [

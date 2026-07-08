@@ -16,6 +16,7 @@ import {
   type DispatchOutcome,
   type DispatchResult,
   dispatchFanout,
+  isProjectReviewTask,
   type MemberContribution,
   reflectMembersAtClose,
 } from "./dispatch.ts";
@@ -547,6 +548,8 @@ function coordinatorPrompt(
     '\n- to author a REUSABLE workflow (a DAG) for recurring/deterministic sub-work, add "mode":"workflow" with an instruction describing what it should do.';
   const needsNote =
     '\n- if the members above lack a capability this goal needs, add "needs":["<the missing specialist, e.g. a security reviewer>"] so the operator can cast them. This is a non-blocking recommendation — keep going with the best available member; do NOT wait.';
+  const dispatchNote =
+    "\n- a review/analysis dispatch to a non-code (text-only) member MUST carry the material to review INLINE in the instruction — the diff, snippet, or text itself. That member has no filesystem or git access and cannot fetch it.\n- transcript content does NOT travel between dispatches: each member starts fresh with no memory of prior rounds, so restate every fact, file, or decision a member needs directly in that dispatch's instruction.";
   return `Goal:\n${ledger.task}
 ${replanNote}${repeatNote}${codeArmHint}${groundingBlock}
 Members you may assign (use the slug as next_speaker):
@@ -564,7 +567,7 @@ ${renderTranscript(ledger.transcript)}
 Assess the state in one or two sentences of PROSE first (your reasoning is recorded), then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to continue: {"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"<member slug>","instruction":"<the single next instruction for that member>","plan":["step","step"],"facts":["any new finding"]}
 - when the Current plan above reads "(no plan yet)", the progress directive MUST include a non-empty "plan".
-- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}${needsNote}
+- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}${needsNote}${dispatchNote}
 - if the task requires per-item dispositions, carry them ON the done directive itself — {"action":"done","summary":"...","dispositions":[{"threadRef":"...","disposition":"fixed|declined","note":"..."}]} — never in the prose.
 Set "satisfied" true only when the goal is genuinely complete. Pick next_speaker from the members above. Keep the instruction to ONE concrete step.`;
 }
@@ -1006,6 +1009,10 @@ function reviewMembers(roster: readonly Member[]): Member[] {
   return preferred.length > 0 ? preferred : [...roster];
 }
 
+function isTextOnlyMember(member: Member): boolean {
+  return !(member.tools ?? []).some((tag) => tag === "read" || tag === "code");
+}
+
 function summarizeReview(outcome: DispatchOutcome): { summary: string; hadUsableOutput: boolean } {
   const synthesis = outcome.synthesis?.trim();
   if (synthesis) return { summary: synthesis, hadUsableOutput: true };
@@ -1213,21 +1220,28 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   // prefixed with the team's recalled memory so execution benefits from it too.
   const dispatch =
     opts.dispatch ??
-    ((members: Member[], instruction: string, dopts?: { isReview?: boolean }) =>
-      dispatchFanout({
+    ((members: Member[], instruction: string, dopts?: { isReview?: boolean }) => {
+      const task = withTeamMemory(instruction, recalled, ledger.plan.length > 0);
+      // A review-shaped dispatch to members with no filesystem access can't fetch the diff
+      // themselves — inline the bounded diff into their brief instead of granting repo reads.
+      const inlineReviewDiff =
+        (dopts?.isReview ?? isProjectReviewTask(task)) && members.every(isTextOnlyMember);
+      return dispatchFanout({
         runAgentTurn: opts.runAgentTurn,
         membersRoot: opts.membersRoot,
         members,
-        task: withTeamMemory(instruction, recalled, ledger.plan.length > 0),
+        task,
         synthesize: members.length > 1,
         // Pass the project so a dispatched member can READ the repo to ground its answer (a
         // reviewer that can't open the diff is the live gap this closes); absent → text-only.
         ...(project ? { project: { name: project.name, rootPath: project.rootPath } } : {}),
         ...(dopts?.isReview !== undefined ? { isReview: dopts.isReview } : {}),
+        ...(inlineReviewDiff ? { inlineReviewDiff: true } : {}),
         ...(ledger.baselineTree ? { baselineTree: ledger.baselineTree } : {}),
         ...(opts.getExec ? { exec: opts.getExec } : {}),
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
-      }));
+      });
+    });
 
   // The code arm: a confined coding turn for the speaker, bound only when a project is
   // present (it confines to project.rootPath). Absent → a code step falls to dispatch.
