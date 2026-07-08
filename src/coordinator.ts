@@ -16,6 +16,7 @@ import {
   type DispatchOutcome,
   type DispatchResult,
   dispatchFanout,
+  isProjectReviewTask,
   type MemberContribution,
   reflectMembersAtClose,
 } from "./dispatch.ts";
@@ -1008,6 +1009,10 @@ function reviewMembers(roster: readonly Member[]): Member[] {
   return preferred.length > 0 ? preferred : [...roster];
 }
 
+function isTextOnlyMember(member: Member): boolean {
+  return !(member.tools ?? []).some((tag) => tag === "read" || tag === "code");
+}
+
 function summarizeReview(outcome: DispatchOutcome): { summary: string; hadUsableOutput: boolean } {
   const synthesis = outcome.synthesis?.trim();
   if (synthesis) return { summary: synthesis, hadUsableOutput: true };
@@ -1215,21 +1220,28 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   // prefixed with the team's recalled memory so execution benefits from it too.
   const dispatch =
     opts.dispatch ??
-    ((members: Member[], instruction: string, dopts?: { isReview?: boolean }) =>
-      dispatchFanout({
+    ((members: Member[], instruction: string, dopts?: { isReview?: boolean }) => {
+      const task = withTeamMemory(instruction, recalled, ledger.plan.length > 0);
+      // A review-shaped dispatch to members with no filesystem access can't fetch the diff
+      // themselves — inline the bounded diff into their brief instead of granting repo reads.
+      const inlineReviewDiff =
+        (dopts?.isReview ?? isProjectReviewTask(task)) && members.every(isTextOnlyMember);
+      return dispatchFanout({
         runAgentTurn: opts.runAgentTurn,
         membersRoot: opts.membersRoot,
         members,
-        task: withTeamMemory(instruction, recalled, ledger.plan.length > 0),
+        task,
         synthesize: members.length > 1,
         // Pass the project so a dispatched member can READ the repo to ground its answer (a
         // reviewer that can't open the diff is the live gap this closes); absent → text-only.
         ...(project ? { project: { name: project.name, rootPath: project.rootPath } } : {}),
         ...(dopts?.isReview !== undefined ? { isReview: dopts.isReview } : {}),
+        ...(inlineReviewDiff ? { inlineReviewDiff: true } : {}),
         ...(ledger.baselineTree ? { baselineTree: ledger.baselineTree } : {}),
         ...(opts.getExec ? { exec: opts.getExec } : {}),
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
-      }));
+      });
+    });
 
   // The code arm: a confined coding turn for the speaker, bound only when a project is
   // present (it confines to project.rootPath). Absent → a code step falls to dispatch.

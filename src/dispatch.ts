@@ -448,7 +448,7 @@ ${reviewContext}
 ${task}`;
 }
 
-function isProjectReviewTask(task: string): boolean {
+export function isProjectReviewTask(task: string): boolean {
   const t = task.toLowerCase();
   return /\breview\b|\badversarial\b|\baudit\b|\binspect\b/.test(t);
 }
