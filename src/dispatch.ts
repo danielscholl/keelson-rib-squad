@@ -30,6 +30,11 @@ const MAX_REVIEW_DIFF_CHARS = 24_000;
 // must never be able to truncate the whole new-file section away — that would re-hide exactly
 // what the untracked-visibility fix surfaces, in the large-change case the cap targets.
 const UNTRACKED_DIFF_BUDGET = 8_000;
+// The baseline-scoped path list and binary appendix are subtracted from the changed-diff
+// budget, so each needs its own bound or a huge run delta drives that remainder negative
+// and the assembled diff exceeds MAX_REVIEW_DIFF_CHARS anyway.
+const STATUS_SECTION_BUDGET = 6_000;
+const MAX_BINARY_APPENDIX_PATHS = 50;
 // A scaffold can drop dozens of new files at once; diffing every one would crowd out the
 // tracked changes. List the overflow by count instead of diffing all of them.
 const MAX_UNTRACKED_FILES = 25;
@@ -555,7 +560,11 @@ async function collectBaselineScopedGitDiff(
   addBinaryPaths(binaryPaths, partitionedChanged.binaryPaths);
   addBinaryPaths(binaryPaths, added.binaryPaths);
 
-  const statusSection = `### Run delta (baseline-scoped)\nChanged paths since the run baseline:\n\`\`\`diff\n${nameStatus.output.trimEnd()}\n\`\`\``;
+  const statusSection = capDiffSection(
+    `### Run delta (baseline-scoped)\nChanged paths since the run baseline:\n\`\`\`diff\n${nameStatus.output.trimEnd()}\n\`\`\``,
+    STATUS_SECTION_BUDGET,
+    "changed-path list",
+  );
   const addedSection = added.section
     ? capDiffSection(added.section, UNTRACKED_DIFF_BUDGET, "added-file diff")
     : "";
@@ -687,7 +696,10 @@ function addBinaryPaths(target: Set<string>, paths: readonly string[]): void {
 
 function formatBinaryAppendix(paths: ReadonlySet<string>): string {
   if (paths.size === 0) return "";
-  const names = [...paths].sort().map((path) => `- \`${path}\``);
+  const sorted = [...paths].sort();
+  const names = sorted.slice(0, MAX_BINARY_APPENDIX_PATHS).map((path) => `- \`${path}\``);
+  const omitted = sorted.length - names.length;
+  if (omitted > 0) names.push(`- _…and ${omitted} more binary file(s) not listed._`);
   return `### Binary files changed (not shown)\n${names.join("\n")}`;
 }
 

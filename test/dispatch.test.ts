@@ -696,6 +696,30 @@ describe("dispatchFanout", () => {
     expect(diff).not.toContain("Binary files /dev/null");
   });
 
+  test("the binary appendix is bounded and the assembled diff respects the review cap", async () => {
+    const repo = await seedCleanProjectRepo("project-baseline-binary-flood");
+    const baselineTree = await captureScratchTree(repo);
+    await Promise.all(
+      Array.from({ length: 60 }, (_, i) =>
+        writeFile(join(repo, `asset-${String(i).padStart(3, "0")}.png`), Buffer.from([0, i, 2])),
+      ),
+    );
+
+    const diff = await captureDiffUnderReview(
+      "review this change",
+      { name: "demo", rootPath: repo },
+      true,
+      { baselineTree },
+    );
+
+    const text = diff ?? "";
+    const appendix = text.slice(text.indexOf("### Binary files changed (not shown)"));
+    expect(appendix).toContain("asset-000.png");
+    expect(appendix).toContain("…and 10 more binary file(s) not listed.");
+    expect(appendix).not.toContain("asset-059.png");
+    expect(text.length).toBeLessThanOrEqual(24_000);
+  });
+
   test("a baseline-scoped review includes committed changes since baseline", async () => {
     const repo = await seedCleanProjectRepo("project-baseline-committed");
     const baselineTree = await captureScratchTree(repo);
