@@ -451,7 +451,7 @@ function renderRoster(roster: readonly Member[]): string {
     .join("\n");
 }
 
-function renderTranscript(transcript: readonly CoordinatorEntry[]): string {
+export function renderTranscript(transcript: readonly CoordinatorEntry[]): string {
   const recent = transcript.slice(-8);
   if (recent.length === 0) return "(nothing yet)";
   return recent.map((e) => `Round ${e.round} — ${renderTranscriptEntry(e)}`).join("\n");
