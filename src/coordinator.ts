@@ -548,7 +548,7 @@ function coordinatorPrompt(
   const needsNote =
     '\n- if the members above lack a capability this goal needs, add "needs":["<the missing specialist, e.g. a security reviewer>"] so the operator can cast them. This is a non-blocking recommendation — keep going with the best available member; do NOT wait.';
   const dispatchNote =
-    '\n- a review/analysis dispatch to a non-code (text-only) member MUST carry the material to review INLINE in the instruction — the diff, snippet, or text itself. That member has no filesystem or git access and cannot fetch it.\n- transcript content does NOT travel between dispatches: each member starts fresh with no memory of prior rounds, so restate every fact, file, or decision a member needs directly in that dispatch\'s instruction.';
+    "\n- a review/analysis dispatch to a non-code (text-only) member MUST carry the material to review INLINE in the instruction — the diff, snippet, or text itself. That member has no filesystem or git access and cannot fetch it.\n- transcript content does NOT travel between dispatches: each member starts fresh with no memory of prior rounds, so restate every fact, file, or decision a member needs directly in that dispatch's instruction.";
   return `Goal:\n${ledger.task}
 ${replanNote}${repeatNote}${codeArmHint}${groundingBlock}
 Members you may assign (use the slug as next_speaker):

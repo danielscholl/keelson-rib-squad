@@ -619,6 +619,36 @@ describe("dispatchFanout", () => {
     expect(prompt).toContain("shared mutable object");
   });
 
+  test("inlineReviewDiff inlines the bounded diff without granting read-tools (#110)", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedProjectRepoWithDiff("project-inline-review");
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change and find defects",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+      isReview: true,
+      inlineReviewDiff: true,
+    });
+    const req = reqs[0];
+    const prompt = req?.prompt ?? "";
+    expect(prompt).toContain("## CODE DIFF UNDER REVIEW");
+    expect(prompt).toContain("diff --git");
+    expect(prompt).toContain("no filesystem access");
+    // The inlined diff must NOT be paired with any repo read grant.
+    expect(req?.cwd).toBeUndefined();
+    expect(req?.allowedDirectories).toBeUndefined();
+    expect(req?.allowedTools).toBeUndefined();
+    expect(req?.tools).toBeUndefined();
+  });
+
   test("a baseline-scoped review ignores untracked files present at baseline", async () => {
     const repo = await seedCleanProjectRepo("project-baseline-untracked");
     await writeFile(join(repo, "operator.png"), "operator artifact that predates the run\n");

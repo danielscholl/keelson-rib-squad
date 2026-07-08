@@ -650,6 +650,18 @@ describe("runCoordinator loop", () => {
     expect(seen[0]?.prompt).toContain('progress directive MUST include a non-empty "plan"');
   });
 
+  test("teaches the inline-material and no-transcript dispatch contracts (#110)", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+    });
+    expect(res.status).toBe("done");
+    expect(seen[0]?.prompt).toContain("MUST carry the material to review INLINE");
+    expect(seen[0]?.prompt).toContain("transcript content does NOT travel between dispatches");
+  });
+
   const coderRoster = (): Member[] => [
     {
       slug: "atlas",
