@@ -98,6 +98,8 @@ function expectReadOnlyGit(calls: readonly RunTextCall[], repo: string) {
     expect(forbidden.has(op ?? "")).toBe(false);
     const isUnstagedDiff = call.args.join(" ") === "diff --no-color";
     const isStagedDiff = call.args.join(" ") === "diff --no-color --staged";
+    const isUnstagedNumstat = call.args.join(" ") === "diff --no-color --numstat";
+    const isStagedNumstat = call.args.join(" ") === "diff --no-color --staged --numstat";
     const isLsFiles = call.args.join(" ") === "ls-files --others --exclude-standard -z";
     const isNoIndexDiff =
       call.args.length === 6 &&
@@ -106,7 +108,14 @@ function expectReadOnlyGit(calls: readonly RunTextCall[], repo: string) {
       call.args[2] === "--no-index" &&
       call.args[3] === "--" &&
       call.args[4] === "/dev/null";
-    expect(isUnstagedDiff || isStagedDiff || isLsFiles || isNoIndexDiff).toBe(true);
+    expect(
+      isUnstagedDiff ||
+        isStagedDiff ||
+        isUnstagedNumstat ||
+        isStagedNumstat ||
+        isLsFiles ||
+        isNoIndexDiff,
+    ).toBe(true);
   }
   expect(calls.some((call) => call.args[0] === "diff" && call.args.includes("--no-index"))).toBe(
     true,

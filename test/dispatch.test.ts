@@ -10,7 +10,7 @@ import type {
   RibAgentTurnRequest,
   RibAgentTurnResult,
 } from "@keelson/shared";
-import { dispatchFanout } from "../src/dispatch.ts";
+import { captureDiffUnderReview, dispatchFanout } from "../src/dispatch.ts";
 import {
   type MemberRecord,
   readMemberDoc,
@@ -81,6 +81,12 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
 }
 
 async function seedProjectRepoWithDiff(dirName: string): Promise<string> {
+  const repo = await seedCleanProjectRepo(dirName);
+  await writeFile(join(repo, "limits.ts"), "export const DEFAULT_LIMIT = 11;\n");
+  return repo;
+}
+
+async function seedCleanProjectRepo(dirName: string): Promise<string> {
   const repo = join(root, dirName);
   await mkdir(repo, { recursive: true });
   const file = join(repo, "limits.ts");
@@ -90,8 +96,19 @@ async function seedProjectRepoWithDiff(dirName: string): Promise<string> {
   await execFileAsync("git", ["config", "user.name", "Dispatch Test"], { cwd: repo });
   await execFileAsync("git", ["add", "limits.ts"], { cwd: repo });
   await execFileAsync("git", ["commit", "-m", "init"], { cwd: repo });
-  await writeFile(file, "export const DEFAULT_LIMIT = 11;\n");
   return repo;
+}
+
+async function captureScratchTree(repo: string): Promise<string> {
+  const scratchDir = await mkdtemp(join(tmpdir(), "squad-dispatch-index-"));
+  const env = { ...process.env, GIT_INDEX_FILE: join(scratchDir, "index") };
+  try {
+    await execFileAsync("git", ["add", "-A", "--", "."], { cwd: repo, env });
+    const { stdout } = await execFileAsync("git", ["write-tree"], { cwd: repo, env });
+    return stdout.trim();
+  } finally {
+    await rm(scratchDir, { recursive: true, force: true });
+  }
 }
 
 describe("dispatchFanout", () => {
@@ -602,6 +619,126 @@ describe("dispatchFanout", () => {
     expect(prompt).toContain("shared mutable object");
   });
 
+  test("a baseline-scoped review ignores untracked files present at baseline", async () => {
+    const repo = await seedCleanProjectRepo("project-baseline-untracked");
+    await writeFile(join(repo, "operator.png"), "operator artifact that predates the run\n");
+    const baselineTree = await captureScratchTree(repo);
+
+    const diff = await captureDiffUnderReview(
+      "review this change",
+      { name: "demo", rootPath: repo },
+      true,
+      { baselineTree },
+    );
+
+    expect(diff).toContain("_No changes detected since the run baseline._");
+    expect(diff).not.toContain("operator.png");
+  });
+
+  test("dispatchFanout threads the run baseline into review diff capture", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedCleanProjectRepo("project-fanout-baseline");
+    await writeFile(join(repo, "operator.png"), "operator artifact that predates the run\n");
+    const baselineTree = await captureScratchTree(repo);
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+      isReview: true,
+      baselineTree,
+    });
+
+    const prompt = reqs[0]?.prompt ?? "";
+    expect(prompt).toContain("_No changes detected since the run baseline._");
+    expect(prompt).not.toContain("operator.png");
+  });
+
+  test("a baseline-scoped review still includes files created after baseline", async () => {
+    const repo = await seedCleanProjectRepo("project-baseline-new-file");
+    const baselineTree = await captureScratchTree(repo);
+    await writeFile(join(repo, "added-module.ts"), "export const ADDED = 'new module body';\n");
+
+    const diff = await captureDiffUnderReview(
+      "review this change",
+      { name: "demo", rootPath: repo },
+      true,
+      { baselineTree },
+    );
+
+    expect(diff).toContain("Added files");
+    expect(diff).toContain("added-module.ts");
+    expect(diff).toContain("new module body");
+  });
+
+  test("a baseline-scoped review lists binary changes in an appendix only", async () => {
+    const repo = await seedCleanProjectRepo("project-baseline-binary");
+    const baselineTree = await captureScratchTree(repo);
+    await writeFile(join(repo, "snapshot.png"), Buffer.from([0, 1, 2, 3, 4, 5]));
+
+    const diff = await captureDiffUnderReview(
+      "review this change",
+      { name: "demo", rootPath: repo },
+      true,
+      { baselineTree },
+    );
+
+    expect(diff).toContain("Binary files changed (not shown)");
+    expect(diff).toContain("snapshot.png");
+    expect(diff).not.toContain("Binary files /dev/null");
+  });
+
+  test("the binary appendix is bounded and the assembled diff respects the review cap", async () => {
+    const repo = await seedCleanProjectRepo("project-baseline-binary-flood");
+    const baselineTree = await captureScratchTree(repo);
+    await Promise.all(
+      Array.from({ length: 60 }, (_, i) =>
+        writeFile(join(repo, `asset-${String(i).padStart(3, "0")}.png`), Buffer.from([0, i, 2])),
+      ),
+    );
+
+    const diff = await captureDiffUnderReview(
+      "review this change",
+      { name: "demo", rootPath: repo },
+      true,
+      { baselineTree },
+    );
+
+    const text = diff ?? "";
+    const appendix = text.slice(text.indexOf("### Binary files changed (not shown)"));
+    expect(appendix).toContain("asset-000.png");
+    expect(appendix).toContain("…and 10 more binary file(s) not listed.");
+    expect(appendix).not.toContain("asset-059.png");
+    expect(text.length).toBeLessThanOrEqual(24_000);
+  });
+
+  test("a baseline-scoped review includes committed changes since baseline", async () => {
+    const repo = await seedCleanProjectRepo("project-baseline-committed");
+    const baselineTree = await captureScratchTree(repo);
+    await writeFile(join(repo, "limits.ts"), "export const DEFAULT_LIMIT = 42;\n");
+    await execFileAsync("git", ["add", "limits.ts"], { cwd: repo });
+    await execFileAsync("git", ["commit", "-m", "raise limit"], { cwd: repo });
+
+    const diff = await captureDiffUnderReview(
+      "review this change",
+      { name: "demo", rootPath: repo },
+      true,
+      { baselineTree },
+    );
+
+    expect(diff).toContain("Run delta (baseline-scoped)");
+    expect(diff).toContain("limits.ts");
+    expect(diff).toContain("DEFAULT_LIMIT = 42");
+  });
+
   test("a review surfaces brand-new untracked files the tracked diff would hide (#59)", async () => {
     const members = await Promise.all([seed("a", "Alpha")]);
     const repo = await seedProjectRepoWithDiff("project-untracked");
@@ -625,6 +762,30 @@ describe("dispatchFanout", () => {
     expect(prompt).toContain("added-module.ts");
     // The file's actual content reaches the reviewer as a new-file diff, not just its name.
     expect(prompt).toContain("new module body");
+  });
+
+  test("a review partitions untracked binary files into a names-only appendix", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedProjectRepoWithDiff("project-untracked-binary");
+    await writeFile(join(repo, "artifact.png"), Buffer.from([0, 1, 2, 3, 4, 5]));
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change and find defects",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+    });
+    const prompt = reqs[0]?.prompt ?? "";
+    expect(prompt).toContain("Untracked (new) files");
+    expect(prompt).toContain("Binary files changed (not shown)");
+    expect(prompt).toContain("artifact.png");
+    expect(prompt).not.toContain("Binary files /dev/null");
   });
 
   test("a review diff is capped so a large change cannot blow the reviewer's context (#59)", async () => {
