@@ -448,22 +448,37 @@ async function collectGitDiff(rootPath: string, options: DiffCaptureOptions = {}
   if (baselineTree) return await collectBaselineScopedGitDiff(rootPath, baselineTree, options.exec);
 
   const exec = options.exec;
-  const [unstaged, staged, untracked] = await Promise.all([
+  const [unstaged, staged, untracked, unstagedNumstat, stagedNumstat] = await Promise.all([
     readGitDiff(rootPath, [], exec),
     readGitDiff(rootPath, ["--staged"], exec),
     readUntrackedDiff(rootPath, exec),
+    readGitDiff(rootPath, ["--numstat"], exec),
+    readGitDiff(rootPath, ["--staged", "--numstat"], exec),
+  ]);
+  const binaryPaths = new Set<string>([
+    ...(unstagedNumstat.kind === "ok" ? parseBinaryNumstatPaths(unstagedNumstat.output) : []),
+    ...(stagedNumstat.kind === "ok" ? parseBinaryNumstatPaths(stagedNumstat.output) : []),
   ]);
   // A brand-new file never appears in `git diff` (tracked) — exactly the change a review most
   // needs to see, so the untracked section gets its own reserved budget below.
   const tracked: string[] = [];
   if (unstaged.kind === "ok" && unstaged.output.trim().length > 0) {
-    tracked.push(`### Working tree\n\`\`\`diff\n${unstaged.output.trimEnd()}\n\`\`\``);
+    const partitioned = partitionBinaryDiff(unstaged.output, binaryPaths);
+    addBinaryPaths(binaryPaths, partitioned.binaryPaths);
+    if (partitioned.output.trim().length > 0) {
+      tracked.push(`### Working tree\n\`\`\`diff\n${partitioned.output.trimEnd()}\n\`\`\``);
+    }
   }
   if (staged.kind === "ok" && staged.output.trim().length > 0) {
-    tracked.push(`### Staged\n\`\`\`diff\n${staged.output.trimEnd()}\n\`\`\``);
+    const partitioned = partitionBinaryDiff(staged.output, binaryPaths);
+    addBinaryPaths(binaryPaths, partitioned.binaryPaths);
+    if (partitioned.output.trim().length > 0) {
+      tracked.push(`### Staged\n\`\`\`diff\n${partitioned.output.trimEnd()}\n\`\`\``);
+    }
   }
+  if (untracked) addBinaryPaths(binaryPaths, untracked.binaryPaths);
 
-  if (tracked.length === 0 && !untracked) {
+  if (tracked.length === 0 && !untracked?.section && binaryPaths.size === 0) {
     if (unstaged.kind === "error") return `_Diff capture unavailable: ${unstaged.error}_`;
     if (staged.kind === "error") return `_Diff capture unavailable: ${staged.error}_`;
     return "_No staged, unstaged, or untracked changes detected in the project working tree._";
@@ -474,13 +489,19 @@ async function collectGitDiff(rootPath: string, options: DiffCaptureOptions = {}
   // section (names included), re-hiding the new files this very change set out to surface.
   // The untracked section keeps a guaranteed slice (names lead, so they survive); the tracked
   // diff takes whatever budget remains so the total still fits the review turn.
-  const untrackedSection = untracked
-    ? capDiffSection(untracked, UNTRACKED_DIFF_BUDGET, "new-file diff")
+  const untrackedSection = untracked?.section
+    ? capDiffSection(untracked.section, UNTRACKED_DIFF_BUDGET, "new-file diff")
     : "";
-  const trackedBudget = Math.max(0, MAX_REVIEW_DIFF_CHARS - untrackedSection.length);
+  const binarySection = formatBinaryAppendix(binaryPaths);
+  const trackedBudget = Math.max(
+    0,
+    MAX_REVIEW_DIFF_CHARS - untrackedSection.length - binarySection.length,
+  );
   const trackedSection =
     tracked.length > 0 ? capDiffSection(tracked.join("\n\n"), trackedBudget, "tracked diff") : "";
-  return [trackedSection, untrackedSection].filter((s) => s.length > 0).join("\n\n");
+  return [trackedSection, untrackedSection, binarySection]
+    .filter((s) => s.length > 0)
+    .join("\n\n");
 }
 
 async function collectBaselineScopedGitDiff(
@@ -501,32 +522,47 @@ async function collectBaselineScopedGitDiff(
     return "_No changes detected since the run baseline._";
   }
 
+  const numstat = await runGitText(
+    rootPath,
+    ["diff", "--numstat", "--find-renames", baselineTree, current.tree],
+    exec,
+  );
+  if (numstat.kind === "error") return `_Diff capture unavailable: ${numstat.error}_`;
+  const binaryPaths = new Set(parseBinaryNumstatPaths(numstat.output));
   const entries = parseNameStatus(nameStatus.output);
   const addedPaths = entries
     .filter((entry) => entry.status === "A")
     .map((entry) => entry.paths[0])
-    .filter((path): path is string => Boolean(path));
+    .filter((path): path is string => Boolean(path) && !binaryPaths.has(path));
   const [changed, added] = await Promise.all([
     readGitDiff(rootPath, ["--find-renames", "--diff-filter=a", baselineTree, current.tree], exec),
     readAddedFileDiff(rootPath, baselineTree, current.tree, addedPaths, exec),
   ]);
   if (changed.kind === "error") return `_Diff capture unavailable: ${changed.error}_`;
+  const partitionedChanged = partitionBinaryDiff(changed.output, binaryPaths);
+  addBinaryPaths(binaryPaths, partitionedChanged.binaryPaths);
+  addBinaryPaths(binaryPaths, added.binaryPaths);
 
   const statusSection = `### Run delta (baseline-scoped)\nChanged paths since the run baseline:\n\`\`\`diff\n${nameStatus.output.trimEnd()}\n\`\`\``;
-  const addedSection = added ? capDiffSection(added, UNTRACKED_DIFF_BUDGET, "added-file diff") : "";
+  const addedSection = added.section
+    ? capDiffSection(added.section, UNTRACKED_DIFF_BUDGET, "added-file diff")
+    : "";
   const changedBody =
-    changed.output.trim().length > 0
-      ? `### Changed/deleted content\n\`\`\`diff\n${changed.output.trimEnd()}\n\`\`\``
+    partitionedChanged.output.trim().length > 0
+      ? `### Changed/deleted content\n\`\`\`diff\n${partitionedChanged.output.trimEnd()}\n\`\`\``
       : "";
+  const binarySection = formatBinaryAppendix(binaryPaths);
   const changedBudget = Math.max(
     0,
-    MAX_REVIEW_DIFF_CHARS - statusSection.length - addedSection.length,
+    MAX_REVIEW_DIFF_CHARS - statusSection.length - addedSection.length - binarySection.length,
   );
   const changedSection = changedBody
     ? capDiffSection(changedBody, changedBudget, "run-delta diff")
     : "";
 
-  return [statusSection, changedSection, addedSection].filter((s) => s.length > 0).join("\n\n");
+  return [statusSection, changedSection, addedSection, binarySection]
+    .filter((s) => s.length > 0)
+    .join("\n\n");
 }
 
 async function captureCurrentTree(
@@ -563,27 +599,42 @@ function parseNameStatus(output: string): NameStatusEntry[] {
   return entries;
 }
 
+interface DiffSectionResult {
+  section?: string;
+  binaryPaths: string[];
+}
+
 async function readAddedFileDiff(
   rootPath: string,
   baselineTree: string,
   currentTree: string,
   files: readonly string[],
   exec?: RibExec,
-): Promise<string | undefined> {
-  if (files.length === 0) return undefined;
+): Promise<DiffSectionResult> {
+  if (files.length === 0) return { binaryPaths: [] };
   const shown = files.slice(0, MAX_UNTRACKED_FILES);
   const overflow = files.length - shown.length;
   const names = shown.map((f) => `- \`${f}\``).join("\n");
   const overflowNote = overflow > 0 ? `\n- _…and ${overflow} more new file(s) not shown_` : "";
   const diffs: string[] = [];
+  const binaryPaths: string[] = [];
   for (const f of shown) {
     const body = await readDeltaFileDiff(rootPath, baselineTree, currentTree, f, exec);
     if (body && body.trim().length > 0) {
-      diffs.push(`#### \`${f}\`\n\`\`\`diff\n${body.trimEnd()}\n\`\`\``);
+      const partitioned = partitionBinaryDiff(body, new Set<string>());
+      if (partitioned.binaryPaths.length > 0) {
+        binaryPaths.push(...partitioned.binaryPaths);
+      }
+      if (partitioned.output.trim().length > 0) {
+        diffs.push(`#### \`${f}\`\n\`\`\`diff\n${partitioned.output.trimEnd()}\n\`\`\``);
+      }
     }
   }
   const diffBlock = diffs.length > 0 ? `\n\n${diffs.join("\n\n")}` : "";
-  return `### Added files\nNew files created since the run baseline:\n${names}${overflowNote}${diffBlock}`;
+  return {
+    section: `### Added files\nNew files created since the run baseline:\n${names}${overflowNote}${diffBlock}`,
+    binaryPaths,
+  };
 }
 
 async function readDeltaFileDiff(
@@ -613,6 +664,90 @@ function capDiffSection(diff: string, budget: number, label: string): string {
   // exceeds budget; the actual note is no longer than that reservation.
   const keep = Math.max(0, budget - note(diff.length).length);
   return `${diff.slice(0, keep)}${note(diff.length - keep)}`;
+}
+
+function addBinaryPaths(target: Set<string>, paths: readonly string[]): void {
+  for (const path of paths) {
+    const normalized = path.trim();
+    if (normalized) target.add(normalized);
+  }
+}
+
+function formatBinaryAppendix(paths: ReadonlySet<string>): string {
+  if (paths.size === 0) return "";
+  const names = [...paths].sort().map((path) => `- \`${path}\``);
+  return `### Binary files changed (not shown)\n${names.join("\n")}`;
+}
+
+function parseBinaryNumstatPaths(output: string): string[] {
+  const paths: string[] = [];
+  for (const line of output.split("\n")) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    if (parts[0] === "-" && parts[1] === "-") {
+      const path = parts.slice(2).join("\t").trim();
+      if (path) paths.push(path);
+    }
+  }
+  return paths;
+}
+
+function partitionBinaryDiff(
+  output: string,
+  knownBinaryPaths: ReadonlySet<string>,
+): { output: string; binaryPaths: string[] } {
+  const kept: string[] = [];
+  const binaryPaths: string[] = [];
+  for (const block of splitDiffBlocks(output)) {
+    const path = pathFromBinaryMarker(block) ?? pathFromDiffHeader(block);
+    const hasBinaryMarker = /^Binary files .+ differ$/m.test(block);
+    if (path && (hasBinaryMarker || knownBinaryPaths.has(path))) {
+      binaryPaths.push(path);
+      continue;
+    }
+    kept.push(block);
+  }
+  return { output: kept.join("\n"), binaryPaths };
+}
+
+function splitDiffBlocks(output: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  for (const line of output.split("\n")) {
+    if (line.startsWith("diff --git ") && current.length > 0) {
+      blocks.push(current.join("\n"));
+      current = [line];
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current.join("\n"));
+  return blocks.filter((block) => block.trim().length > 0);
+}
+
+function pathFromDiffHeader(block: string): string | undefined {
+  const match = /^diff --git (.+) (.+)$/m.exec(block);
+  if (!match) return undefined;
+  return normalizeDiffPath(match[2]) ?? normalizeDiffPath(match[1]);
+}
+
+function pathFromBinaryMarker(block: string): string | undefined {
+  const match = /^Binary files (.+) and (.+) differ$/m.exec(block);
+  if (!match) return undefined;
+  return normalizeDiffPath(match[2]) ?? normalizeDiffPath(match[1]);
+}
+
+function normalizeDiffPath(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  let normalized = path.trim();
+  if (normalized === "/dev/null") return undefined;
+  if (normalized.startsWith('"') && normalized.endsWith('"')) {
+    normalized = normalized.slice(1, -1);
+  }
+  if (normalized.startsWith("a/") || normalized.startsWith("b/")) {
+    return normalized.slice(2);
+  }
+  return normalized;
 }
 
 async function readGitDiff(
@@ -651,7 +786,10 @@ async function runGitText(
 // `git diff --no-index` against /dev/null rather than `git add -N`: both make a new file show
 // up in a diff, but --no-index is READ-ONLY and never mutates the operator's index. Returns
 // undefined outside a git repo (the tracked-diff error already names that case).
-async function readUntrackedDiff(rootPath: string, exec?: RibExec): Promise<string | undefined> {
+async function readUntrackedDiff(
+  rootPath: string,
+  exec?: RibExec,
+): Promise<DiffSectionResult | undefined> {
   let files: string[];
   if (exec) {
     const result = await exec.runText("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
@@ -677,14 +815,24 @@ async function readUntrackedDiff(rootPath: string, exec?: RibExec): Promise<stri
   const names = shown.map((f) => `- \`${f}\``).join("\n");
   const overflowNote = overflow > 0 ? `\n- _…and ${overflow} more new file(s) not shown_` : "";
   const diffs: string[] = [];
+  const binaryPaths: string[] = [];
   for (const f of shown) {
     const body = await readNewFileDiff(rootPath, f, exec);
     if (body && body.trim().length > 0) {
-      diffs.push(`#### \`${f}\`\n\`\`\`diff\n${body.trimEnd()}\n\`\`\``);
+      const partitioned = partitionBinaryDiff(body, new Set<string>());
+      if (partitioned.binaryPaths.length > 0) {
+        binaryPaths.push(...partitioned.binaryPaths);
+      }
+      if (partitioned.output.trim().length > 0) {
+        diffs.push(`#### \`${f}\`\n\`\`\`diff\n${partitioned.output.trimEnd()}\n\`\`\``);
+      }
     }
   }
   const diffBlock = diffs.length > 0 ? `\n\n${diffs.join("\n\n")}` : "";
-  return `### Untracked (new) files\nNew files not yet tracked by git — they never appear in the tracked diffs above:\n${names}${overflowNote}${diffBlock}`;
+  return {
+    section: `### Untracked (new) files\nNew files not yet tracked by git — they never appear in the tracked diffs above:\n${names}${overflowNote}${diffBlock}`,
+    binaryPaths,
+  };
 }
 
 async function readNewFileDiff(

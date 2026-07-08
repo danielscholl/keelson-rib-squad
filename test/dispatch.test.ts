@@ -652,6 +652,23 @@ describe("dispatchFanout", () => {
     expect(diff).toContain("new module body");
   });
 
+  test("a baseline-scoped review lists binary changes in an appendix only", async () => {
+    const repo = await seedCleanProjectRepo("project-baseline-binary");
+    const baselineTree = await captureScratchTree(repo);
+    await writeFile(join(repo, "snapshot.png"), Buffer.from([0, 1, 2, 3, 4, 5]));
+
+    const diff = await captureDiffUnderReview(
+      "review this change",
+      { name: "demo", rootPath: repo },
+      true,
+      { baselineTree },
+    );
+
+    expect(diff).toContain("Binary files changed (not shown)");
+    expect(diff).toContain("snapshot.png");
+    expect(diff).not.toContain("Binary files /dev/null");
+  });
+
   test("a baseline-scoped review includes committed changes since baseline", async () => {
     const repo = await seedCleanProjectRepo("project-baseline-committed");
     const baselineTree = await captureScratchTree(repo);
@@ -694,6 +711,30 @@ describe("dispatchFanout", () => {
     expect(prompt).toContain("added-module.ts");
     // The file's actual content reaches the reviewer as a new-file diff, not just its name.
     expect(prompt).toContain("new module body");
+  });
+
+  test("a review partitions untracked binary files into a names-only appendix", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedProjectRepoWithDiff("project-untracked-binary");
+    await writeFile(join(repo, "artifact.png"), Buffer.from([0, 1, 2, 3, 4, 5]));
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change and find defects",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+    });
+    const prompt = reqs[0]?.prompt ?? "";
+    expect(prompt).toContain("Untracked (new) files");
+    expect(prompt).toContain("Binary files changed (not shown)");
+    expect(prompt).toContain("artifact.png");
+    expect(prompt).not.toContain("Binary files /dev/null");
   });
 
   test("a review diff is capped so a large change cannot blow the reviewer's context (#59)", async () => {
