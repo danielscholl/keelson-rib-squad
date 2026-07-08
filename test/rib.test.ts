@@ -83,12 +83,13 @@ describe("rib-squad", () => {
         nodes?: { allowed_tools?: string[]; fail_on_tool_error?: boolean }[];
       }
     ).nodes?.[0];
-    expect(gNode?.allowed_tools).toEqual(["squad_emit_member"]);
+    expect(gNode?.allowed_tools).toEqual(["squad_casting_options", "squad_emit_member"]);
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
 
   it("registers all coordinator, member, PR, run, and diff tools without any seams", () => {
     expect((rib.registerTools?.(bareCtx) ?? []).map((t) => t.name).sort()).toEqual([
+      "squad_casting_options",
       "squad_code",
       "squad_coordinate",
       "squad_dispatch",
@@ -105,6 +106,13 @@ describe("rib-squad", () => {
       "squad_stop",
       "squad_view_diff",
     ]);
+  });
+
+  it("squad_casting_options is registered read-only", () => {
+    const tool = (rib.registerTools?.(bareCtx) ?? []).find(
+      (t) => t.name === "squad_casting_options",
+    );
+    expect(tool?.state_changing).toBeFalsy();
   });
 
   it("documents scope selectors on member store tools", () => {

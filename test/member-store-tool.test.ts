@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RibContext, ToolDefinition } from "@keelson/shared";
 import rib from "../src/index.ts";
 import { readMembers } from "../src/member-store.ts";
-import { scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
+import { scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import { writeSelectedProject } from "../src/scope.ts";
 
 let home: string;
@@ -176,5 +176,65 @@ describe("member store tools", () => {
     expect(await readMembers(scopeMembersDir(home, "beta"))).toEqual([
       expect.objectContaining({ slug: beta.slug }),
     ]);
+  });
+});
+
+describe("squad_casting_options", () => {
+  test("reads a fresh scope as themed with the static catalog and no history", async () => {
+    const tools = bootTools([project("alpha", "alpha", "/repo/alpha")]);
+
+    const result = await invoke(tool(tools, "squad_casting_options"), { project: "alpha" });
+    const view = JSON.parse(result.content) as {
+      mode: string;
+      activeTheme?: unknown;
+      themeHistory: string[];
+      catalog: { id: string }[];
+      customThemes: unknown[];
+      takenCharacterNames: string[];
+    };
+
+    expect(result.isError).toBe(false);
+    expect(view.mode).toBe("themed");
+    expect(view.activeTheme).toBeUndefined();
+    expect(view.themeHistory).toEqual([]);
+    expect(view.catalog.length).toBe(8);
+    expect(view.customThemes).toEqual([]);
+    expect(view.takenCharacterNames).toEqual([]);
+  });
+
+  test("reflects the active ensemble and taken names after a plain emit (no castAs)", async () => {
+    const tools = bootTools([project("alpha", "alpha", "/repo/alpha")]);
+
+    const emitted = await invoke(tool(tools, "squad_emit_member"), {
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      project: "alpha",
+    });
+    expect(emitted.isError).toBe(false);
+    const themedName = (JSON.parse(emitted.content) as { name: string }).name;
+
+    const result = await invoke(tool(tools, "squad_casting_options"), { project: "alpha" });
+    const view = JSON.parse(result.content) as {
+      activeTheme?: { id: string; remainingCapacity: number };
+      takenCharacterNames: string[];
+    };
+
+    expect(result.isError).toBe(false);
+    expect(view.activeTheme?.id).toBe("usual-suspects");
+    expect(view.activeTheme?.remainingCapacity).toBeLessThan(8);
+    expect(view.takenCharacterNames).toContain(themedName);
+  });
+
+  test("fails soft against a corrupt registry file", async () => {
+    const tools = bootTools([project("alpha", "alpha", "/repo/alpha")]);
+    const scopedHome = scopeDataHome(home, "alpha");
+    await mkdir(scopedHome, { recursive: true });
+    await writeFile(join(scopedHome, "casting-registry.json"), "{not json");
+
+    const result = await invoke(tool(tools, "squad_casting_options"), { project: "alpha" });
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({ mode: "themed", themeHistory: [] });
   });
 });

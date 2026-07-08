@@ -160,6 +160,75 @@ describe("proposeCast", () => {
     expect(req?.prompt).not.toContain("OVERPOWERED");
   });
 
+  test("castAs flows through the proposal when the scan turn returns one", async () => {
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurn(
+        Promise.resolve(
+          okResult(
+            rosterReply([
+              {
+                name: "Atlas",
+                role: "Engineer",
+                charter: "# Atlas",
+                castAs: {
+                  newThemeLabel: "Apollo 13",
+                  characterName: "Gene Kranz",
+                  personality: "Unflappable.",
+                  backstory: "Brings the crew home.",
+                },
+              },
+            ]),
+          ),
+        ),
+      );
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.members[0]?.castAs).toEqual({
+      newThemeLabel: "Apollo 13",
+      characterName: "Gene Kranz",
+      personality: "Unflappable.",
+      backstory: "Brings the crew home.",
+    });
+  });
+
+  test("dataHome supplies the squad's casting context into the scan prompt", async () => {
+    const home = await mkdtemp(join(tmpdir(), "squad-cast-ctx-"));
+    try {
+      let req: RibAgentTurnRequest | undefined;
+      const runAgentTurn = (r: RibAgentTurnRequest): RibAgentTurn => {
+        req = r;
+        return fakeTurn(
+          Promise.resolve(
+            okResult(rosterReply([{ name: "Atlas", role: "Engineer", charter: "# Atlas" }])),
+          ),
+        );
+      };
+      await proposeCast({ runAgentTurn, project: PROJECT, dataHome: home });
+      // A fresh registry at this data home -> a themed context with the static
+      // catalog rendered as inspiration.
+      expect(req?.prompt).toContain("Casting context:");
+      expect(req?.prompt).toContain("The Usual Suspects");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("an omitted dataHome still proposes a team (degrades to a fresh casting context)", async () => {
+    let req: RibAgentTurnRequest | undefined;
+    const runAgentTurn = (r: RibAgentTurnRequest): RibAgentTurn => {
+      req = r;
+      return fakeTurn(
+        Promise.resolve(
+          okResult(rosterReply([{ name: "Atlas", role: "Engineer", charter: "# Atlas" }])),
+        ),
+      );
+    };
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    expect(req?.prompt).toContain("Casting context:");
+  });
+
   test("parses the structured roster and keeps each member's capability tags", async () => {
     const runAgentTurn = (): RibAgentTurn =>
       fakeTurn(
