@@ -94,6 +94,7 @@ export interface DispatchFanoutOptions {
   // set true to force diff capture + adversarial framing regardless of how the instruction
   // reads. Omit to fall back to sniffing the task text (an ad-hoc manager-directed review).
   isReview?: boolean;
+  inlineReviewDiff?: boolean;
   // When present, review diff capture scopes to the run's durable baseline tree instead of the
   // operator's whole working-tree state. The exec seam lets the scratch-index tree mirror the
   // coordinator's run-delta capture path.
@@ -154,9 +155,18 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
       opts.runAgentTurn,
       {
         system,
-        prompt: buildDispatchPrompt(opts.task, opts.project, reviewDiffUnderReview),
-        ...(root ? { cwd: root, allowedDirectories: [root], allowedTools: [...READ_TOOLS] } : {}),
-        ...(root && toolAllowlist ? { tools: toolAllowlist.map((name) => ({ name })) } : {}),
+        prompt: buildDispatchPrompt(
+          opts.task,
+          opts.project,
+          reviewDiffUnderReview,
+          opts.inlineReviewDiff,
+        ),
+        ...(root && !opts.inlineReviewDiff
+          ? { cwd: root, allowedDirectories: [root], allowedTools: [...READ_TOOLS] }
+          : {}),
+        ...(root && !opts.inlineReviewDiff && toolAllowlist
+          ? { tools: toolAllowlist.map((name) => ({ name })) }
+          : {}),
         ...(member.provider ? { provider: member.provider } : {}),
         ...(member.provider && member.model ? { model: member.model } : {}),
       },
@@ -418,11 +428,19 @@ function buildDispatchPrompt(
   task: string,
   project?: { name: string; rootPath: string },
   reviewDiffUnderReview?: string,
+  inlineReviewDiff?: boolean,
 ): string {
-  if (!project?.rootPath.trim()) return task;
   const reviewContext = reviewDiffUnderReview
     ? `\n\n## CODE DIFF UNDER REVIEW\n${reviewDiffUnderReview}\n\n## ADVERSARIAL REVIEW MODE (REFUTE BY DEFAULT)\nTreat this as an adversarial code review. Assume the change is incorrect until proven otherwise.\n\nBefore concluding, explicitly try to refute the change by checking:\n1. Every new or changed constant, bound, or enum value against existing defaults in the same module; flag mismatched defaults, incompatible bounds, and off-by-one ranges.\n2. Any function that returns a shared mutable object (array/object/map/set) by reference instead of returning an immutable/defensive copy.\n\nIf you find a real defect, cite exact file:line evidence and signal it with the existing BLOCK sentinel: RAI VERDICT: BLOCK.`
     : "";
+  if (inlineReviewDiff) {
+    if (!reviewContext) return task;
+    return `You are running a read-only code review with no filesystem access — the complete material under review is inlined below, so judge it from the diff alone. You cannot edit, run commands, or push.
+${reviewContext}
+
+${task}`;
+  }
+  if (!project?.rootPath.trim()) return task;
   return `You are working in the project "${project.name}", at its repository root. You have Read, Glob, and Grep to inspect the repo — open the files you need to ground your answer instead of guessing at their contents. This is a read-only analysis/review turn: you cannot edit, run commands, or push.
 
 ${reviewContext}
