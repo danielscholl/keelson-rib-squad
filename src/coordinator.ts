@@ -540,8 +540,9 @@ ${factsBlock}
 Recent progress:
 ${renderTranscript(ledger.transcript)}
 
-Assess the state, then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
+Assess the state in one or two sentences of PROSE first (your reasoning is recorded), then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to continue: {"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"<member slug>","instruction":"<the single next instruction for that member>","plan":["step","step"],"facts":["any new finding"]}
+- when the Current plan above reads "(no plan yet)", the progress directive MUST include a non-empty "plan".
 - when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}${needsNote}
 - if the task requires per-item dispositions, carry them ON the done directive itself — {"action":"done","summary":"...","dispositions":[{"threadRef":"...","disposition":"fixed|declined","note":"..."}]} — never in the prose.
 Set "satisfied" true only when the goal is genuinely complete. Pick next_speaker from the members above. Keep the instruction to ONE concrete step.`;
@@ -1060,9 +1061,17 @@ function summarizeProvenance(transcript: readonly CoordinatorEntry[]): string | 
 // Prefix a dispatched member's instruction with the team's recalled memory so the agent
 // executing the step shares the team's prior knowledge — the manager has it in context,
 // but members can't see the manager's context, so it must ride the instruction.
-function withTeamMemory(instruction: string, recalled: readonly string[]): string {
+function withTeamMemory(
+  instruction: string,
+  recalled: readonly string[],
+  grounded: boolean,
+): string {
   if (recalled.length === 0) return instruction;
-  return `Team memory — decisions and lessons the squad recorded on earlier passes for this project (honor and build on them; don't re-derive or contradict them):\n${recalled.map((r) => `- ${r}`).join("\n")}\n\nYour task:\n${instruction}`;
+  const rows = recalled.map((r) => `- ${r}`).join("\n");
+  if (grounded) {
+    return `Team memory — decisions and lessons the squad recorded on earlier passes for this project (honor and build on them; don't re-derive or contradict them):\n${rows}\n\nYour task:\n${instruction}`;
+  }
+  return `Prior-run context — decisions and lessons the squad recorded on EARLIER, SEPARATE runs for this project. This is background, NOT your assignment: do not re-review or redo that earlier work. Where it and the task below diverge, the task below wins.\n${rows}\n\nYour task (this is the assignment — do exactly this, informed by the context above):\n${instruction}`;
 }
 
 export function withPlanContext(instruction: string, plan: readonly string[]): string {
@@ -1188,7 +1197,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         runAgentTurn: opts.runAgentTurn,
         membersRoot: opts.membersRoot,
         members,
-        task: withTeamMemory(instruction, recalled),
+        task: withTeamMemory(instruction, recalled, ledger.plan.length > 0),
         synthesize: members.length > 1,
         // Pass the project so a dispatched member can READ the repo to ground its answer (a
         // reviewer that can't open the diff is the live gap this closes); absent → text-only.
@@ -1214,7 +1223,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
             membersRoot: opts.membersRoot,
             member,
             project: { name: project.name, rootPath: project.rootPath },
-            task: withTeamMemory(instruction, recalled),
+            task: withTeamMemory(instruction, recalled, ledger.plan.length > 0),
             deferFullVerify: verify.length > 0,
             ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
             ...(onTool ? { onTool } : {}),
