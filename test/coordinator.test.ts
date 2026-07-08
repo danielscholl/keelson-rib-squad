@@ -140,6 +140,27 @@ function capturingMemory(
   };
 }
 
+function recalledDecision(content: string): RecallResponse["items"][number] {
+  return {
+    memoryId: "m1",
+    type: "decision",
+    summary: "headline",
+    content,
+    provenance: "generated",
+    usePolicy: {
+      canUseAsInstruction: false,
+      canUseAsEvidence: true,
+      requiresUserConfirmation: false,
+      doNotInjectAutomatically: false,
+    },
+    scope: { visibility: "project", projectId: "p1" },
+    sourceRefs: [],
+    artifacts: [],
+    createdAt: NOW,
+    rankingScore: 0.9,
+  };
+}
+
 describe("parseCoordinatorDirective", () => {
   test("parses a progress directive with the five questions + facts + plan", () => {
     const d = parseCoordinatorDirective(
@@ -2334,39 +2355,9 @@ describe("runCoordinator loop", () => {
     // The manager delegates and members can't see the manager's context, so the recalled
     // memory must ride the dispatch instruction or it never reaches the agent doing the work.
     const prompts: string[] = [];
-    const memory: MemoryTools = {
-      recall: async (): Promise<RecallResponse> => ({
-        schemaVersion: RECALL_RESPONSE_SCHEMA_VERSION,
-        requestId: "r",
-        items: [
-          {
-            memoryId: "m1",
-            type: "decision",
-            summary: "headline",
-            content: "prefer the in-process fallback over a network call",
-            provenance: "generated",
-            usePolicy: {
-              canUseAsInstruction: false,
-              canUseAsEvidence: true,
-              requiresUserConfirmation: false,
-              doNotInjectAutomatically: false,
-            },
-            scope: { visibility: "project", projectId: "p1" },
-            sourceRefs: [],
-            artifacts: [],
-            createdAt: NOW,
-            rankingScore: 0.9,
-          },
-        ],
-        trace: { traceId: "t", returned: 1 },
-      }),
-      writeback: async (req): Promise<WritebackResponse> => ({
-        schemaVersion: WRITEBACK_RESPONSE_SCHEMA_VERSION,
-        written: [{ memoryId: "w1", idempotencyKey: req.idempotencyKey }],
-        blocked: [],
-        deduped: [],
-      }),
-    };
+    const memory = capturingMemory([], [
+      recalledDecision("prefer the in-process fallback over a network call"),
+    ]);
     const coordinatorReplies = [
       'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"do the step"}',
       'done\n{"action":"done","summary":"shipped"}',
@@ -2387,12 +2378,45 @@ describe("runCoordinator loop", () => {
       getMemory: () => memory,
     });
     expect(res.status).toBe("done");
-    // The member's turn (not a "Goal:" coordinator turn) carries the team-memory block.
+    // With no plan yet, the member's turn frames recall as prior-run context instead of authority.
+    const memberPrompt = prompts.find((p) => !p.includes("Goal:"));
+    expect(memberPrompt).toBeDefined();
+    expect(memberPrompt).toContain("Prior-run context —");
+    expect(memberPrompt).toContain("task below wins");
+    expect(memberPrompt).toContain("prefer the in-process fallback over a network call");
+    expect(memberPrompt).toContain("Your task (this is the assignment");
+    expect(memberPrompt).not.toContain("Team memory —");
+  });
+
+  test("keeps team-memory framing when dispatch is grounded by a plan", async () => {
+    const prompts: string[] = [];
+    const memory = capturingMemory([], [recalledDecision("reuse the local cache")]);
+    const coordinatorReplies = [
+      'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"do the planned step","plan":["inspect the local cache before editing"]}',
+      'done\n{"action":"done","summary":"shipped"}',
+    ];
+    const run: NonNullable<RibContext["runAgentTurn"]> = (req) => {
+      const p = req.prompt ?? "";
+      prompts.push(p);
+      const text = p.includes("Goal:")
+        ? (coordinatorReplies.shift() ?? 'done\n{"action":"done","summary":"ok"}')
+        : "member did the step";
+      return { stream: oneShot(), result: Promise.resolve({ status: "ok" as const, text }) };
+    };
+    const res = await runCoordinator({
+      ...base(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: run,
+      getMemory: () => memory,
+    });
+    expect(res.status).toBe("done");
     const memberPrompt = prompts.find((p) => !p.includes("Goal:"));
     expect(memberPrompt).toBeDefined();
     expect(memberPrompt).toContain("Team memory —");
-    expect(memberPrompt).toContain("prefer the in-process fallback over a network call");
+    expect(memberPrompt).toContain("honor and build on them");
+    expect(memberPrompt).toContain("reuse the local cache");
     expect(memberPrompt).toContain("Your task:");
+    expect(memberPrompt).not.toContain("Prior-run context —");
   });
 
   test("a project-bound run gives the dispatched member repo READ tools confined to the root", async () => {
