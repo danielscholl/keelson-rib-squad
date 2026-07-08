@@ -36,9 +36,11 @@ at all, because the manager delegates and a dispatched or coding member never se
 the manager's own context, only the instruction it was handed. So the same recalled
 set lands in two places: once in `coordinatorPrompt`, framed as "prior decisions and
 lessons, honor them," and once prefixed onto every member instruction via
-`withTeamMemory`, framed as "the team's memory, honor and build on it, don't
-re-derive or contradict it." The plan gets shaped by what earlier runs worked out,
-and so does the work itself.
+`withTeamMemory`. That member-facing frame is plan-aware: when the current step is
+grounded by a plan, recall stays authoritative ("team memory, honor and build on
+it"); when the plan is empty, as in round 0, recall is labeled prior-run context
+and the task below wins. That lets recall anchor a re-run without hijacking a
+fresh task before the coordinator has made a plan.
 
 Recall also surfaces the recalled item's actual content, not just its `summary`
 headline, up to a generous per-item excerpt. A headline announces that a decision
