@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.17.0...v0.18.0) (2026-07-08)
+
+
+### Added
+
+* **casting:** let an LLM propose the squad's cast ([#179](https://github.com/danielscholl/keelson-rib-squad/issues/179)) ([83f8e59](https://github.com/danielscholl/keelson-rib-squad/commit/83f8e59f78d446dc0724ac66e816cd8bd2dad5a1))
+
 ## [0.17.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.16.0...v0.17.0) (2026-07-08)
 
 
