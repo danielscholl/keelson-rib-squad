@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { RibContext, RibExec, TokenUsage } from "@keelson/shared";
 import { errText } from "@keelson/shared";
@@ -33,6 +36,11 @@ const MAX_UNTRACKED_FILES = 25;
 // git's own ceiling on a single diff read — the existing tracked-diff bound, reused for the
 // untracked enumeration and per-file new-file diffs.
 const GIT_DIFF_MAX_BUFFER = 10 * 1024 * 1024;
+
+export interface DiffCaptureOptions {
+  exec?: RibExec;
+  baselineTree?: string;
+}
 
 // The read rail for a project-bound dispatch: enough to inspect the repo (the read subset
 // of code.ts's CODE_TOOLS), and nothing that mutates it. allowedTools present means "these
@@ -417,7 +425,7 @@ export async function captureDiffUnderReview(
   task: string,
   project?: { name: string; rootPath: string },
   isReview?: boolean,
-  exec?: RibExec,
+  optionsOrExec?: RibExec | DiffCaptureOptions,
 ): Promise<string | undefined> {
   const root = project?.rootPath.trim();
   if (!root) return undefined;
@@ -426,10 +434,20 @@ export async function captureDiffUnderReview(
   // back to sniffing the task text when the caller didn't say (an ad-hoc dispatch step).
   const review = isReview ?? isProjectReviewTask(task);
   if (!review) return undefined;
-  return await collectGitDiff(root, exec);
+  return await collectGitDiff(root, normalizeDiffCaptureOptions(optionsOrExec));
 }
 
-async function collectGitDiff(rootPath: string, exec?: RibExec): Promise<string> {
+function normalizeDiffCaptureOptions(optionsOrExec?: RibExec | DiffCaptureOptions): DiffCaptureOptions {
+  if (!optionsOrExec) return {};
+  if ("runText" in optionsOrExec) return { exec: optionsOrExec };
+  return optionsOrExec;
+}
+
+async function collectGitDiff(rootPath: string, options: DiffCaptureOptions = {}): Promise<string> {
+  const baselineTree = options.baselineTree?.trim();
+  if (baselineTree) return await collectBaselineScopedGitDiff(rootPath, baselineTree, options.exec);
+
+  const exec = options.exec;
   const [unstaged, staged, untracked] = await Promise.all([
     readGitDiff(rootPath, [], exec),
     readGitDiff(rootPath, ["--staged"], exec),
@@ -465,6 +483,124 @@ async function collectGitDiff(rootPath: string, exec?: RibExec): Promise<string>
   return [trackedSection, untrackedSection].filter((s) => s.length > 0).join("\n\n");
 }
 
+async function collectBaselineScopedGitDiff(
+  rootPath: string,
+  baselineTree: string,
+  exec?: RibExec,
+): Promise<string> {
+  const current = await captureCurrentTree(rootPath, exec);
+  if (current.kind === "error") return `_Diff capture unavailable: ${current.error}_`;
+
+  const nameStatus = await runGitText(
+    rootPath,
+    ["diff", "--name-status", "--find-renames", baselineTree, current.tree],
+    exec,
+  );
+  if (nameStatus.kind === "error") return `_Diff capture unavailable: ${nameStatus.error}_`;
+  if (nameStatus.output.trim().length === 0) {
+    return "_No changes detected since the run baseline._";
+  }
+
+  const entries = parseNameStatus(nameStatus.output);
+  const addedPaths = entries
+    .filter((entry) => entry.status === "A")
+    .map((entry) => entry.paths[0])
+    .filter((path): path is string => Boolean(path));
+  const [changed, added] = await Promise.all([
+    readGitDiff(rootPath, ["--find-renames", "--diff-filter=a", baselineTree, current.tree], exec),
+    readAddedFileDiff(rootPath, baselineTree, current.tree, addedPaths, exec),
+  ]);
+  if (changed.kind === "error") return `_Diff capture unavailable: ${changed.error}_`;
+
+  const statusSection = `### Run delta (baseline-scoped)\nChanged paths since the run baseline:\n\`\`\`diff\n${nameStatus.output.trimEnd()}\n\`\`\``;
+  const addedSection = added ? capDiffSection(added, UNTRACKED_DIFF_BUDGET, "added-file diff") : "";
+  const changedBody =
+    changed.output.trim().length > 0
+      ? `### Changed/deleted content\n\`\`\`diff\n${changed.output.trimEnd()}\n\`\`\``
+      : "";
+  const changedBudget = Math.max(
+    0,
+    MAX_REVIEW_DIFF_CHARS - statusSection.length - addedSection.length,
+  );
+  const changedSection = changedBody
+    ? capDiffSection(changedBody, changedBudget, "run-delta diff")
+    : "";
+
+  return [statusSection, changedSection, addedSection].filter((s) => s.length > 0).join("\n\n");
+}
+
+async function captureCurrentTree(
+  rootPath: string,
+  exec?: RibExec,
+): Promise<{ kind: "ok"; tree: string } | { kind: "error"; error: string }> {
+  const scratchDir = await mkdtemp(join(tmpdir(), "squad-review-delta-"));
+  const env = { GIT_INDEX_FILE: join(scratchDir, "index") };
+  try {
+    const staged = await runGitText(rootPath, ["add", "-A", "--", "."], exec, { env });
+    if (staged.kind === "error") return staged;
+    const tree = await runGitText(rootPath, ["write-tree"], exec, { env });
+    if (tree.kind === "error") return tree;
+    const oid = tree.output.trim();
+    if (!oid) return { kind: "error", error: "git write-tree returned an empty tree id" };
+    return { kind: "ok", tree: oid };
+  } finally {
+    await rm(scratchDir, { recursive: true, force: true });
+  }
+}
+
+interface NameStatusEntry {
+  status: string;
+  paths: string[];
+}
+
+function parseNameStatus(output: string): NameStatusEntry[] {
+  const entries: NameStatusEntry[] = [];
+  for (const line of output.split("\n")) {
+    if (!line.trim()) continue;
+    const [status, ...paths] = line.split("\t");
+    if (status && paths.length > 0) entries.push({ status, paths });
+  }
+  return entries;
+}
+
+async function readAddedFileDiff(
+  rootPath: string,
+  baselineTree: string,
+  currentTree: string,
+  files: readonly string[],
+  exec?: RibExec,
+): Promise<string | undefined> {
+  if (files.length === 0) return undefined;
+  const shown = files.slice(0, MAX_UNTRACKED_FILES);
+  const overflow = files.length - shown.length;
+  const names = shown.map((f) => `- \`${f}\``).join("\n");
+  const overflowNote = overflow > 0 ? `\n- _…and ${overflow} more new file(s) not shown_` : "";
+  const diffs: string[] = [];
+  for (const f of shown) {
+    const body = await readDeltaFileDiff(rootPath, baselineTree, currentTree, f, exec);
+    if (body && body.trim().length > 0) {
+      diffs.push(`#### \`${f}\`\n\`\`\`diff\n${body.trimEnd()}\n\`\`\``);
+    }
+  }
+  const diffBlock = diffs.length > 0 ? `\n\n${diffs.join("\n\n")}` : "";
+  return `### Added files\nNew files created since the run baseline:\n${names}${overflowNote}${diffBlock}`;
+}
+
+async function readDeltaFileDiff(
+  rootPath: string,
+  baselineTree: string,
+  currentTree: string,
+  relPath: string,
+  exec?: RibExec,
+): Promise<string | undefined> {
+  const result = await readGitDiff(
+    rootPath,
+    ["--find-renames", baselineTree, currentTree, "--", relPath],
+    exec,
+  );
+  return result.kind === "ok" ? result.output : undefined;
+}
+
 // Bound one diff section so content + the truncation note together stay within `budget` — one
 // large change can't blow the reviewer's context, and the budgets actually hold (the note's own
 // length comes out of the budget, not on top of it). Closes any open ```diff fence and names
@@ -484,18 +620,27 @@ async function readGitDiff(
   args: readonly string[],
   exec?: RibExec,
 ): Promise<{ kind: "ok"; output: string } | { kind: "error"; error: string }> {
+  return await runGitText(rootPath, ["diff", "--no-color", ...args], exec);
+}
+
+async function runGitText(
+  rootPath: string,
+  args: readonly string[],
+  exec?: RibExec,
+  opts: { env?: Record<string, string> } = {},
+): Promise<{ kind: "ok"; output: string } | { kind: "error"; error: string }> {
   if (exec) {
-    const result = await exec.runText("git", ["diff", "--no-color", ...args], {
+    const result = await exec.runText("git", [...args], {
       cwd: rootPath,
+      ...(opts.env ? { env: opts.env } : {}),
     });
     return result.ok ? { kind: "ok", output: result.data } : { kind: "error", error: result.error };
   }
   try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["-C", rootPath, "--no-pager", "diff", "--no-color", ...args],
-      { maxBuffer: GIT_DIFF_MAX_BUFFER },
-    );
+    const { stdout } = await execFileAsync("git", ["-C", rootPath, "--no-pager", ...args], {
+      maxBuffer: GIT_DIFF_MAX_BUFFER,
+      ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+    });
     return { kind: "ok", output: stdout };
   } catch (e) {
     return { kind: "error", error: errText(e) };
