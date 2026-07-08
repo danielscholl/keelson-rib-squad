@@ -1189,6 +1189,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         // reviewer that can't open the diff is the live gap this closes); absent → text-only.
         ...(project ? { project: { name: project.name, rootPath: project.rootPath } } : {}),
         ...(dopts?.isReview !== undefined ? { isReview: dopts.isReview } : {}),
+        ...(ledger.baselineTree ? { baselineTree: ledger.baselineTree } : {}),
+        ...(opts.getExec ? { exec: opts.getExec } : {}),
         ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       }));
 

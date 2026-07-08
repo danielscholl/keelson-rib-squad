@@ -1557,6 +1557,81 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.lastCleanReviewRound).toBe(1);
   });
 
+  test("review gate: default dispatch scopes review diff to the run baseline", async () => {
+    const memberPrompts: string[] = [];
+    let managerTurns = 0;
+    const runAgentTurn: NonNullable<RibContext["runAgentTurn"]> = (req) => {
+      const prompt = req.prompt ?? "";
+      if (prompt.includes("Goal:")) {
+        managerTurns += 1;
+        const text =
+          managerTurns === 1
+            ? 'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}'
+            : 'done\n{"action":"done","summary":"shipped"}';
+        return { stream: oneShot(), result: Promise.resolve({ status: "ok" as const, text }) };
+      }
+      memberPrompts.push(prompt);
+      return {
+        stream: oneShot(),
+        result: Promise.resolve({
+          status: "ok" as const,
+          text: "RAI VERDICT: PASS\nno blocking defect found",
+        }),
+      };
+    };
+    let writeTreeCalls = 0;
+    const exec: RibExec = {
+      runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+      runText: async (cmd, args) => {
+        if (cmd !== "git") return { ok: true as const, data: "", exitCode: 0 };
+        if (args[0] === "add") return { ok: true as const, data: "", exitCode: 0 };
+        if (args[0] === "write-tree") {
+          writeTreeCalls += 1;
+          return {
+            ok: true as const,
+            data: writeTreeCalls === 1 ? "baseline-tree" : "current-tree",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "rev-parse") return { ok: true as const, data: "head-sha", exitCode: 0 };
+        if (args[0] === "diff" && args.includes("--name-status")) {
+          return { ok: true as const, data: "A\tnew.ts\n", exitCode: 0 };
+        }
+        if (args[0] === "diff" && args.includes("--numstat")) {
+          return { ok: true as const, data: "1\t0\tnew.ts\n", exitCode: 0 };
+        }
+        if (args[0] === "diff" && args.includes("--diff-filter=a")) {
+          return { ok: true as const, data: "", exitCode: 0 };
+        }
+        if (args[0] === "diff" && args.includes("--")) {
+          return {
+            ok: true as const,
+            data:
+              "diff --git a/new.ts b/new.ts\nnew file mode 100644\n--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1 @@\n+export const createdInRun = true;\n",
+            exitCode: 0,
+          };
+        }
+        return { ok: true as const, data: "", exitCode: 0 };
+      },
+    };
+
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn,
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      getExec: exec,
+    });
+
+    expect(res.status).toBe("done");
+    const reviewPrompt = memberPrompts.find((p) => p.includes("CODE DIFF UNDER REVIEW")) ?? "";
+    expect(reviewPrompt).toContain("Run delta (baseline-scoped)");
+    expect(reviewPrompt).toContain("new.ts");
+    expect(reviewPrompt).toContain("createdInRun");
+    expect(reviewPrompt).not.toContain("Untracked (new) files");
+  });
+
   test("review gate: a PASS review attributes the verifying reviewer and provider", async () => {
     const reviewer = "vera";
     const reviewProvider = "reviewProvider";

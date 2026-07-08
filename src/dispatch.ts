@@ -89,6 +89,11 @@ export interface DispatchFanoutOptions {
   // set true to force diff capture + adversarial framing regardless of how the instruction
   // reads. Omit to fall back to sniffing the task text (an ad-hoc manager-directed review).
   isReview?: boolean;
+  // When present, review diff capture scopes to the run's durable baseline tree instead of the
+  // operator's whole working-tree state. The exec seam lets the scratch-index tree mirror the
+  // coordinator's run-delta capture path.
+  baselineTree?: string;
+  exec?: RibExec;
   concurrency?: number;
   perTurnTimeoutMs?: number;
   maxMembers?: number;
@@ -129,6 +134,10 @@ export async function dispatchFanout(opts: DispatchFanoutOptions): Promise<Dispa
     opts.task,
     opts.project,
     opts.isReview,
+    {
+      ...(opts.exec ? { exec: opts.exec } : {}),
+      ...(opts.baselineTree ? { baselineTree: opts.baselineTree } : {}),
+    },
   );
   const perMember = await runPool(members, concurrency, async (member): Promise<DispatchResult> => {
     if (opts.abortSignal?.aborted) {

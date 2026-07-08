@@ -635,6 +635,33 @@ describe("dispatchFanout", () => {
     expect(diff).not.toContain("operator.png");
   });
 
+  test("dispatchFanout threads the run baseline into review diff capture", async () => {
+    const members = await Promise.all([seed("a", "Alpha")]);
+    const repo = await seedCleanProjectRepo("project-fanout-baseline");
+    await writeFile(join(repo, "operator.png"), "operator artifact that predates the run\n");
+    const baselineTree = await captureScratchTree(repo);
+    const reqs: RibAgentTurnRequest[] = [];
+    const runAgentTurn = (req: RibAgentTurnRequest): RibAgentTurn => {
+      reqs.push(req);
+      return fakeTurn(Promise.resolve(okResult("reviewed")));
+    };
+
+    await dispatchFanout({
+      runAgentTurn,
+      membersRoot: root,
+      members,
+      task: "review this change",
+      synthesize: false,
+      project: { name: "demo", rootPath: repo },
+      isReview: true,
+      baselineTree,
+    });
+
+    const prompt = reqs[0]?.prompt ?? "";
+    expect(prompt).toContain("_No changes detected since the run baseline._");
+    expect(prompt).not.toContain("operator.png");
+  });
+
   test("a baseline-scoped review still includes files created after baseline", async () => {
     const repo = await seedCleanProjectRepo("project-baseline-new-file");
     const baselineTree = await captureScratchTree(repo);
