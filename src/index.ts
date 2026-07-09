@@ -49,8 +49,10 @@ import {
   clearLedger,
   LEDGER_STATUS_ACTIVE,
   loadLedger,
+  RUN_STATUS_ABORTED,
   type RunCoordinatorResult,
   runCoordinator,
+  saveLedger,
 } from "./coordinator.ts";
 import { captureDiffUnderReview, type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
 import { slugify } from "./genesis.ts";
@@ -116,7 +118,7 @@ import {
   latestPerformedRollbackRow,
   type RollbackCommit,
 } from "./rollback-store.ts";
-import { clearRuns, listRuns, loadRun, type RunSummary } from "./runs-store.ts";
+import { archiveRun, clearRuns, listRuns, loadRun, type RunSummary } from "./runs-store.ts";
 import {
   listScopeMembersDirs,
   readSelectedProject,
@@ -1701,6 +1703,15 @@ function makeStopTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
         }
         const stopped = stopCoordinateScope(resolution.scopeId);
         if (!stopped.ok) {
+          const reconciled = await reconcileOrphanedLedger(scopeDataHome(home, resolution.scopeId));
+          if (reconciled) {
+            void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+            emitResult(
+              ctx,
+              `squad_stop: no live run in scope "${resolution.scopeId}"; reconciled a stuck-active ledger to aborted`,
+            );
+            return;
+          }
           emitResult(ctx, `squad_stop: ${stopped.error}`, true);
           return;
         }
@@ -2051,6 +2062,40 @@ function stopCoordinateScope(scopeId: string): { ok: true } | { ok: false; error
   }
   controller.abort();
   return { ok: true };
+}
+
+// A run's live controller can vanish (client disconnect/timeout, or the loop froze before
+// its own terminal write), leaving an "active" ledger nothing will ever terminalize — the
+// live tracker and the persisted ledger then disagree, and the board shows a phantom live
+// run. Reconcile it the way runCoordinator's close does (flip to aborted, clear inFlight,
+// archive) so squad_stop can end it. Returns true when a stuck-active ledger was reconciled.
+export async function reconcileOrphanedLedger(scopedHome: string): Promise<boolean> {
+  const ledger = await loadLedger(scopedHome);
+  if (!ledger || ledger.status !== LEDGER_STATUS_ACTIVE) return false;
+  const aborted: CoordinatorLedger = {
+    ...ledger,
+    status: RUN_STATUS_ABORTED,
+    inFlight: undefined,
+    // loadLedger only validates `task`, so an older/malformed orphaned ledger may carry a
+    // non-array transcript; guard the spread rather than throw out of squad_stop.
+    transcript: [
+      ...(Array.isArray(ledger.transcript) ? ledger.transcript : []),
+      {
+        round: ledger.round,
+        kind: "failed",
+        text: "reconciled: active ledger with no live run — the run driver ended before writing a terminal status",
+        outcome: "aborted",
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  };
+  await saveLedger(scopedHome, aborted);
+  try {
+    await archiveRun(scopedHome, aborted);
+  } catch {
+    // best-effort archival, mirroring runCoordinator's close
+  }
+  return true;
 }
 
 // Auto-detect verify commands from a project's package.json when the operator didn't supply any:
@@ -3151,12 +3196,17 @@ function dispatchAction(action: RibAction): RibActionResult {
   };
 }
 
-function stopCoordinateAction(action: RibAction): RibActionResult {
+async function stopCoordinateAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const scopeId = asNonEmptyString(payload.scopeId);
   if (!scopeId) return { ok: false, error: "stop-coordinate requires payload { scopeId }" };
   const stopped = stopCoordinateScope(scopeId);
-  if (!stopped.ok) return { ok: false, error: `squad_stop: ${stopped.error}` };
+  if (!stopped.ok) {
+    const reconciled = await reconcileOrphanedLedger(scopeDataHome(squadDataHome(), scopeId));
+    if (!reconciled) return { ok: false, error: `squad_stop: ${stopped.error}` };
+    void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+    return { ok: true, data: { stopped: scopeId, reconciled: true } };
+  }
   void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
   return { ok: true, data: { stopped: scopeId } };
 }
