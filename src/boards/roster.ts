@@ -1,6 +1,7 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { CastProposalRecord } from "../cast.ts";
 import { themeLabel } from "../casting/themes.ts";
+import type { LiveRunElsewhere } from "../live-runs.ts";
 import type { PendingGenesis } from "../pending-genesis.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
 import { IDENTITY_SLOT_COUNT, identityToneForSlot, type Member } from "../types.ts";
@@ -48,8 +49,11 @@ export function buildRosterBoard(
   pending?: PendingGenesis | null,
   now: number = Date.now(),
   proposal?: CastProposalRecord | null,
+  liveRunsElsewhere: readonly LiveRunElsewhere[] = [],
 ): CanvasBoardView {
   const sections: Section[] = [];
+
+  if (liveRunsElsewhere.length > 0) sections.push(liveRunsStrip(liveRunsElsewhere));
 
   if (members.length === 0 && !pending) {
     if (proposal) {
@@ -295,6 +299,24 @@ function awaitingSection(count: number): Section {
         text: `A proposed squad of ${count} member${count === 1 ? "" : "s"} awaits review below — Approve & scaffold to seat it, or Discard to cast again.`,
       },
     ],
+  };
+}
+
+function liveRunsStrip(runs: readonly LiveRunElsewhere[]): Section {
+  const displayNames = runs.map((run) => run.name ?? run.scopeId);
+  return {
+    kind: "actions",
+    title: `● ${runs.length} live run${runs.length === 1 ? "" : "s"} in ${displayNames.join(", ")}`,
+    items: runs.map((run) => {
+      const displayName = run.name ?? run.scopeId;
+      return {
+        type: SELECT_PROJECT_ACTION,
+        label: `Switch to ${displayName}`,
+        glyph: "→",
+        tone: "info" as CanvasTone,
+        payload: { scopeId: run.scopeId },
+      };
+    }),
   };
 }
 
