@@ -1500,7 +1500,7 @@ const coordinateSchema = z.object({
     .max(8)
     .optional()
     .describe(
-      "Each item is executed as a shell command via `bash -c` in the project root at the done-gate — exit 0 passes, non-zero vetoes done. These are shell commands (e.g. 'bun test'), NOT prose acceptance criteria; a prose item will fail with exit 127. Omit to auto-detect package.json check/typecheck/test.",
+      "Each item is executed as a shell command via `bash -c` in the project root at the done-gate — exit 0 passes, non-zero vetoes done. These are shell commands (e.g. 'bun test'), NOT prose acceptance criteria; a prose item will typically fail (often exit 127, 'command not found', though the exact code depends on the shell). Omit to auto-detect package.json check/typecheck/test.",
     ),
 });
 
