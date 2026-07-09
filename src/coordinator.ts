@@ -38,7 +38,7 @@ import {
   type ProgressLedger,
   type WorkflowStepOutcome,
 } from "./orchestrator.ts";
-import { formatUsageTail } from "./format.ts";
+import { formatTokens, formatUsageTail } from "./format.ts";
 import { hasBlockVerdict } from "./policies.ts";
 import { archiveRun } from "./runs-store.ts";
 import { runConfinedTurn, type ToolTrace } from "./turn-runner.ts";
@@ -197,6 +197,7 @@ export const LEDGER_STATUS_ACTIVE = "active" as const;
 export const RUN_STATUS_DONE = "done" as const;
 export const RUN_STATUS_GAVE_UP = "gave-up" as const;
 export const RUN_STATUS_MAX_ROUNDS = "max-rounds" as const;
+export const RUN_STATUS_MAX_TOKENS = "max-tokens" as const;
 export const RUN_STATUS_VERIFICATION_FAILED = "verification-failed" as const;
 export const RUN_STATUS_CHANGE_QUALITY_FAILED = "change-quality-failed" as const;
 export const RUN_STATUS_ABORTED = "aborted" as const;
@@ -205,6 +206,7 @@ export type CoordinatorTerminalStatus =
   | typeof RUN_STATUS_DONE
   | typeof RUN_STATUS_GAVE_UP
   | typeof RUN_STATUS_MAX_ROUNDS
+  | typeof RUN_STATUS_MAX_TOKENS
   | typeof RUN_STATUS_VERIFICATION_FAILED
   | typeof RUN_STATUS_CHANGE_QUALITY_FAILED
   | typeof RUN_STATUS_ABORTED;
@@ -216,6 +218,7 @@ function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTe
     status === RUN_STATUS_DONE ||
     status === RUN_STATUS_GAVE_UP ||
     status === RUN_STATUS_MAX_ROUNDS ||
+    status === RUN_STATUS_MAX_TOKENS ||
     status === RUN_STATUS_VERIFICATION_FAILED ||
     status === RUN_STATUS_CHANGE_QUALITY_FAILED ||
     status === RUN_STATUS_ABORTED
@@ -1632,6 +1635,24 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       };
       await persist(ledger);
       break;
+    }
+
+    const maxTokens = limits.maxTokens ?? 0;
+    if (maxTokens > 0) {
+      const usage = runUsageTotal(ledger.transcript);
+      const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+      if (tokens >= maxTokens) {
+        status = RUN_STATUS_MAX_TOKENS;
+        ledger = {
+          ...ledger,
+          status: RUN_STATUS_MAX_TOKENS,
+          inFlight: undefined,
+          summary: `Token budget reached (${formatTokens(tokens)} ≥ ${formatTokens(maxTokens)}).`,
+          updatedAt: now(),
+        };
+        await persist(ledger);
+        break;
+      }
     }
 
     // Fold any operator steers queued since the last round into the run's facts so the manager's

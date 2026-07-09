@@ -1306,6 +1306,60 @@ describe("runCoordinator loop", () => {
     expect(d.calls).toHaveLength(3);
   });
 
+  test("token budget stops a run at the next round boundary", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}',
+      ]),
+      dispatch: async (members, instruction): Promise<DispatchOutcome> => ({
+        task: instruction,
+        perMember: members.map((m) => ({
+          slug: m.slug,
+          name: m.name,
+          status: "ok" as const,
+          text: "worked",
+          providerId: "copilot",
+        })),
+        synthesis: "worked",
+        notes: [],
+        usage: { inputTokens: 1500, outputTokens: 500 },
+      }),
+      limits: { maxRounds: 10, maxStall: 99, maxResets: 99, maxTokens: 1000 },
+    });
+    expect(res.status).toBe("max-tokens");
+    expect(res.summary).toBe("Token budget reached (2k ≥ 1k).");
+    expect(res.ledger.status).toBe("max-tokens");
+    expect((await loadLedger(home))?.status).toBe("max-tokens");
+    expect(res.usage).toEqual({ inputTokens: 1500, outputTokens: 500 });
+  });
+
+  test("runs with usage continue normally when no token budget is set", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}',
+        'done\n{"action":"done","summary":"finished it"}',
+      ]),
+      dispatch: async (members, instruction): Promise<DispatchOutcome> => ({
+        task: instruction,
+        perMember: members.map((m) => ({
+          slug: m.slug,
+          name: m.name,
+          status: "ok" as const,
+          text: "worked",
+          providerId: "copilot",
+        })),
+        synthesis: "worked",
+        notes: [],
+        usage: { inputTokens: 1500, outputTokens: 500 },
+      }),
+      limits: { maxRounds: 10, maxStall: 99, maxResets: 99 },
+    });
+    expect(res.status).toBe("done");
+    expect(res.summary).toBe("finished it");
+  });
+
   test("max-rounds persists a TERMINAL ledger so a same-task re-run starts fresh", async () => {
     const progress =
       'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}';
