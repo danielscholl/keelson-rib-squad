@@ -1628,7 +1628,19 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     replanRequested = false;
     if (turn.status !== "ok") {
       status = turn.status === "aborted" ? RUN_STATUS_ABORTED : "error";
-      ledger = { ...ledger, updatedAt: now() };
+      warnLoop(
+        `round ${ledger.round}: manager turn ${turn.status} after ${turn.durationMs ?? "?"}ms — ${turn.error ?? "no detail"}`,
+      );
+      const transcript = append(ledger.transcript, {
+        round: ledger.round,
+        kind: "failed",
+        text: `manager turn ${turn.status}${turn.error ? `: ${turn.error}` : ""}`,
+        ...(turn.durationMs !== undefined ? { durationMs: turn.durationMs } : {}),
+        outcome:
+          turn.status === "timeout" ? "timeout" : turn.status === "aborted" ? "aborted" : "error",
+      });
+      ledger = { ...ledger, transcript, inFlight: undefined, updatedAt: now() };
+      await persist(ledger);
       break;
     }
 
