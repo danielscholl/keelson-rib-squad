@@ -1655,6 +1655,7 @@ describe("runCoordinator loop", () => {
     const coordEntry = res.ledger.transcript.find((e) => e.kind === "coordinator");
     expect(coordEntry?.at).toBe(NOW);
     expect(res.provenance).toContain("atlas (claude) coded — 900 in / 120 out");
+    expect(res.usage).toEqual({ inputTokens: 1500, outputTokens: 200 });
   });
 
   test("surfaces timed-out code turns in the ledger and standup prompt", async () => {

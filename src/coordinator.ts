@@ -788,6 +788,8 @@ export interface RunCoordinatorResult {
   // Served-provider provenance compiled from the run's code/dispatch steps, e.g.
   // "atlas (claude) coded · vera (copilot) contributed". Absent when no step resolved a provider.
   provenance?: string;
+  // Run-total token usage summed across every work entry.
+  usage?: TokenUsage;
 }
 
 const DEFAULT_COORDINATOR_TIMEOUT_MS = 180_000;
@@ -1256,6 +1258,10 @@ function summarizeProvenance(transcript: readonly CoordinatorEntry[]): string | 
         )
         .join(" · ")
     : undefined;
+}
+
+function runUsageTotal(transcript: readonly CoordinatorEntry[]): TokenUsage | undefined {
+  return transcript.reduce<TokenUsage | undefined>((sum, e) => addUsage(sum, e.usage), undefined);
 }
 
 // Prefix a dispatched member's instruction with the team's recalled memory so the agent
@@ -2458,11 +2464,13 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   }
 
   const provenance = summarizeProvenance(finalLedger.transcript);
+  const usage = runUsageTotal(finalLedger.transcript);
   return {
     ledger: finalLedger,
     rounds: finalLedger.round,
     status,
     summary: finalLedger.summary ?? `coordinator ended: ${status}`,
     ...(provenance ? { provenance } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
