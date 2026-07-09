@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.21.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.20.0...v0.21.0) (2026-07-09)
+
+
+### Added
+
+* **coordinator:** add manager-turn in-flight marker and loop logging ([#196](https://github.com/danielscholl/keelson-rib-squad/issues/196)) ([7c2ee92](https://github.com/danielscholl/keelson-rib-squad/commit/7c2ee92e89b80ba7fe9f26d82edaa801f150aa49))
+
+
+### Fixed
+
+* **coordinator:** reconcile an orphaned active ledger on squad_stop ([#197](https://github.com/danielscholl/keelson-rib-squad/issues/197)) ([5bc819e](https://github.com/danielscholl/keelson-rib-squad/commit/5bc819ec3c996c22238aee14d82c55f23da05cb9))
+* **policies:** gate workflow-surface deny on structured BLOCK verdicts ([#194](https://github.com/danielscholl/keelson-rib-squad/issues/194)) ([f07e050](https://github.com/danielscholl/keelson-rib-squad/commit/f07e0500a63ed3a9398c0ea868c53c6b33a2cbe4))
+
 ## [0.20.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.19.2...v0.20.0) (2026-07-09)
 
 
