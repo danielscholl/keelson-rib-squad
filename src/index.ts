@@ -1288,7 +1288,7 @@ async function runResolveReviewFlow(opts: {
       pendingSteers.delete(scopeId);
     }
   }
-  await refreshWorkflow?.("squad-coordinator").catch(() => {});
+  await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
   await refreshWorkflow?.("squad-roster")?.catch(() => {});
   if (result.status !== "done") {
     return {
@@ -1692,7 +1692,7 @@ function makeCoordinateTool(
         }
         // Push the Run-loop panel to the run's final state (the same publish path cast uses);
         // best-effort, so a refresh failure never masks the run's own result.
-        await refreshWorkflow?.("squad-coordinator").catch(() => {});
+        await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
         await refreshWorkflow?.("squad-roster")?.catch(() => {});
         emitResult(ctx, summarizeCoordinator(result), result.status === "error");
       } catch (e) {
