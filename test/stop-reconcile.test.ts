@@ -72,4 +72,18 @@ describe("reconcileOrphanedLedger", () => {
     expect(await loadLedger(home)).toEqual(done);
     expect(await listRuns(home)).toEqual([]);
   });
+
+  test("reconciles an older ledger whose transcript is missing without throwing", async () => {
+    // loadLedger validates only `task`, so a pre-transcript / malformed ledger loads with no
+    // transcript array; reconciliation must guard the spread instead of throwing out of squad_stop.
+    await saveLedger(
+      home,
+      activeLedger({ transcript: undefined as unknown as CoordinatorLedger["transcript"] }),
+    );
+
+    expect(await reconcileOrphanedLedger(home)).toBe(true);
+    const after = await loadLedger(home);
+    expect(after?.status).toBe("aborted");
+    expect(after?.transcript.at(-1)?.outcome).toBe("aborted");
+  });
 });

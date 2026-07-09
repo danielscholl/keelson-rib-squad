@@ -2076,8 +2076,10 @@ export async function reconcileOrphanedLedger(scopedHome: string): Promise<boole
     ...ledger,
     status: RUN_STATUS_ABORTED,
     inFlight: undefined,
+    // loadLedger only validates `task`, so an older/malformed orphaned ledger may carry a
+    // non-array transcript; guard the spread rather than throw out of squad_stop.
     transcript: [
-      ...ledger.transcript,
+      ...(Array.isArray(ledger.transcript) ? ledger.transcript : []),
       {
         round: ledger.round,
         kind: "failed",
