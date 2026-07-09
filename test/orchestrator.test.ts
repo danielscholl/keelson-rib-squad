@@ -69,6 +69,13 @@ describe("overlayLimits", () => {
     const over = { maxRounds: 10, maxStall: 2, maxResets: 1 };
     expect(overlayLimits(over)).toEqual(over satisfies OrchestratorLimits);
   });
+
+  test("maxTokens passes through without changing finite-loop defaults", () => {
+    expect(overlayLimits({ maxTokens: 12_000 })).toEqual({
+      ...DEFAULT_LIMITS,
+      maxTokens: 12_000,
+    } satisfies OrchestratorLimits);
+  });
 });
 
 describe("decideOrchestratorStep", () => {
@@ -180,6 +187,11 @@ describe("decideOrchestratorStep", () => {
     const out = decide({ progress: ledger(), state: state({ round: 24 }) });
     expect(out.step.kind).toBe("end");
     if (out.step.kind === "end") expect(out.step.reason).toContain("max rounds");
+  });
+
+  test("token budget is enforced by the driver, not the pure decider", () => {
+    const out = decide({ progress: ledger(), limits: { maxTokens: 1 } });
+    expect(out.step.kind).toBe("execute");
   });
 
   test("partial limits overlay: only maxStall set still respects default maxRounds", () => {
