@@ -176,7 +176,7 @@ ${input.summary.trim() || "(no summary)"}
 Findings gathered during the run:
 ${factsBlock}
 ${recalledBlock}
-Decide what — if anything — a future run on THIS project should know. Record at most ONE durable item: a decision the team made (and why), or a lesson about the project, the domain, or how the work goes. It must be decontextualized — written so a future run with no memory of THIS run understands it alone, naming concrete files/people/choices and absolute dates. Do NOT record run-specific narration, the restated task, or anything already in memory above. If the run thrashed, stayed shallow, or produced nothing generalizable, record nothing — that is the common, correct outcome.
+Decide what — if anything — a future run on THIS project should know. Record at most ONE durable item: a decision the team made (and why), or a lesson about the project, the domain, or how the work goes. It must be decontextualized — written so a future run with no memory of THIS run understands it alone, naming concrete files/people/choices and absolute dates. Do NOT record run-specific narration, the restated task, or anything already in memory above. NEVER record an ephemeral run-status assertion — tests passed, the build is green, the change is verified, or "it works" — as a durable lesson; those are run facts, not project knowledge worth carrying forward. If the run thrashed, stayed shallow, or produced nothing generalizable, record nothing — that is the common, correct outcome.
 
 End your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to record one durable item: {"action":"record","headline":"<short title>","lesson":"<the decontextualized decision or lesson>"}

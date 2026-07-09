@@ -42,7 +42,7 @@ This project has automated verify commands that run at the review gate AFTER you
 
   return `You are implementing a change in the project "${projectName}", working from its repository root. You have Read, Glob, Grep, Edit, Write, and Bash, confined to this project.
 
-Make the change the task describes: edit files directly and run what you need to verify it locally (build, tests, type-check). Do NOT open, merge, or push a pull request, and do NOT force-push or rewrite history — the squad's review gate owns integration. When done, reply with a short summary of what you changed and how you verified it.${verifyGuidance}
+Make the change the task describes: edit files directly and run what you need to verify it locally (build, tests, type-check). Do NOT open, merge, or push a pull request, and do NOT force-push or rewrite history — the squad's review gate owns integration. When you add or change a constraint, bound, limit, or default, first read the adjacent defaults, constants, and types it must coexist with; prefer importing an existing constant over hardcoding a literal, and make sure any new bound admits the current default value. When done, reply with a short summary of what you changed and how you verified it.${verifyGuidance}
 
 Task:
 ${task}`;
