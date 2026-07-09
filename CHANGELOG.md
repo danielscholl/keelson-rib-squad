@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.19.2...v0.20.0) (2026-07-09)
+
+
+### Added
+
+* **coordinator:** add deterministic read-only probe vocabulary ([#190](https://github.com/danielscholl/keelson-rib-squad/issues/190)) ([0c6f475](https://github.com/danielscholl/keelson-rib-squad/commit/0c6f475ead38320d3ccd49c9a61f6922fc31052e))
+
+
+### Fixed
+
+* **coordinator:** reconcile done-gate review mapping and bound it ([#192](https://github.com/danielscholl/keelson-rib-squad/issues/192)) ([1b17d41](https://github.com/danielscholl/keelson-rib-squad/commit/1b17d41d5eb5d0c20efe020756ec8dc336211ba0))
+
 ## [0.19.2](https://github.com/danielscholl/keelson-rib-squad/compare/v0.19.1...v0.19.2) (2026-07-09)
 
 
