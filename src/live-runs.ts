@@ -47,7 +47,9 @@ export async function listLiveRunsElsewhere(
 }
 
 async function listScopeRoots(home: string): Promise<ScopeRoot[]> {
-  const roots: ScopeRoot[] = [{ root: scopeDataHome(home, DEFAULT_SCOPE_ID), scopeId: DEFAULT_SCOPE_ID }];
+  const roots: ScopeRoot[] = [
+    { root: scopeDataHome(home, DEFAULT_SCOPE_ID), scopeId: DEFAULT_SCOPE_ID },
+  ];
 
   try {
     const segments = (await readdir(join(home, "projects"), { withFileTypes: true }))
@@ -62,6 +64,9 @@ async function listScopeRoots(home: string): Promise<ScopeRoot[]> {
   return roots;
 }
 
-function maybeProjectName(projectNames: ReadonlyMap<string, string>, projectId: string | undefined): string | undefined {
+function maybeProjectName(
+  projectNames: ReadonlyMap<string, string>,
+  projectId: string | undefined,
+): string | undefined {
   return projectId ? projectNames.get(projectId) : undefined;
 }

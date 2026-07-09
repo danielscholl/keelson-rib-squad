@@ -313,7 +313,13 @@ describe("buildRosterBoard live runs elsewhere", () => {
 
   test("omitting or passing an empty live-runs list renders no strip", () => {
     const omitted = buildRosterBoard([]);
-    const empty = buildRosterBoard([], undefined, Date.parse("2026-07-08T00:00:00.000Z"), undefined, []);
+    const empty = buildRosterBoard(
+      [],
+      undefined,
+      Date.parse("2026-07-08T00:00:00.000Z"),
+      undefined,
+      [],
+    );
 
     expect(empty).toEqual(omitted);
     expect(liveStrip(omitted)).toBeUndefined();
@@ -329,7 +335,10 @@ describe("buildRosterBoard live runs elsewhere", () => {
 
     expect(strip?.title).toBe("● 2 live runs in Beta, gamma");
     expect(strip?.items.map((item) => item.label)).toEqual(["Switch to Beta", "Switch to gamma"]);
-    expect(strip?.items.map((item) => item.payload)).toEqual([{ scopeId: "beta" }, { scopeId: "gamma" }]);
+    expect(strip?.items.map((item) => item.payload)).toEqual([
+      { scopeId: "beta" },
+      { scopeId: "gamma" },
+    ]);
   });
 });
 

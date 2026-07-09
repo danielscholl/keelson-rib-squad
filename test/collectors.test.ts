@@ -123,7 +123,9 @@ describe("collector follows the persisted selection", () => {
     );
     expect(strip?.kind).toBe("actions");
     const action =
-      strip?.kind === "actions" ? strip.items.find((item) => item.type === "select-project") : undefined;
+      strip?.kind === "actions"
+        ? strip.items.find((item) => item.type === "select-project")
+        : undefined;
     expect(action?.payload).toEqual({ scopeId: "beta" });
   });
 

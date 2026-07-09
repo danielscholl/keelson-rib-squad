@@ -42,7 +42,10 @@ describe("listLiveRunsElsewhere", () => {
   });
 
   test("excludes terminal ledgers in other scopes", async () => {
-    await saveLedger(scopeDataHome(home, "beta"), ledger({ scopeId: "beta", status: RUN_STATUS_DONE }));
+    await saveLedger(
+      scopeDataHome(home, "beta"),
+      ledger({ scopeId: "beta", status: RUN_STATUS_DONE }),
+    );
 
     expect(await listLiveRunsElsewhere(home, "alpha")).toEqual([]);
   });

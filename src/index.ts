@@ -1272,6 +1272,7 @@ async function runResolveReviewFlow(opts: {
       takeSteers: () => takeSteersFor(scopeId),
       publish: async () => {
         await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+        await refreshWorkflow?.("squad-roster")?.catch(() => {});
       },
       project,
       ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
@@ -1288,6 +1289,7 @@ async function runResolveReviewFlow(opts: {
     }
   }
   await refreshWorkflow?.("squad-coordinator").catch(() => {});
+  await refreshWorkflow?.("squad-roster")?.catch(() => {});
   if (result.status !== "done") {
     return {
       ok: false,
@@ -1666,6 +1668,7 @@ function makeCoordinateTool(
             takeSteers: () => takeSteersFor(scopeId),
             publish: async () => {
               await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+              await refreshWorkflow?.("squad-roster")?.catch(() => {});
             },
             ...(project ? { project } : {}),
             ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
@@ -1690,6 +1693,7 @@ function makeCoordinateTool(
         // Push the Run-loop panel to the run's final state (the same publish path cast uses);
         // best-effort, so a refresh failure never masks the run's own result.
         await refreshWorkflow?.("squad-coordinator").catch(() => {});
+        await refreshWorkflow?.("squad-roster")?.catch(() => {});
         emitResult(ctx, summarizeCoordinator(result), result.status === "error");
       } catch (e) {
         emitResult(ctx, `squad_coordinate failed: ${errText(e)}`, true);
