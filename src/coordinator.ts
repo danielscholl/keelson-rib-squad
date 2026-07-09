@@ -336,10 +336,17 @@ export function resolveProbe(req: ProbeRequest): ProbeResolution {
     case "ls": {
       const path = req.arg?.trim();
       if (!path) return { ok: false, error: "probe ls requires an 'arg' path" };
-      if (!PROBE_PATH_ALLOWED.test(path) || path.includes("..")) {
+      if (
+        !PROBE_PATH_ALLOWED.test(path) ||
+        path.includes("..") ||
+        path.startsWith("/") ||
+        path.startsWith("-")
+      ) {
         return { ok: false, error: `probe ls rejected unsafe path: ${req.arg}` };
       }
-      return { ok: true, cmd: "ls", args: [path] };
+      // `--` forces ls to treat the path as an operand even if validation above has a gap,
+      // so a path can never be reinterpreted as a flag.
+      return { ok: true, cmd: "ls", args: ["--", path] };
     }
     default:
       return { ok: false, error: `unknown probe: ${req.name || "(none)"}` };

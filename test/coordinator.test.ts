@@ -29,6 +29,7 @@ import {
   parseCoordinatorDirective,
   provenanceLines,
   renderTranscript,
+  resolveProbe,
   runCoordinator,
   saveLedger,
   withPlanContext,
@@ -3299,8 +3300,9 @@ describe("runCoordinator probe hook (#154)", () => {
 
   type ExecCall = { cmd: string; args: string[]; acceptNonZeroExit: boolean };
   // A recording exec that answers baseline tree capture and probe reads. `probeOut` is keyed by the
-  // git subcommand (or the bare cmd, e.g. "ls"). Only the probe hook passes acceptNonZeroExit, so
-  // filtering on it isolates probe-originated calls from the run's baseline tree capture.
+  // git subcommand (or the bare cmd, e.g. "ls"). In this suite only the probe hook passes
+  // acceptNonZeroExit (the baseline tree capture below never does), so filtering on it isolates
+  // probe-originated calls from that capture — not a claim that no other caller anywhere uses it.
   const recordingExec = (
     probeOut: Record<string, string> = {},
   ): { exec: RibExec; calls: ExecCall[] } => {
@@ -3393,7 +3395,7 @@ describe("runCoordinator probe hook (#154)", () => {
     expect(res.status).toBe("done");
     const readOnly = (c: ExecCall) =>
       (c.cmd === "git" && (c.args[0] === "status" || c.args[0] === "log")) ||
-      (c.cmd === "ls" && c.args.length === 1);
+      (c.cmd === "ls" && c.args[0] === "--");
     const probed = probeCalls(calls);
     expect(probed).toHaveLength(2);
     expect(probed.every(readOnly)).toBe(true);
@@ -3417,5 +3419,27 @@ describe("runCoordinator probe hook (#154)", () => {
     ]);
     expect(calls.some((c) => c.cmd === "git" && MUTATING.has(c.args[0] ?? ""))).toBe(false);
     expect(d.calls).toHaveLength(0);
+  });
+});
+
+describe("resolveProbe ls path validation", () => {
+  test("rejects an absolute path", () => {
+    const res = resolveProbe({ name: "ls", arg: "/etc" });
+    expect(res.ok).toBe(false);
+  });
+
+  test("rejects a path starting with a dash (option injection)", () => {
+    const res = resolveProbe({ name: "ls", arg: "-la" });
+    expect(res.ok).toBe(false);
+  });
+
+  test("rejects a traversal path", () => {
+    const res = resolveProbe({ name: "ls", arg: "../secrets" });
+    expect(res.ok).toBe(false);
+  });
+
+  test("accepts a plain relative path and forces it to an operand with --", () => {
+    const res = resolveProbe({ name: "ls", arg: "src/coordinator.ts" });
+    expect(res).toEqual({ ok: true, cmd: "ls", args: ["--", "src/coordinator.ts"] });
   });
 });
