@@ -571,6 +571,60 @@ describe("squad_coordinate tool diagnostics", () => {
     expect(capture.out().content).toContain("default (1)");
     expect(capture.out().content).toContain("beta (1)");
   });
+
+  test("standup includes provenance usage and the run total", async () => {
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    const progressDirective = JSON.stringify({
+      action: "progress",
+      satisfied: false,
+      progress: true,
+      next_speaker: "atlas",
+      instruction: "summarize",
+    });
+    const replies = [
+      {
+        text: `go\n${progressDirective}`,
+      },
+      {
+        text: "did it",
+        providerId: "copilot",
+        usage: { inputTokens: 900, outputTokens: 120 },
+      },
+      { text: 'ok\n{"action":"done","summary":"finished it"}' },
+    ];
+    let i = 0;
+    const ctx = {
+      getDataDir: () => home,
+      runAgentTurn: () => {
+        const reply = replies[Math.min(i, replies.length - 1)]!;
+        i += 1;
+        return {
+          stream: oneShot(),
+          result: Promise.resolve({ status: "ok" as const, ...reply }),
+        };
+      },
+    } as unknown as RibContext;
+    const tools = rib.registerTools?.(ctx) ?? [];
+    const capture = captureTool();
+
+    await registeredTool(tools, "squad_coordinate").execute(
+      { task: "ship it" },
+      capture.ctx as never,
+    );
+
+    expect(capture.out().isError).toBe(false);
+    expect(capture.out().content).toContain(
+      "Worked by: atlas (copilot) contributed — 900 in / 120 out",
+    );
+    expect(capture.out().content).toContain("Tokens: 900 in / 120 out");
+  });
 });
 
 describe("runCoordinator loop", () => {

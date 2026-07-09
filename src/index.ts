@@ -56,6 +56,7 @@ import {
   saveLedger,
 } from "./coordinator.ts";
 import { captureDiffUnderReview, type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
+import { formatUsageTail } from "./format.ts";
 import { slugify } from "./genesis.ts";
 import {
   CAST_KEY,
@@ -2226,6 +2227,10 @@ function summarizeCoordinator(result: RunCoordinatorResult): string {
   ];
   if (result.provenance) {
     lines.push("", `Worked by: ${result.provenance}`);
+  }
+  if (result.usage) {
+    if (!result.provenance) lines.push("");
+    lines.push(`Tokens: ${formatUsageTail(result.usage)}`);
   }
   if (result.ledger.verification) {
     const v = result.ledger.verification;
