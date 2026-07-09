@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryTools, RibContext, RibExec, TokenUsage } from "@keelson/shared";
+import { errText } from "@keelson/shared";
 import {
   type ChangeQualityDiffNumstat,
   type DiffNameStatusEntry,
@@ -219,6 +220,14 @@ const FACT_CAP = 600; // per-fact char cap so one long synthesis can't bloat the
 // Floor between live in-flight trace persists, so a tool-heavy turn (dozens of calls
 // in seconds) can't turn the ledger file + board refresh into a write storm.
 const LIVE_TRACE_THROTTLE_MS = 2000;
+// Off by default so normal runs and tests stay quiet; failures always warn regardless.
+const COORDINATOR_DEBUG = (process.env.KEELSON_SQUAD_DEBUG ?? "").trim().length > 0;
+function debugLoop(msg: string): void {
+  if (COORDINATOR_DEBUG) console.log(`[rib-squad] coordinator: ${msg}`);
+}
+function warnLoop(msg: string): void {
+  console.warn(`[rib-squad] coordinator: ${msg}`);
+}
 const MAX_FACTS = 60; // ledger keeps the most recent facts
 const MAX_TRANSCRIPT = 40; // bounded so the prompt + file stay sane
 const ENTRY_CAP = 1500; // per-transcript-entry char cap
@@ -1480,8 +1489,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     void (async () => {
       try {
         await opts.publish?.();
-      } catch {
-        // best-effort
+      } catch (e) {
+        warnLoop(`live board publish failed (best-effort): ${errText(e)}`);
       }
     })();
   };
@@ -1546,6 +1555,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       status = RUN_STATUS_ABORTED;
       break;
     }
+    debugLoop(`round ${ledger.round}: loop start (status target ${status})`);
     if (ledger.round >= limits.maxRounds) {
       status = RUN_STATUS_MAX_ROUNDS;
       // A ceiling hit with code edited but never cleanly reviewed is the dangerous
@@ -1585,6 +1595,19 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       break;
     }
 
+    const managerStartedAt = now();
+    ledger = {
+      ...ledger,
+      inFlight: {
+        round: ledger.round,
+        speaker: "coordinator",
+        action: "planning",
+        startedAt: managerStartedAt,
+      },
+      updatedAt: now(),
+    };
+    await persist(ledger);
+    debugLoop(`round ${ledger.round}: manager planning turn started`);
     const turn = await runConfinedTurn(
       opts.runAgentTurn,
       {
@@ -1607,11 +1630,24 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     replanRequested = false;
     if (turn.status !== "ok") {
       status = turn.status === "aborted" ? RUN_STATUS_ABORTED : "error";
-      ledger = { ...ledger, updatedAt: now() };
+      warnLoop(
+        `round ${ledger.round}: manager turn ${turn.status} after ${turn.durationMs ?? "?"}ms — ${turn.error ?? "no detail"}`,
+      );
+      const transcript = append(ledger.transcript, {
+        round: ledger.round,
+        kind: "failed",
+        text: `manager turn ${turn.status}${turn.error ? `: ${turn.error}` : ""}`,
+        ...(turn.durationMs !== undefined ? { durationMs: turn.durationMs } : {}),
+        outcome:
+          turn.status === "timeout" ? "timeout" : turn.status === "aborted" ? "aborted" : "error",
+      });
+      ledger = { ...ledger, transcript, inFlight: undefined, updatedAt: now() };
+      await persist(ledger);
       break;
     }
 
     const directive = parseCoordinatorDirective(turn.text) ?? fallbackDirective();
+    debugLoop(`round ${ledger.round}: manager turn ok in ${turn.durationMs ?? "?"}ms`);
     ledger = {
       ...ledger,
       facts: foldFacts(ledger.facts, directive.facts),
@@ -1629,8 +1665,12 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(turn.usage ? { usage: turn.usage } : {}),
         ...(turn.durationMs !== undefined ? { durationMs: turn.durationMs } : {}),
       }),
+      inFlight: undefined,
       updatedAt: now(),
     };
+    // Persist the cleared marker now: a later step this round (the probe exec, the done-gate
+    // review turn) can hang, and stale on-disk "planning" inFlight would misname the stuck op.
+    await persist(ledger);
 
     // Read-only probe hook (#154): when the manager requests a deterministic probe instead of a
     // member, run it via the exec seam and re-prompt with the result next round — no member turn is
@@ -2031,7 +2071,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
                   : "[memory] outcome not recorded (deduped or blocked)";
               }
             }
-          } catch {
+          } catch (e) {
+            warnLoop(`memory distillation threw, falling back to reflectOutcome: ${errText(e)}`);
             if (!opts.abortSignal?.aborted) {
               memoryNote = (await reflectOutcome(
                 memory,
@@ -2073,8 +2114,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
                 updatedAt: now(),
               };
             }
-          } catch {
-            // fail-soft: a rejecting reflection seam must not crash a completed run
+          } catch (e) {
+            warnLoop(`member reflect-at-close threw (fail-soft): ${errText(e)}`);
           }
         }
       }
@@ -2133,6 +2174,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       updatedAt: now(),
     };
     await persist(ledger);
+    debugLoop(
+      `round ${ledger.round}: dispatch ${decided.step.speaker ?? "team"} (${actionLabel(decided.step)}) started`,
+    );
     // Live tool-trace relay (#113): the code arm streams tool_use folds here; each
     // (throttled) update re-persists the ledger with the growing in-flight trace so
     // the bound board's refresh shows the work as it happens. Writes chain serially
@@ -2151,7 +2195,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         inFlight: { ...inFlightBase.inFlight, tools: [...tools] },
         updatedAt: now(),
       };
-      livePersists = livePersists.then(() => persist(live)).catch(() => {});
+      livePersists = livePersists
+        .then(() => persist(live))
+        .catch((e) => warnLoop(`live trace persist failed (best-effort): ${errText(e)}`));
     };
     const codeTreeBefore =
       opts.getExec && project && decided.step.kind === "execute" && decided.step.mode === "code"
@@ -2170,6 +2216,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       onTool,
     });
     await livePersists.catch(() => {});
+    debugLoop(`round ${ledger.round}: dispatch settled`);
     // An abort during the execute arm returns aborted member results that would otherwise
     // fold a junk "(no synthesis)" fact and advance the round. Break before that fold/advance
     // — clearing only the pre-execute in-flight marker (at the UNCHANGED round) so a connected
@@ -2334,6 +2381,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       const count = fp === ledger.outcomeRepeat?.fingerprint ? ledger.outcomeRepeat.count + 1 : 1;
       ledger = { ...ledger, outcomeRepeat: { fingerprint: fp, count } };
     }
+    debugLoop(`round ${ledger.round} → ${ledger.round + 1}: round settled`);
     ledger = { ...ledger, round: ledger.round + 1, inFlight: undefined, updatedAt: now() };
     await persist(ledger);
   }
@@ -2352,8 +2400,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     // Fail-soft archival: persistence of run history must never fail the live run result.
     try {
       await archiveRun(opts.dataHome, finalLedger);
-    } catch {
-      // best-effort
+    } catch (e) {
+      warnLoop(`run archival failed (best-effort): ${errText(e)}`);
     }
   }
 
