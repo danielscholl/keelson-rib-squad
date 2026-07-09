@@ -154,13 +154,14 @@ describe("rib-squad", () => {
     expect(chunks[0]?.content).toContain("agent-turn seam unavailable");
   });
 
-  it("squad_coordinate schema accepts valid maxStall and maxResets", () => {
+  it("squad_coordinate schema accepts valid maxStall, maxResets, and maxTokens", () => {
     const coord = (rib.registerTools?.(bareCtx) ?? []).find((t) => t.name === "squad_coordinate");
     const schema = (coord as { inputSchema?: { safeParse: (v: unknown) => { success: boolean } } })
       ?.inputSchema;
-    expect(schema?.safeParse({ task: "do", maxRounds: 5, maxStall: 2, maxResets: 1 }).success).toBe(
-      true,
-    );
+    expect(
+      schema?.safeParse({ task: "do", maxRounds: 5, maxStall: 2, maxResets: 1, maxTokens: 1000 })
+        .success,
+    ).toBe(true);
     expect(schema?.safeParse({ task: "do" }).success).toBe(true);
   });
 
@@ -177,7 +178,7 @@ describe("rib-squad", () => {
     ).toBe(true);
   });
 
-  it("squad_coordinate schema rejects out-of-range maxStall and maxResets", () => {
+  it("squad_coordinate schema rejects out-of-range maxStall, maxResets, and maxTokens", () => {
     const coord = (rib.registerTools?.(bareCtx) ?? []).find((t) => t.name === "squad_coordinate");
     const schema = (coord as { inputSchema?: { safeParse: (v: unknown) => { success: boolean } } })
       ?.inputSchema;
@@ -185,6 +186,8 @@ describe("rib-squad", () => {
     expect(schema?.safeParse({ task: "do", maxStall: 21 }).success).toBe(false);
     expect(schema?.safeParse({ task: "do", maxResets: 0 }).success).toBe(false);
     expect(schema?.safeParse({ task: "do", maxResets: 21 }).success).toBe(false);
+    expect(schema?.safeParse({ task: "do", maxTokens: 999 }).success).toBe(false);
+    expect(schema?.safeParse({ task: "do", maxTokens: 100_000_001 }).success).toBe(false);
   });
 
   it("squad_coordinate fails closed when the agent-turn seam is absent (partial limits)", async () => {
