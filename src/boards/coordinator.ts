@@ -22,6 +22,7 @@ type RowItem = Extract<Section, { kind: "rows" }>["items"][number];
 export const COORDINATE_ACTION = "coordinate";
 export const DISPATCH_ACTION = "dispatch";
 export const STOP_COORDINATOR_ACTION = "stop-coordinate";
+export const STEER_COORDINATOR_ACTION = "steer-coordinate";
 export const ROLLBACK_RUN_ACTION = "rollback-run";
 export const REPORT_RUN_ACTION = "squad-report";
 // The teardown verb: return this scope's whole surface to the empty first moment.
@@ -65,6 +66,8 @@ export function outcomeTone(e: CoordinatorEntry): CanvasTone {
       return "warn";
     case "probe":
       return "info";
+    case "steer":
+      return "brand";
     case "verify": {
       if (e.verdict === "block") return "error";
       if (e.verdict === "pass") return "ok";
@@ -294,7 +297,11 @@ function activeSections(
   tones?: IdentityTones,
   scopeId?: string,
 ): Section[] {
-  const sections: Section[] = [pulseSection(ledger), stopSection(ledger, scopeId)];
+  const sections: Section[] = [
+    pulseSection(ledger),
+    steerSection(ledger, scopeId),
+    stopSection(ledger, scopeId),
+  ];
   const findings = visibleFindings(ledger);
   pushIf(sections, roundRailSection(ledger, tones));
   sections.push(goalSection(ledger.task));
@@ -308,6 +315,31 @@ function activeSections(
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
+}
+
+// Inject an operator instruction the live run folds into its facts and honors next round.
+function steerSection(ledger: CoordinatorLedger, scopeId?: string): Section {
+  return {
+    kind: "actions",
+    title: "Steer the run",
+    items: [
+      {
+        type: STEER_COORDINATOR_ACTION,
+        label: "Steer",
+        glyph: "➤",
+        payload: { scopeId: scopeId ?? ledger.scopeId ?? "default" },
+        fields: [
+          {
+            name: "instruction",
+            label: "Instruction",
+            placeholder:
+              'A fact or course-correction the next round folds in, e.g. "prefer the existing retry helper — don\'t add a new one"',
+            multiline: true,
+          },
+        ],
+      },
+    ],
+  };
 }
 
 // The caller's scopeId is authoritative (the collector knows which scope it rendered);

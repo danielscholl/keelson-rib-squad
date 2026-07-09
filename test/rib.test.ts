@@ -103,6 +103,7 @@ describe("rib-squad", () => {
       "squad_retire_member",
       "squad_rollback",
       "squad_runs",
+      "squad_steer",
       "squad_stop",
       "squad_view_diff",
     ]);

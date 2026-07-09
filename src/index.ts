@@ -24,6 +24,7 @@ import {
   REPORT_RUN_ACTION,
   RESET_SQUAD_ACTION,
   ROLLBACK_RUN_ACTION,
+  STEER_COORDINATOR_ACTION,
   STOP_COORDINATOR_ACTION,
 } from "./boards/coordinator.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
@@ -251,6 +252,16 @@ async function endCast(scopeHome: string): Promise<void> {
   await endGenesis(scopeHome);
 }
 const activeCoordinateRuns = new Map<string, AbortController>();
+// Operator steer instructions queued per scope; the live run drains them at its next round
+// (see squad_steer / steerCoordinateScope). In-memory like activeCoordinateRuns — parity with
+// stop, which also does not survive a server restart mid-run.
+const pendingSteers = new Map<string, string[]>();
+function takeSteersFor(scopeId: string): readonly string[] {
+  const queued = pendingSteers.get(scopeId);
+  if (!queued?.length) return [];
+  pendingSteers.set(scopeId, []);
+  return queued;
+}
 
 // Absolute path to the roster collector, resolved at module load so the workflow
 // node runs the right file regardless of the run's (nominal) cwd. fileURLToPath
@@ -1258,6 +1269,7 @@ async function runResolveReviewFlow(opts: {
       task: composeResolveReviewTask(threads),
       scopeId,
       abortSignal: controller.signal,
+      takeSteers: () => takeSteersFor(scopeId),
       publish: async () => {
         await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
       },
@@ -1270,7 +1282,10 @@ async function runResolveReviewFlow(opts: {
     });
   } finally {
     unlinkAbort();
-    if (activeCoordinateRuns.get(scopeId) === controller) activeCoordinateRuns.delete(scopeId);
+    if (activeCoordinateRuns.get(scopeId) === controller) {
+      activeCoordinateRuns.delete(scopeId);
+      pendingSteers.delete(scopeId);
+    }
   }
   await refreshWorkflow?.("squad-coordinator").catch(() => {});
   if (result.status !== "done") {
@@ -1507,6 +1522,10 @@ const coordinateSchema = z.object({
 });
 
 const stopSchema = z.object({ project: z.string().optional() });
+const steerSchema = z.object({
+  instruction: z.string().min(1),
+  project: z.string().optional(),
+});
 const rollbackSchema = z.object({
   project: z.string().optional(),
   run: z.string().optional(),
@@ -1644,6 +1663,7 @@ function makeCoordinateTool(
             ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
             ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
             abortSignal: controller.signal,
+            takeSteers: () => takeSteersFor(scopeId),
             publish: async () => {
               await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
             },
@@ -1662,8 +1682,10 @@ function makeCoordinateTool(
           });
         } finally {
           unlinkAbort();
-          if (activeCoordinateRuns.get(scopeId) === controller)
+          if (activeCoordinateRuns.get(scopeId) === controller) {
             activeCoordinateRuns.delete(scopeId);
+            pendingSteers.delete(scopeId);
+          }
         }
         // Push the Run-loop panel to the run's final state (the same publish path cast uses);
         // best-effort, so a refresh failure never masks the run's own result.
@@ -1718,6 +1740,44 @@ function makeStopTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
         emitResult(ctx, `squad_stop: stop requested for scope "${resolution.scopeId}"`);
       } catch (e) {
         emitResult(ctx, `squad_stop failed: ${errText(e)}`, true);
+      }
+    },
+  };
+}
+
+function makeSteerTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
+  return {
+    name: "squad_steer",
+    description:
+      "Inject an operator instruction into the live coordinator run for the resolved squad scope; the run folds it into its facts and honors it on the next round. `project` (optional id/name) resolves scope like squad_coordinate. Errors when no run is live in scope. NOT for starting a run (squad_coordinate) or stopping one (squad_stop).",
+    inputSchema: steerSchema,
+    state_changing: true,
+    async execute(input, ctx) {
+      const parsed = steerSchema.safeParse(input);
+      if (!parsed.success) {
+        emitResult(ctx, `squad_steer: ${parsed.error.message}`, true);
+        return;
+      }
+      try {
+        const selection = await readSelectedProject(squadDataHome());
+        const resolution = resolveRunScope(
+          projectsSeam,
+          asNonEmptyString(parsed.data.project),
+          selection,
+        );
+        if (!resolution.ok) {
+          emitResult(ctx, `squad_steer: ${resolution.error}`, true);
+          return;
+        }
+        const steered = steerCoordinateScope(resolution.scopeId, parsed.data.instruction);
+        if (!steered.ok) {
+          emitResult(ctx, `squad_steer: ${steered.error}`, true);
+          return;
+        }
+        void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+        emitResult(ctx, `squad_steer: instruction queued for scope "${resolution.scopeId}"`);
+      } catch (e) {
+        emitResult(ctx, `squad_steer failed: ${errText(e)}`, true);
       }
     },
   };
@@ -2061,6 +2121,22 @@ function stopCoordinateScope(scopeId: string): { ok: true } | { ok: false; error
     return { ok: false, error: `no live coordinator run in scope "${scopeId}"` };
   }
   controller.abort();
+  return { ok: true };
+}
+
+function steerCoordinateScope(
+  scopeId: string,
+  instruction: string,
+): { ok: true } | { ok: false; error: string } {
+  const trimmed = instruction.trim();
+  if (!trimmed) return { ok: false, error: "steer instruction is empty" };
+  const controller = activeCoordinateRuns.get(scopeId);
+  if (!controller || controller.signal.aborted) {
+    return { ok: false, error: `no live coordinator run in scope "${scopeId}"` };
+  }
+  const queued = pendingSteers.get(scopeId) ?? [];
+  queued.push(trimmed);
+  pendingSteers.set(scopeId, queued);
   return { ok: true };
 }
 
@@ -2826,6 +2902,7 @@ const rib: Rib = {
       makeRunsTool(ctx.getProjects),
       makeReportTool(),
       makeStopTool(ctx.getProjects),
+      makeSteerTool(ctx.getProjects),
       makeRollbackTool(ctx.getProjects, ctx.getExec),
       makeCoordinateTool(
         ctx.runAgentTurn,
@@ -2877,6 +2954,8 @@ const rib: Rib = {
         return dispatchAction(action);
       case STOP_COORDINATOR_ACTION:
         return stopCoordinateAction(action);
+      case STEER_COORDINATOR_ACTION:
+        return steerCoordinateAction(action);
       case ROLLBACK_RUN_ACTION:
         return rollbackRunAction(action);
       case RESET_SQUAD_ACTION:
@@ -2931,6 +3010,7 @@ const rib: Rib = {
     runDetailBoard = undefined;
     reportHtml = undefined;
     activeCoordinateRuns.clear();
+    pendingSteers.clear();
   },
 };
 
@@ -3209,6 +3289,18 @@ async function stopCoordinateAction(action: RibAction): Promise<RibActionResult>
   }
   void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
   return { ok: true, data: { stopped: scopeId } };
+}
+
+function steerCoordinateAction(action: RibAction): RibActionResult {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const scopeId = asNonEmptyString(payload.scopeId);
+  if (!scopeId) return { ok: false, error: "steer-coordinate requires payload { scopeId }" };
+  const instruction = asNonEmptyString(payload.instruction);
+  if (!instruction) return { ok: false, error: "Add an instruction to steer the run with." };
+  const steered = steerCoordinateScope(scopeId, instruction);
+  if (!steered.ok) return { ok: false, error: `squad_steer: ${steered.error}` };
+  void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+  return { ok: true, data: { steered: scopeId } };
 }
 
 function rollbackRunAction(action: RibAction): RibActionResult {
