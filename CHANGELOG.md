@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.22.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.21.0...v0.22.0) (2026-07-09)
+
+
+### Added
+
+* **board:** surface a live run in a non-selected scope ([#200](https://github.com/danielscholl/keelson-rib-squad/issues/200)) ([b41cecd](https://github.com/danielscholl/keelson-rib-squad/commit/b41cecd45a6626069b4e57ec73c5edb2d2cd7374))
+* **coordinator:** add operator steer for live runs ([#198](https://github.com/danielscholl/keelson-rib-squad/issues/198)) ([07b8ad0](https://github.com/danielscholl/keelson-rib-squad/commit/07b8ad0b09f4b40cf20f5cb4c9a587ea7318dc12))
+
 ## [0.21.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.20.0...v0.21.0) (2026-07-09)
 
 
