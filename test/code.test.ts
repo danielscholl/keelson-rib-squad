@@ -84,6 +84,17 @@ describe("runCodeTurn", () => {
     expect(captured?.prompt).toMatch(/do not .*push|merge/i);
   });
 
+  test("nudges the implementer to reconcile a new bound with existing defaults/constants", async () => {
+    await runCodeTurn({
+      runAgentTurn: capturingRun(),
+      membersRoot: home,
+      member: member({ slug: "atlas", name: "Atlas", tools: ["code"] }),
+      project: { name: "keelson", rootPath: "/repo/keelson" },
+      task: "raise the timeout ceiling",
+    });
+    expect(captured?.prompt).toContain("admits the current default value");
+  });
+
   test("adds review-gate verify guidance when full verification is deferred", async () => {
     await runCodeTurn({
       runAgentTurn: capturingRun(),

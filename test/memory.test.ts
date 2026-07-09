@@ -227,6 +227,12 @@ describe("distillOutcome", () => {
     expect(prompt).toContain("prefer the in-process fallback");
   });
 
+  test("the prompt forbids recording ephemeral run-status as a durable lesson", async () => {
+    let prompt = "";
+    await distillOutcome(fakeTurn('{"action":"skip"}', { onPrompt: (p) => (prompt = p) }), input);
+    expect(prompt).toContain("run facts, not project knowledge");
+  });
+
   test("a 'skip' directive abstains (the pollution gate)", async () => {
     const res = await distillOutcome(fakeTurn('nothing durable\n{"action":"skip"}'), input);
     expect(res).toEqual({ kind: "abstain" });
