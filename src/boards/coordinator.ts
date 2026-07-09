@@ -63,6 +63,8 @@ export function outcomeTone(e: CoordinatorEntry): CanvasTone {
       return "caution";
     case "failed":
       return "warn";
+    case "probe":
+      return "info";
     case "verify": {
       if (e.verdict === "block") return "error";
       if (e.verdict === "pass") return "ok";
