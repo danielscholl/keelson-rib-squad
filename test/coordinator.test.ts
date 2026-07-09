@@ -947,6 +947,98 @@ describe("runCoordinator loop", () => {
     expect((await loadLedger(home))?.inFlight).toBeUndefined();
   });
 
+  test("marks the manager planning turn in flight and clears it on completion", async () => {
+    const seen: CoordinatorLedger["inFlight"][] = [];
+    let calls = 0;
+    const runAgentTurn: NonNullable<RibContext["runAgentTurn"]> = () => {
+      calls += 1;
+      const text =
+        calls === 1
+          ? 'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}'
+          : 'done\n{"action":"done","summary":"shipped"}';
+      return {
+        stream: oneShot(),
+        result: (async () => {
+          if (calls === 1) seen.push((await loadLedger(home))?.inFlight);
+          return { status: "ok" as const, text };
+        })(),
+      };
+    };
+
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn,
+      dispatch: fakeDispatch("built it").fn,
+    });
+
+    expect(res.status).toBe("done");
+    expect(seen[0]?.speaker).toBe("coordinator");
+    expect(seen[0]?.action).toBe("planning");
+    expect(seen[0]?.round).toBe(0);
+    expect(seen[0]?.startedAt).toBeDefined();
+    expect(res.ledger.inFlight).toBeUndefined();
+    expect((await loadLedger(home))?.inFlight).toBeUndefined();
+  });
+
+  test("warns and persists a failed transcript entry when manager planning errors", async () => {
+    const orig = console.warn;
+    const calls: string[] = [];
+    console.warn = (m) => calls.push(String(m));
+    try {
+      const res = await runCoordinator({
+        ...base(),
+        runAgentTurn: () => ({
+          stream: oneShot(),
+          result: Promise.resolve({
+            status: "error" as const,
+            text: "",
+            error: "provider exploded",
+          }),
+        }),
+        dispatch: fakeDispatch("built it").fn,
+      });
+
+      const entry = res.ledger.transcript.find((e) => e.kind === "failed");
+      expect(res.status).toBe("error");
+      expect(entry?.outcome).toBe("error");
+      expect(entry?.text).toContain("provider exploded");
+      expect(res.ledger.inFlight).toBeUndefined();
+      expect((await loadLedger(home))?.inFlight).toBeUndefined();
+      expect(calls.some((m) => m.includes("coordinator:") && m.includes("provider exploded"))).toBe(
+        true,
+      );
+    } finally {
+      console.warn = orig;
+    }
+  });
+
+  test("records manager planning timeout distinctly from provider errors", async () => {
+    const orig = console.warn;
+    const calls: string[] = [];
+    console.warn = (m) => calls.push(String(m));
+    try {
+      const res = await runCoordinator({
+        ...base(),
+        runAgentTurn: () => ({
+          stream: oneShot(),
+          result: new Promise(() => {}),
+        }),
+        dispatch: fakeDispatch("built it").fn,
+        perTurnTimeoutMs: 20,
+      });
+
+      const entry = res.ledger.transcript.find((e) => e.kind === "failed");
+      const warn = calls.find((m) => m.includes("coordinator:"));
+      expect(res.status).toBe("error");
+      expect(entry?.outcome).toBe("timeout");
+      expect(entry?.text).toContain("manager turn timeout");
+      expect(warn).toContain("timeout");
+      expect(warn).not.toContain("manager turn error");
+    } finally {
+      console.warn = orig;
+    }
+  });
+
   test("invokes the publish seam after each ledger persist (per-round liveness)", async () => {
     let publishCount = 0;
     const res = await runCoordinator({
@@ -966,20 +1058,31 @@ describe("runCoordinator loop", () => {
     expect(publishCount).toBeGreaterThanOrEqual(res.rounds);
   });
 
-  test("a rejecting publish seam never breaks the run (best-effort)", async () => {
-    const res = await runCoordinator({
-      ...base(),
-      runAgentTurn: queuedRun([
-        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
-        'done\n{"action":"done","summary":"shipped"}',
-      ]),
-      dispatch: fakeDispatch("built it").fn,
-      publish: async () => {
-        throw new Error("publish boom");
-      },
-    });
-    expect(res.status).toBe("done");
-    expect(res.summary).toBe("shipped");
+  test("warns when a rejecting publish seam is swallowed (best-effort)", async () => {
+    const orig = console.warn;
+    const calls: string[] = [];
+    console.warn = (m) => calls.push(String(m));
+    try {
+      const res = await runCoordinator({
+        ...base(),
+        runAgentTurn: queuedRun([
+          'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"build X"}',
+          'done\n{"action":"done","summary":"shipped"}',
+        ]),
+        dispatch: fakeDispatch("built it").fn,
+        publish: async () => {
+          throw new Error("publish boom");
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(res.status).toBe("done");
+      expect(res.summary).toBe("shipped");
+      expect(calls.some((m) => m.includes("publish failed") && m.includes("publish boom"))).toBe(
+        true,
+      );
+    } finally {
+      console.warn = orig;
+    }
   });
 
   test("publishes on a non-done terminal persist (max-rounds ceiling)", async () => {
