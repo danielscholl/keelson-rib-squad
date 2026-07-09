@@ -1,6 +1,7 @@
 import { DESIGN_TOKENS, designTokenCssBlock } from "@keelson/shared";
-import { formatTokens, stripMd } from "./boards/coordinator.ts";
+import { stripMd } from "./boards/coordinator.ts";
 import type { CoordinatorEntry, CoordinatorLedger } from "./coordinator.ts";
+import { formatTokens } from "./format.ts";
 import { identityTonesByMember, type Member } from "./types.ts";
 
 // Pure: an archived coordinator run ledger -> a self-contained styled HTML page

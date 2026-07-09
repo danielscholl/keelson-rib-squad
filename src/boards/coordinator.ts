@@ -6,6 +6,7 @@ import {
   SHORT_ACKNOWLEDGMENT_RE,
   type VerificationRecord,
 } from "../coordinator.ts";
+import { formatTokens } from "../format.ts";
 import type { ToolTrace } from "../turn-runner.ts";
 
 // Pure: a coordinator run ledger -> a canvas `board` (the Run-loop panel). No ledger — no run
@@ -143,12 +144,6 @@ export function charterDetail(name: string, charter: string): string {
     text = text.replace(new RegExp(`^${escaped}\\b\\s*`, "i"), "");
   }
   return text.replace(/^Cast from [^.]{1,80}\.\s*/i, "").trim();
-}
-
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
-  return String(n);
 }
 
 export function buildCoordinatorBoard(
