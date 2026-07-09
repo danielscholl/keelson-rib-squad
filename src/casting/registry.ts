@@ -650,11 +650,22 @@ const HEADING_RE = /^#\s+.*(?:\n|$)/;
 // intact. compose.ts re-clamps to the prompt budget, so length stays bounded here.
 export function foldThemedCharter(
   charter: string,
-  themed: { name: string; personality: string; backstory: string; themeLabel: string },
+  themed: {
+    name: string;
+    personality: string;
+    backstory: string;
+    themeLabel: string;
+    originalName?: string;
+  },
 ): string {
   let body = charter.trim();
   const h1 = body.match(HEADING_RE);
   if (h1) body = body.slice(h1[0].length).trim();
+  const prior = themed.originalName?.trim();
+  if (prior && prior !== themed.name) {
+    const re = new RegExp(`\\b${prior.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
+    body = body.replace(re, () => themed.name);
+  }
   const preamble = [
     `# ${themed.name}`,
     "",

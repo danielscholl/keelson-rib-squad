@@ -466,4 +466,31 @@ describe("foldThemedCharter", () => {
     expect(folded).toContain("Ship the search rib.");
     expect(folded).not.toContain("# Atlas");
   });
+
+  test("rewrites the pre-theming name in the body after a rename", () => {
+    const folded = foldThemedCharter(
+      "# Vesper\n\n## Role\n\nVesper is a Code Reviewer. Vesper's notes stay terse.",
+      {
+        name: "Edie",
+        personality: "Sharp.",
+        backstory: "The reviewer.",
+        themeLabel: "The Usual Suspects",
+        originalName: "Vesper",
+      },
+    );
+    expect(folded).toContain("Edie is a Code Reviewer");
+    expect(folded).toContain("Edie's notes stay terse.");
+    expect(folded).not.toContain("Vesper");
+  });
+
+  test("keeps body names when no rename happened", () => {
+    const folded = foldThemedCharter("# Edie\n\n## Role\n\nEdie reviews the diff.", {
+      name: "Edie",
+      personality: "Sharp.",
+      backstory: "The reviewer.",
+      themeLabel: "The Usual Suspects",
+      originalName: "Edie",
+    });
+    expect(folded).toContain("Edie reviews the diff.");
+  });
 });
