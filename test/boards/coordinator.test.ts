@@ -918,6 +918,9 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(atlas?.pill?.label).toBe("claude");
     expect(atlas?.fields?.some((f) => f.label === "turns" && f.value === 2)).toBe(true);
     expect(atlas?.fields?.some((f) => f.label === "tok" && f.value === "9k")).toBe(true);
+    expect(atlas?.fields?.some((f) => f.label === "in/out" && f.value === "8k in / 1k out")).toBe(
+      true,
+    );
     expect(atlas?.reason?.text).toContain("fixed the test");
     const vera = minds.find((c) => c.title === "vera");
     expect(vera?.pill?.label).toBe("copilot");

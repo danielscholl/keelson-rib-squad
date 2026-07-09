@@ -6,7 +6,7 @@ import {
   SHORT_ACKNOWLEDGMENT_RE,
   type VerificationRecord,
 } from "../coordinator.ts";
-import { formatTokens } from "../format.ts";
+import { formatTokens, formatUsageTail } from "../format.ts";
 import type { ToolTrace } from "../turn-runner.ts";
 
 // Pure: a coordinator run ledger -> a canvas `board` (the Run-loop panel). No ledger — no run
@@ -826,7 +826,14 @@ function mindsSection(
 ): Section | undefined {
   const bySpeaker = new Map<
     string,
-    { turns: number; tokens: number; providers: Set<string>; last: CoordinatorEntry }
+    {
+      turns: number;
+      tokens: number;
+      inputTokens: number;
+      outputTokens: number;
+      providers: Set<string>;
+      last: CoordinatorEntry;
+    }
   >();
   for (const e of transcript) {
     if (e.kind !== "dispatch" && e.kind !== "code" && e.kind !== "workflow") continue;
@@ -835,11 +842,17 @@ function mindsSection(
     const agg = bySpeaker.get(speaker) ?? {
       turns: 0,
       tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
       providers: new Set<string>(),
       last: e,
     };
     agg.turns += 1;
-    if (e.usage) agg.tokens += e.usage.inputTokens + e.usage.outputTokens;
+    if (e.usage) {
+      agg.tokens += e.usage.inputTokens + e.usage.outputTokens;
+      agg.inputTokens += e.usage.inputTokens;
+      agg.outputTokens += e.usage.outputTokens;
+    }
     if (e.provider) agg.providers.add(e.provider);
     agg.last = e;
     bySpeaker.set(speaker, agg);
@@ -854,7 +867,18 @@ function mindsSection(
       ...(agg.providers.size > 0 ? { pill: { label: [...agg.providers].join("+") } } : {}),
       fields: [
         { label: "turns", value: agg.turns },
-        ...(agg.tokens > 0 ? [{ label: "tok", value: formatTokens(agg.tokens) }] : []),
+        ...(agg.tokens > 0
+          ? [
+              { label: "tok", value: formatTokens(agg.tokens) },
+              {
+                label: "in/out",
+                value: formatUsageTail({
+                  inputTokens: agg.inputTokens,
+                  outputTokens: agg.outputTokens,
+                }),
+              },
+            ]
+          : []),
         ...(agg.last.touched && (agg.last.touched.insertions || agg.last.touched.deletions)
           ? [
               {
