@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.2](https://github.com/danielscholl/keelson-rib-squad/compare/v0.19.1...v0.19.2) (2026-07-09)
+
+
+### Fixed
+
+* **cast:** scrub pre-theming name from folded charter body ([#186](https://github.com/danielscholl/keelson-rib-squad/issues/186)) ([8ce1c05](https://github.com/danielscholl/keelson-rib-squad/commit/8ce1c05a3fe47314e5bcc291e894ee4479538c79))
+
 ## [0.19.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.19.0...v0.19.1) (2026-07-08)
 
 
