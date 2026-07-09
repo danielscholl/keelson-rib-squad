@@ -145,7 +145,16 @@ export interface DoneDisposition {
 
 export interface CoordinatorEntry {
   round: number;
-  kind: "coordinator" | "dispatch" | "code" | "workflow" | "replan" | "failed" | "verify" | "probe";
+  kind:
+    | "coordinator"
+    | "dispatch"
+    | "code"
+    | "workflow"
+    | "replan"
+    | "failed"
+    | "verify"
+    | "probe"
+    | "steer";
   speaker?: string;
   instruction?: string;
   text: string;
@@ -596,6 +605,7 @@ function renderTranscriptEntry(e: CoordinatorEntry): string {
   if (e.kind === "workflow") return `${e.speaker ?? "member"} workflow: ${e.text}`;
   if (e.kind === "verify") return `verify: ${e.text}`;
   if (e.kind === "probe") return `probe: ${e.text}`;
+  if (e.kind === "steer") return `operator steer: ${e.text}`;
   if (e.kind === "replan") return `replan: ${e.text}`;
   if (e.kind === "failed") return `failed: ${e.text}`;
   return `coordinator: ${e.text}`;
@@ -723,6 +733,10 @@ export interface RunCoordinatorOptions {
   limits?: Partial<OrchestratorLimits>;
   perTurnTimeoutMs?: number;
   abortSignal?: AbortSignal;
+  // Drains any operator steer instructions queued for this run since the last round. Called
+  // once at the top of each round; returned instructions fold into the manager's facts so the
+  // next planning turn honors them. Absent means no live steering (tests and older callers).
+  takeSteers?: () => readonly string[];
   // Injected for testability; default binds dispatchFanout to the live seams. The optional
   // third arg lets the deterministic review gate force diff capture (isReview) without the
   // ad-hoc dispatch path needing it — an injected 2-arg fake still satisfies this type.
@@ -1593,6 +1607,25 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       };
       await persist(ledger);
       break;
+    }
+
+    // Fold any operator steers queued since the last round into the run's facts so the manager's
+    // planning turn below honors them, and record each on the transcript as its own step.
+    const steers = opts.takeSteers?.() ?? [];
+    if (steers.length) {
+      ledger = {
+        ...ledger,
+        facts: foldFacts(
+          ledger.facts,
+          steers.map((s) => `Operator steer: ${cap(s, FACT_CAP)}`),
+        ),
+        transcript: steers.reduce(
+          (t, s) => append(t, { round: ledger.round, kind: "steer", text: cap(s, FACT_CAP) }),
+          ledger.transcript,
+        ),
+        updatedAt: now(),
+      };
+      await persist(ledger);
     }
 
     const managerStartedAt = now();

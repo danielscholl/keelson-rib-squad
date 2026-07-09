@@ -561,6 +561,39 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.transcript.filter((e) => e.kind === "dispatch")).toHaveLength(0);
   });
 
+  test("folds a queued operator steer into facts and the transcript before the manager turn", async () => {
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    let delivered = false;
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: capturingQueuedRun(['ok\n{"action":"done","summary":"finished it"}'], seen),
+      dispatch: fakeDispatch().fn,
+      takeSteers: () => {
+        if (delivered) return [];
+        delivered = true;
+        return ["prefer the existing retry helper"];
+      },
+    });
+    expect(res.status).toBe("done");
+    // The steer is drained and folded into facts before the round's manager turn, so its prompt carries it.
+    expect(seen[0]?.prompt).toContain("Operator steer: prefer the existing retry helper");
+    expect(res.ledger.facts).toContain("Operator steer: prefer the existing retry helper");
+    const steer = res.ledger.transcript.find((e) => e.kind === "steer");
+    expect(steer?.text).toBe("prefer the existing retry helper");
+  });
+
+  test("adds no steer state when nothing is queued", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+      dispatch: fakeDispatch().fn,
+      takeSteers: () => [],
+    });
+    expect(res.status).toBe("done");
+    expect(res.ledger.transcript.some((e) => e.kind === "steer")).toBe(false);
+    expect(res.ledger.facts.some((f) => f.startsWith("Operator steer:"))).toBe(false);
+  });
+
   test("projects the current plan into dispatched member instructions", async () => {
     const d = fakeDispatch();
     const res = await runCoordinator({
