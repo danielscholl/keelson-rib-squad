@@ -1495,7 +1495,13 @@ const coordinateSchema = z.object({
   maxResets: z.number().int().min(1).max(20).optional(),
   // Operator-supplied verification commands run at the done-gate (each via `bash -c` in the
   // project root); a red exit vetoes `done`. Omit to auto-detect package.json check/typecheck/test.
-  verify: z.array(z.string().min(1).max(300)).max(8).optional(),
+  verify: z
+    .array(z.string().min(1).max(300))
+    .max(8)
+    .optional()
+    .describe(
+      "Each item is executed as a shell command via `bash -c` in the project root at the done-gate — exit 0 passes, non-zero vetoes done. These are shell commands (e.g. 'bun test'), NOT prose acceptance criteria; a prose item will typically fail (often exit 127, 'command not found', though the exact code depends on the shell). Omit to auto-detect package.json check/typecheck/test.",
+    ),
 });
 
 const stopSchema = z.object({ project: z.string().optional() });
@@ -1527,7 +1533,7 @@ function makeCoordinateTool(
   return {
     name: "squad_coordinate",
     description:
-      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is a text dispatch, a confined coding turn that edits the repo (when `project` is set and the member is code-capable), or authoring a reusable workflow DAG (persisted as an artifact for the operator to run). `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` (1–100), `maxStall`, and `maxResets` (each 1–20) cap the loop. Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
+      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is a text dispatch, a confined coding turn that edits the repo (when `project` is set and the member is code-capable), or authoring a reusable workflow DAG (persisted as an artifact for the operator to run). `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` (1–100), `maxStall`, and `maxResets` (each 1–20) cap the loop; `verify` (optional shell commands, e.g. 'bun test', run via `bash -c` at the done-gate — a red exit vetoes done; NOT prose acceptance criteria). Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
     inputSchema: coordinateSchema,
     state_changing: true,
     async execute(input, ctx) {

@@ -2049,6 +2049,93 @@ describe("runCoordinator loop", () => {
     );
   });
 
+  test("review gate: empty review output is rejected, not rendered as passed (#175)", async () => {
+    const d = fakeDispatch("");
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+      limits: { maxRounds: 6 },
+    });
+    const verify = res.ledger.transcript.find((e) => e.kind === "verify");
+    expect(verify?.verdict).toBe("block");
+    expect(verify?.text).toContain("empty review output");
+    expect(verify?.text).not.toContain("passed");
+    expect(res.ledger.lastCleanReviewRound).toBeUndefined();
+    expect(res.status).not.toBe("done");
+  });
+
+  test("review gate: repeated empty reviews terminate verification-failed, not max-rounds (#175)", async () => {
+    const d = fakeDispatch("");
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+      limits: { maxRounds: 25 },
+    });
+    expect(res.status).toBe("verification-failed");
+    expect(res.rounds).toBeLessThan(10);
+    expect(res.ledger.summary ?? "").toMatch(
+      /done-gate review could not produce a usable verdict/i,
+    );
+  });
+
+  test("review gate: reviewGateFailures resets after a passing review follows a rejection (#175)", async () => {
+    const outcomes: DispatchOutcome[] = [
+      { task: "review", perMember: [], synthesis: "", notes: [] },
+      {
+        task: "review",
+        perMember: [],
+        synthesis: "RAI VERDICT: PASS\nno blocking defect found",
+        notes: [],
+      },
+    ];
+    let i = 0;
+    const dispatch = async (): Promise<DispatchOutcome> => {
+      const outcome = outcomes[Math.min(i, outcomes.length - 1)]!;
+      i += 1;
+      return outcome;
+    };
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch,
+    });
+    expect(i).toBe(2);
+    expect(res.status).toBe("done");
+    expect(res.ledger.reviewGateFailures ?? 0).toBe(0);
+    expect(res.ledger.lastCleanReviewRound).toBeDefined();
+  });
+
+  test("verify[] exit 127 renders as 'not a runnable command', not a generic red check (#175)", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: fakeDispatch("RAI VERDICT: PASS\nno blocking defect found").fn,
+      getExec: fakeExec(127, "bash: line 1: some prose acceptance criteria: command not found"),
+      verify: ["some prose acceptance criteria"],
+      limits: { maxRounds: 4 },
+    });
+    const failed = res.ledger.transcript.find(
+      (e) => e.kind === "verify" && e.text.includes("verification FAILED"),
+    );
+    expect(failed?.text).toContain("is not a runnable command");
+    expect(failed?.text).toContain("exit 127");
+    expect(failed?.text).toContain("shell commands, not prose acceptance criteria");
+  });
+
   test("review gate: a long BLOCK verdict keeps its tail in the next manager prompt", async () => {
     const tailSentinel = "TAILMARK src/z.ts:99 concrete defect";
     const longBlockSynthesis = `RAI VERDICT: BLOCK\n${"points 1 & 2 PASS; no blocker here.\n".repeat(50)}${tailSentinel}`;

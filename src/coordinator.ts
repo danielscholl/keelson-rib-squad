@@ -96,6 +96,10 @@ export interface CoordinatorLedger {
   // Consecutive done-gate verify failures; bounds the fix-and-recheck loop so a run that can't
   // go green terminates `verification-failed` rather than burning the whole round budget.
   verifyFailures?: number;
+  // Consecutive done-gate review rejections (a real BLOCK, an empty/unusable synthesis, or no
+  // reviewer available); bounds the same way so an unresolvable review can't paraphrase-loop to
+  // maxRounds (#175).
+  reviewGateFailures?: number;
   // Consecutive done-gate change-quality failures; bounds quality refinement the same way
   // verification failures are bounded.
   changeQualityFailures?: number;
@@ -1087,11 +1091,18 @@ async function runVerification(
     });
     const exitCode = res.ok ? (res.exitCode ?? 0) : (res.code ?? 1);
     const out = res.ok ? res.data : res.error;
+    // Exit 127 ("command not found") almost always means the caller passed prose acceptance
+    // criteria instead of a shell command (#175) — render that distinctly from a real check
+    // failure so the manager (and operator) can tell "not a command" from "red build".
+    const summary =
+      exitCode === 127
+        ? `exit 127: '${command}' is not a runnable command — verify[] items are shell commands, not prose acceptance criteria`
+        : tailCap(out, VERIFY_SUMMARY_CAP);
     checks.push({
       command,
       passed: res.ok && exitCode === 0,
       exitCode,
-      summary: tailCap(out, VERIFY_SUMMARY_CAP),
+      summary,
     });
   }
   const firstFailure = checks.find((check) => !check.passed);
@@ -1694,6 +1705,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         if (reviewers.length === 0) {
           const text =
             "RAI VERDICT: BLOCK — no member is available to run a project-bound adversarial diff review";
+          const reviewGateFailures = (ledger.reviewGateFailures ?? 0) + 1;
           ledger = {
             ...ledger,
             facts: foldFacts(ledger.facts, [cap(text, FACT_CAP)]),
@@ -1701,10 +1713,24 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
               round: ledger.round,
               kind: "verify",
               text,
+              verdict: "block",
             }),
-            round: ledger.round + 1,
+            reviewGateFailures,
             updatedAt: now(),
           };
+          if (reviewGateFailures >= MAX_VERIFY_FAILURES) {
+            status = RUN_STATUS_VERIFICATION_FAILED;
+            ledger = {
+              ...ledger,
+              status: RUN_STATUS_VERIFICATION_FAILED,
+              summary: `done-gate review could not produce a usable verdict after ${reviewGateFailures} attempts`,
+              inFlight: undefined,
+              updatedAt: now(),
+            };
+            await persist(ledger);
+            break;
+          }
+          ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
           await persist(ledger);
           continue;
         }
@@ -1720,30 +1746,64 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         );
         const { summary, hadUsableOutput } = summarizeReview(review);
         const blocked = hasBlockVerdict(summary);
-        const reviewSpeaker = reviewVerdictSpeaker(reviewers, review.perMember, blocked);
+        // Fail-closed, single policy: an empty/unusable review is a rejection just like a real
+        // BLOCK, and the transcript, facts, and gate decision below all derive from the SAME
+        // `rejected` value so the operator- and manager-visible text can never disagree with what
+        // actually happened (the #175 bug: those three used to derive from `blocked` alone here
+        // but `blocked || !hadUsableOutput` for the facts/gate, so an empty review rendered
+        // "passed" while it was actually blocking).
+        const rejected = blocked || !hadUsableOutput;
+        const reviewSpeaker = reviewVerdictSpeaker(reviewers, review.perMember, rejected);
+        const verdictText = blocked
+          ? `RAI VERDICT: BLOCK\n${summary}`
+          : !hadUsableOutput
+            ? "RAI VERDICT: BLOCK\ndone-gate: empty review output — no reviewer produced a usable synthesis; refusing to accept done"
+            : `review passed (no BLOCK verdict)\n${summary}`;
         ledger = {
           ...ledger,
           transcript: append(ledger.transcript, {
             round: ledger.round,
             kind: "verify",
-            text: blocked
-              ? `RAI VERDICT: BLOCK\n${summary}`
-              : `review passed (no BLOCK verdict)\n${summary}`,
+            text: verdictText,
             ...(reviewSpeaker ? { speaker: reviewSpeaker } : {}),
             ...(reviewProvider ? { provider: reviewProvider } : {}),
-            verdict: blocked ? "block" : "pass",
+            verdict: rejected ? "block" : "pass",
             ...(review.usage ? { usage: review.usage } : {}),
           }),
-          ...(blocked || !hadUsableOutput
-            ? { facts: foldFacts(ledger.facts, [cap(`RAI VERDICT: BLOCK\n${summary}`, FACT_CAP)]) }
+          ...(rejected
+            ? { facts: foldFacts(ledger.facts, [cap(verdictText, FACT_CAP)]) }
             : { lastCleanReviewRound: ledger.round }),
           updatedAt: now(),
         };
-        if (blocked || !hadUsableOutput) {
+        if (rejected) {
+          // Only the "no usable output at all" flavor is the pathological, unbounded case (#175):
+          // a genuine concrete BLOCK is real reviewer signal, already actionable, and already
+          // bounded by maxRounds (with the ceiling's green/red-floor distinction) — counting it
+          // here too would terminate a run that's finding real defects, so it does NOT bump this
+          // counter, and it resets it (the review mechanism just proved it's working).
+          if (!hadUsableOutput) {
+            const reviewGateFailures = (ledger.reviewGateFailures ?? 0) + 1;
+            ledger = { ...ledger, reviewGateFailures };
+            if (reviewGateFailures >= MAX_VERIFY_FAILURES) {
+              status = RUN_STATUS_VERIFICATION_FAILED;
+              ledger = {
+                ...ledger,
+                status: RUN_STATUS_VERIFICATION_FAILED,
+                summary: `done-gate review could not produce a usable verdict after ${reviewGateFailures} attempts`,
+                inFlight: undefined,
+                updatedAt: now(),
+              };
+              await persist(ledger);
+              break;
+            }
+          } else {
+            ledger = { ...ledger, reviewGateFailures: 0 };
+          }
           ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
           await persist(ledger);
           continue;
         }
+        ledger = { ...ledger, reviewGateFailures: 0 };
       }
       if (
         !givingUp &&
