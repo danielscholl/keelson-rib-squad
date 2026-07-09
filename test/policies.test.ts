@@ -97,17 +97,30 @@ describe("rai floor — merge / force-push", () => {
 });
 
 describe("rai floor — block verdict", () => {
-  test("denies a response carrying a BLOCK verdict on the workflow surface", async () => {
+  test("denies a structured trailing block verdict on the workflow surface", async () => {
     for (const text of [
       '{"verdict":"block","reason":"unsafe"}',
-      "RAI-VERDICT: BLOCK",
-      "rai_verdict: block",
+      'Review complete — a concrete defect remains.\n\n{"verdict": "block", "reason": "off-by-one"}',
+      '{"verdict":"BLOCK"}',
     ]) {
       expect((await decide({ phase: "response", text }, WF)).outcome).toBe("deny");
     }
   });
 
-  test("allows an ordinary review response (the sentinel is specific)", async () => {
+  test("allows prose that only quotes or discusses the BLOCK sentinel on the workflow surface", async () => {
+    // A workflow investigating the review machinery quotes the sentinel (or a non-trailing
+    // verdict example) in passing — not the operative verdict, so the floor must allow it.
+    for (const text of [
+      "RAI-VERDICT: BLOCK",
+      "rai_verdict: block",
+      "The bug: hasBlockVerdict matches `RAI VERDICT: BLOCK` anywhere in prose, so an investigation quoting it self-blocks.",
+      'A verdict node ends with {"verdict":"block"}, but this response keeps going with more analysis.',
+    ]) {
+      expect((await decide({ phase: "response", text }, WF)).outcome).toBe("allow");
+    }
+  });
+
+  test("allows an ordinary review response (no verdict directive)", async () => {
     for (const text of [
       "verdict: pass",
       "Looks good — no blocking issues found.",
@@ -117,7 +130,7 @@ describe("rai floor — block verdict", () => {
     }
   });
 
-  test("allows a BLOCK sentinel on the rib surface — the floor must not self-block an engineer writing the sentinel (the coordinator owns rib-turn verdicts)", async () => {
+  test("allows any BLOCK verdict on the rib surface — the coordinator owns rib-turn verdicts, not this floor", async () => {
     for (const text of ['{"verdict":"block","reason":"unsafe"}', "RAI-VERDICT: BLOCK"]) {
       expect((await decide({ phase: "response", text }, RIB)).outcome).toBe("allow");
     }

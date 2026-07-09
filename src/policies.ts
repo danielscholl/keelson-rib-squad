@@ -1,4 +1,5 @@
 import type { Policy, PolicyContext, PolicyDecision, PolicyEvent } from "@keelson/shared";
+import { extractTrailingJsonObject } from "./control-json.ts";
 import { isForbiddenGitCommand, isMergeToolName } from "./forbidden.ts";
 
 // Squad's governance floor — the contributePolicies hook chamber skips. Squad agents
@@ -35,13 +36,33 @@ function shellCommand(args: unknown): string {
   return "";
 }
 
-// The RAI verdict sentinel a review turn emits to BLOCK integration. The squad-pr-review
-// workflow (Phase 2) emits a structured verdict; this matches its block form so a deny
-// fails the verdict node, making a BLOCK unappealable by re-prompting the agent.
+// The prose verdict sentinel the coordinator's own done-gate reads in a reviewer's
+// synthesis (RAI VERDICT: BLOCK), on the rib surface. Kept loose on purpose — the
+// reviewer writes it as prose — and consumed by the coordinator, not this floor.
 const BLOCK_VERDICT = /"verdict"\s*:\s*"block"|RAI[-_ ]?VERDICT\s*:\s*BLOCK/i;
 
 export function hasBlockVerdict(text: string): boolean {
   return BLOCK_VERDICT.test(text);
+}
+
+// A STRUCTURED block verdict: a well-formed, genuinely-trailing {"verdict":"block"} —
+// the shape a review workflow's verdict node emits. The workflow-surface deny wants
+// this, not the loose prose sentinel above: matching that on every workflow response
+// self-blocks any turn that merely quotes it (an investigation of the review machinery).
+export function hasBlockVerdictDirective(text: string): boolean {
+  const json = extractTrailingJsonObject(text);
+  if (!json) return false;
+  const idx = text.lastIndexOf(json);
+  if (text.slice(idx + json.length).trim().length > 0) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const verdict = (parsed as Record<string, unknown>).verdict;
+  return typeof verdict === "string" && verdict.trim().toLowerCase() === "block";
 }
 
 const raiFloor: Policy = {
@@ -70,12 +91,15 @@ const raiFloor: Policy = {
       return { outcome: "allow" };
     }
 
-    // response phase: deny a BLOCK verdict only on the workflow surface (the squad-pr-review
-    // verdict node). On the rib surface the floor can't distinguish a reviewer emitting the
-    // verdict from an engineer writing the sentinel into source, so gating every rib response
-    // self-blocks any turn that touches the review machinery; verdict enforcement for rib
-    // turns belongs to the coordinator, not this floor.
-    if (event.phase === "response" && ctx.surface === "workflow" && hasBlockVerdict(event.text)) {
+    // response phase: deny only a STRUCTURED block verdict on the workflow surface — the
+    // trailing {"verdict":"block"} a review node emits. The loose prose sentinel is the
+    // coordinator's own rib-surface signal (hasBlockVerdict); gating every workflow response
+    // on it self-blocks any turn that merely quotes the sentinel.
+    if (
+      event.phase === "response" &&
+      ctx.surface === "workflow" &&
+      hasBlockVerdictDirective(event.text)
+    ) {
       return {
         outcome: "deny",
         reason: "squad RAI floor: review returned a BLOCK verdict — integration is blocked",
