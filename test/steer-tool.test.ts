@@ -72,4 +72,10 @@ describe("squad_steer tool", () => {
     const res = await invoke(steerTool([]), { instruction: "" });
     expect(res.isError).toBe(true);
   });
+
+  test("rejects a whitespace-only instruction rather than queuing an empty steer", async () => {
+    const res = await invoke(steerTool([]), { instruction: "   " });
+    expect(res.isError).toBe(true);
+    expect(res.content).toContain("empty");
+  });
 });

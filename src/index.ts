@@ -1769,7 +1769,7 @@ function makeSteerTool(projectsSeam: RibContext["getProjects"]): ToolDefinition 
           emitResult(ctx, `squad_steer: ${resolution.error}`, true);
           return;
         }
-        const steered = steerCoordinateScope(resolution.scopeId, parsed.data.instruction.trim());
+        const steered = steerCoordinateScope(resolution.scopeId, parsed.data.instruction);
         if (!steered.ok) {
           emitResult(ctx, `squad_steer: ${steered.error}`, true);
           return;
@@ -2128,12 +2128,14 @@ function steerCoordinateScope(
   scopeId: string,
   instruction: string,
 ): { ok: true } | { ok: false; error: string } {
+  const trimmed = instruction.trim();
+  if (!trimmed) return { ok: false, error: "steer instruction is empty" };
   const controller = activeCoordinateRuns.get(scopeId);
   if (!controller || controller.signal.aborted) {
     return { ok: false, error: `no live coordinator run in scope "${scopeId}"` };
   }
   const queued = pendingSteers.get(scopeId) ?? [];
-  queued.push(instruction);
+  queued.push(trimmed);
   pendingSteers.set(scopeId, queued);
   return { ok: true };
 }
@@ -3008,6 +3010,7 @@ const rib: Rib = {
     runDetailBoard = undefined;
     reportHtml = undefined;
     activeCoordinateRuns.clear();
+    pendingSteers.clear();
   },
 };
 
@@ -3294,7 +3297,7 @@ function steerCoordinateAction(action: RibAction): RibActionResult {
   if (!scopeId) return { ok: false, error: "steer-coordinate requires payload { scopeId }" };
   const instruction = asNonEmptyString(payload.instruction);
   if (!instruction) return { ok: false, error: "Add an instruction to steer the run with." };
-  const steered = steerCoordinateScope(scopeId, instruction.trim());
+  const steered = steerCoordinateScope(scopeId, instruction);
   if (!steered.ok) return { ok: false, error: `squad_steer: ${steered.error}` };
   void refreshWorkflow?.("squad-coordinator")?.catch(() => {});
   return { ok: true, data: { steered: scopeId } };
