@@ -112,6 +112,10 @@ export interface CoordinatorLedger {
   lastCodeRound?: number;
   // The latest round where the project-bound adversarial review was clean (no BLOCK verdict).
   lastCleanReviewRound?: number;
+  // The latest round a concrete, actionable review BLOCK was recorded (excludes the empty-output
+  // and no-reviewer BLOCK flavors). Distinguishes a run converging on a real review defect from one
+  // that is merely unfinished (never reviewed), so the ceiling extends the budget only for the former.
+  lastConcreteReviewBlockRound?: number;
   // Bounded round-budget extensions already granted at the ceiling (green floor + concrete review
   // BLOCK signal). Persisted so a resumed run keeps its extended ceiling; capped by
   // MAX_AUTO_EXTENSIONS.
@@ -1641,6 +1645,10 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         // to terminate.
         if (
           ceilingVerification.passed &&
+          // Extend ONLY when a concrete review BLOCK is the live blocker — recorded more recently
+          // than the last clean review — not when the run is merely unfinished and never reviewed
+          // (where reviewGateFailures is also 0). The empty-review pathology never sets this marker.
+          (ledger.lastConcreteReviewBlockRound ?? -1) > (ledger.lastCleanReviewRound ?? -1) &&
           (ledger.reviewGateFailures ?? 0) === 0 &&
           (ledger.autoExtensions ?? 0) < MAX_AUTO_EXTENSIONS
         ) {
@@ -1966,7 +1974,14 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
               break;
             }
           } else {
-            ledger = { ...ledger, reviewGateFailures: 0 };
+            // A concrete, actionable BLOCK — real reviewer signal, not the empty-review pathology
+            // above. Mark the round so the ceiling can tell a run converging on a real defect from
+            // one merely unfinished (never reviewed) when deciding whether to extend.
+            ledger = {
+              ...ledger,
+              reviewGateFailures: 0,
+              lastConcreteReviewBlockRound: ledger.round,
+            };
           }
           ledger = { ...ledger, round: ledger.round + 1, updatedAt: now() };
           await persist(ledger);

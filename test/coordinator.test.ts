@@ -2659,6 +2659,29 @@ describe("runCoordinator loop", () => {
     expect(res.status).toBe("max-rounds");
   });
 
+  test("done-gate convergence: a GREEN floor that was never reviewed does not auto-extend", async () => {
+    // Code is edited every round but the manager never claims done, so the done-gate review never
+    // runs and no concrete BLOCK is recorded. reviewGateFailures is 0 here too, so keying the
+    // extension on reviewGateFailures alone would wrongly extend a merely-unfinished run — it must
+    // require a concrete review block newer than the last clean review, which never happens here.
+    let n = 0;
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"edit","mode":"code"}',
+      ]),
+      code: async () => ({ status: "ok" as const, text: `edited ${n++}` }),
+      getExec: fakeExec(0, "all good"),
+      verify: ["bun run test"],
+      limits: { maxRounds: 4, maxStall: 99, maxResets: 99 },
+    });
+    expect(res.ledger.autoExtensions ?? 0).toBe(0);
+    expect(res.status).toBe("max-rounds");
+    expect(res.rounds).toBeLessThan(8);
+  });
+
   test("#57: identical repeated outcomes give up instead of burning to max-rounds", async () => {
     // The manager always claims progress (never in_loop, never satisfied) and keeps dispatching
     // the same step; the member returns the SAME text every round. Without the deterministic
