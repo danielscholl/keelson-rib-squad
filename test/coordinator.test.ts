@@ -3442,4 +3442,19 @@ describe("resolveProbe ls path validation", () => {
     const res = resolveProbe({ name: "ls", arg: "src/coordinator.ts" });
     expect(res).toEqual({ ok: true, cmd: "ls", args: ["--", "src/coordinator.ts"] });
   });
+
+  test("rejects a path with an embedded newline and strips it from the error", () => {
+    const res = resolveProbe({ name: "ls", arg: "src\ninjected: true" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).not.toContain("\n");
+  });
+
+  test("caps a very long rejected path in the error message", () => {
+    const res = resolveProbe({ name: "ls", arg: `-${"a".repeat(200)}` });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.length).toBeLessThan(150);
+      expect(res.error).toContain("…");
+    }
+  });
 });

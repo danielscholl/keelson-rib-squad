@@ -320,6 +320,23 @@ function clampProbeCount(count: number | undefined): number {
   return Math.min(PROBE_COUNT_MAX, Math.max(PROBE_COUNT_MIN, Math.trunc(count)));
 }
 
+const PROBE_ERROR_ARG_CAP = 80;
+// A rejected probe's model-supplied name/arg is echoed into the error, which is folded into the
+// ledger transcript and the next-round manager prompt: strip control characters (newlines
+// included) and cap the length so untrusted input can never break prompt formatting or bloat
+// context.
+function sanitizeProbeInput(s: string): string {
+  let cleaned = "";
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    cleaned += code < 0x20 || code === 0x7f ? " " : ch;
+  }
+  cleaned = cleaned.trim();
+  return cleaned.length > PROBE_ERROR_ARG_CAP
+    ? `${cleaned.slice(0, PROBE_ERROR_ARG_CAP)}…`
+    : cleaned;
+}
+
 // Map a requested probe name to its concrete (cmd, args[]) pair. An unlisted name — or an invalid
 // argument — is REJECTED with a structured error and nothing is executed. Args are always an array;
 // model output is never interpolated into a shell string.
@@ -342,14 +359,14 @@ export function resolveProbe(req: ProbeRequest): ProbeResolution {
         path.startsWith("/") ||
         path.startsWith("-")
       ) {
-        return { ok: false, error: `probe ls rejected unsafe path: ${req.arg}` };
+        return { ok: false, error: `probe ls rejected unsafe path: ${sanitizeProbeInput(path)}` };
       }
       // `--` forces ls to treat the path as an operand even if validation above has a gap,
       // so a path can never be reinterpreted as a flag.
       return { ok: true, cmd: "ls", args: ["--", path] };
     }
     default:
-      return { ok: false, error: `unknown probe: ${req.name || "(none)"}` };
+      return { ok: false, error: `unknown probe: ${sanitizeProbeInput(req.name) || "(none)"}` };
   }
 }
 
