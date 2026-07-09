@@ -1668,6 +1668,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       inFlight: undefined,
       updatedAt: now(),
     };
+    // Persist the cleared marker now: a later step this round (the probe exec, the done-gate
+    // review turn) can hang, and stale on-disk "planning" inFlight would misname the stuck op.
+    await persist(ledger);
 
     // Read-only probe hook (#154): when the manager requests a deterministic probe instead of a
     // member, run it via the exec seam and re-prompt with the result next round — no member turn is
