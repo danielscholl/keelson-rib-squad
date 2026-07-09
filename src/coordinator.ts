@@ -219,6 +219,14 @@ const FACT_CAP = 600; // per-fact char cap so one long synthesis can't bloat the
 // Floor between live in-flight trace persists, so a tool-heavy turn (dozens of calls
 // in seconds) can't turn the ledger file + board refresh into a write storm.
 const LIVE_TRACE_THROTTLE_MS = 2000;
+// Off by default so normal runs and tests stay quiet; failures always warn regardless.
+const COORDINATOR_DEBUG = (process.env.KEELSON_SQUAD_DEBUG ?? "").trim().length > 0;
+function debugLoop(msg: string): void {
+  if (COORDINATOR_DEBUG) console.log(`[rib-squad] coordinator: ${msg}`);
+}
+function warnLoop(msg: string): void {
+  console.warn(`[rib-squad] coordinator: ${msg}`);
+}
 const MAX_FACTS = 60; // ledger keeps the most recent facts
 const MAX_TRANSCRIPT = 40; // bounded so the prompt + file stay sane
 const ENTRY_CAP = 1500; // per-transcript-entry char cap
