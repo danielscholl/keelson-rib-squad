@@ -274,6 +274,34 @@ describe("squad_propose_cast tool (runs the confined scan)", () => {
     expect(refreshed).toContain("squad-cast");
   });
 
+  test("folds the cast name through the charter body, scrubbing the proposed name end-to-end", async () => {
+    // Guards the index.ts wiring: foldedCharter must forward originalName into the fold.
+    // The proposed name appears in the charter BODY (not just the H1), so a regression
+    // that drops originalName leaves "Atlas" behind and this test goes red.
+    const reply = JSON.stringify({
+      members: [
+        {
+          name: "Atlas",
+          role: "Engineer",
+          charter: "# Atlas\n\n## Role\n\nAtlas builds the rib.",
+          tools: ["code", "read"],
+        },
+      ],
+      summary: "an engineer",
+    });
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")], reply);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    const out = await runTool(proposeCastTool(tools), {});
+    expect(out.isError).toBe(false);
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+    const cast = proposal?.members[0];
+    expect(cast).toMatchObject({ name: "McManus", originalName: "Atlas" });
+    const castName = cast?.name ?? "";
+    const charter = cast?.charter ?? "";
+    expect(charter).toContain(`${castName} builds the rib.`);
+    expect(charter).not.toContain("Atlas");
+  });
+
   test("clears the pending cast marker and refreshes the roster when the proposal lands", async () => {
     const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
     await selectProject("p1", "keelson", "/repo/keelson");

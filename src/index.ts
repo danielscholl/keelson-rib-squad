@@ -473,6 +473,7 @@ function foldedCharter(
     themeLabel?: string;
     personality?: string;
     backstory?: string;
+    originalName?: string;
   },
 ): string {
   return id.themeId && id.personality
@@ -481,6 +482,7 @@ function foldedCharter(
         personality: id.personality,
         backstory: id.backstory ?? "",
         themeLabel: id.themeLabel ?? themeLabel(id.themeId) ?? id.themeId,
+        originalName: id.originalName,
       })
     : charter;
 }
