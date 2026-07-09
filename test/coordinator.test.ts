@@ -310,6 +310,47 @@ describe("actionLabel", () => {
   });
 });
 
+describe("provenanceLines", () => {
+  test("groups by member, provider, and verb while summing usage", () => {
+    expect(
+      provenanceLines([
+        {
+          round: 1,
+          kind: "code",
+          speaker: "atlas",
+          provider: "copilot",
+          text: "one",
+          usage: { inputTokens: 900, outputTokens: 120 },
+        },
+        {
+          round: 2,
+          kind: "code",
+          speaker: "atlas",
+          provider: "copilot",
+          text: "two",
+          usage: { inputTokens: 300, outputTokens: 40 },
+        },
+        {
+          round: 2,
+          kind: "verify",
+          speaker: "vera",
+          provider: "copilot",
+          verdict: "pass",
+          text: "clean",
+        },
+      ]),
+    ).toEqual([
+      {
+        who: "atlas",
+        provider: "copilot",
+        verb: "coded",
+        usage: { inputTokens: 1200, outputTokens: 160 },
+      },
+      { who: "vera", provider: "copilot", verb: "reviewed" },
+    ]);
+  });
+});
+
 describe("withPlanContext", () => {
   test("adds the current manager plan and assigned step", () => {
     const prompt = withPlanContext("patch the dispatcher", [
@@ -1613,6 +1654,7 @@ describe("runCoordinator loop", () => {
     expect(dispatchEntry?.durationMs).toBe(800);
     const coordEntry = res.ledger.transcript.find((e) => e.kind === "coordinator");
     expect(coordEntry?.at).toBe(NOW);
+    expect(res.provenance).toContain("atlas (claude) coded — 900 in / 120 out");
   });
 
   test("surfaces timed-out code turns in the ledger and standup prompt", async () => {

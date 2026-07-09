@@ -38,6 +38,7 @@ import {
   type ProgressLedger,
   type WorkflowStepOutcome,
 } from "./orchestrator.ts";
+import { formatUsageTail } from "./format.ts";
 import { hasBlockVerdict } from "./policies.ts";
 import { archiveRun } from "./runs-store.ts";
 import { runConfinedTurn, type ToolTrace } from "./turn-runner.ts";
@@ -1212,30 +1213,48 @@ export interface ProvenanceLine {
   who: string;
   provider: string;
   verb: string;
+  usage?: TokenUsage;
 }
 
-// Walk the transcript's execute entries into deduped (member, provider, verb) attributions —
+function addUsage(a?: TokenUsage, b?: TokenUsage): TokenUsage | undefined {
+  if (!a && !b) return undefined;
+  return {
+    inputTokens: (a?.inputTokens ?? 0) + (b?.inputTokens ?? 0),
+    outputTokens: (a?.outputTokens ?? 0) + (b?.outputTokens ?? 0),
+  };
+}
+
+// Walk the transcript's execute entries into (member, provider, verb) attributions —
 // the served-provider provenance the standup and Run-loop board surface for a mixed team.
 export function provenanceLines(transcript: readonly CoordinatorEntry[]): ProvenanceLine[] {
-  const seen = new Set<string>();
-  const out: ProvenanceLine[] = [];
+  const grouped = new Map<string, ProvenanceLine>();
   for (const e of transcript) {
     const verb = PROVENANCE_VERB[e.kind];
     if (!verb || !e.provider) continue;
     if (e.kind === "verify" && !e.verdict) continue;
     const who = e.speaker ?? "team";
     const key = `${who}|${e.provider}|${verb}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ who, provider: e.provider, verb });
+    const prior = grouped.get(key);
+    const usage = addUsage(prior?.usage, e.usage);
+    grouped.set(key, {
+      who,
+      provider: e.provider,
+      verb,
+      ...(usage ? { usage } : {}),
+    });
   }
-  return out;
+  return [...grouped.values()];
 }
 
 function summarizeProvenance(transcript: readonly CoordinatorEntry[]): string | undefined {
   const lines = provenanceLines(transcript);
   return lines.length
-    ? lines.map((l) => `${l.who} (${l.provider}) ${l.verb}`).join(" · ")
+    ? lines
+        .map(
+          (l) =>
+            `${l.who} (${l.provider}) ${l.verb}${l.usage ? ` — ${formatUsageTail(l.usage)}` : ""}`,
+        )
+        .join(" · ")
     : undefined;
 }
 
