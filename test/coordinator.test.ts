@@ -2619,6 +2619,46 @@ describe("runCoordinator loop", () => {
     expect(res.ledger.summary ?? "").not.toMatch(/passes on its own/i);
   });
 
+  test("done-gate convergence: a GREEN floor with a concrete BLOCK bounded-auto-extends the budget", async () => {
+    const d = fakeDispatch("RAI VERDICT: BLOCK\nsrc/x.ts:12 unsafe default");
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+      getExec: fakeExec(0, "all good"),
+      verify: ["bun run test"],
+      limits: { maxRounds: 4 },
+    });
+    // A green floor plus a concrete (non-empty) review BLOCK is real reviewer signal: the ceiling
+    // extends the budget MAX_AUTO_EXTENSIONS times so a converging run finishes instead of
+    // terminating at the base budget, then still terminates max-rounds when extensions run out.
+    expect(res.ledger.autoExtensions).toBe(2);
+    expect(res.rounds).toBeGreaterThan(4);
+    expect(res.status).toBe("max-rounds");
+    expect(res.ledger.summary ?? "").toMatch(/budget extension/i);
+  });
+
+  test("done-gate convergence: a RED floor does not auto-extend the round budget", async () => {
+    const d = fakeDispatch("RAI VERDICT: BLOCK\nsrc/x.ts:12 unsafe default");
+    const res = await runCoordinator({
+      ...base(),
+      roster: coder(),
+      project: { id: "p1", name: "repo", rootPath: "/repo" },
+      runAgentTurn: codeThenDone(),
+      code: async () => ({ status: "ok" as const, text: "edited" }),
+      dispatch: d.fn,
+      getExec: fakeExec(1, "1 fail"),
+      verify: ["bun run test"],
+      limits: { maxRounds: 4 },
+    });
+    // A red floor means the artifact does not pass on its own — no extension is granted.
+    expect(res.ledger.autoExtensions ?? 0).toBe(0);
+    expect(res.status).toBe("max-rounds");
+  });
+
   test("#57: identical repeated outcomes give up instead of burning to max-rounds", async () => {
     // The manager always claims progress (never in_loop, never satisfied) and keeps dispatching
     // the same step; the member returns the SAME text every round. Without the deterministic

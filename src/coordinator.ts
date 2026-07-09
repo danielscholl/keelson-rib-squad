@@ -112,6 +112,10 @@ export interface CoordinatorLedger {
   lastCodeRound?: number;
   // The latest round where the project-bound adversarial review was clean (no BLOCK verdict).
   lastCleanReviewRound?: number;
+  // Bounded round-budget extensions already granted at the ceiling (green floor + concrete review
+  // BLOCK signal). Persisted so a resumed run keeps its extended ceiling; capped by
+  // MAX_AUTO_EXTENSIONS.
+  autoExtensions?: number;
   summary?: string;
   // The turn currently executing — set just before the execute arm runs and cleared the moment
   // it returns, so a streamed Run-loop board can show "work being assigned" in real time. A
@@ -251,6 +255,10 @@ const PLAN_CONTEXT_ROW_CAP = 12;
 const MAX_GAPS = 6; // bounded list of "the roster lacks X" recommendations
 const GAP_CAP = 160; // per-gap char cap so a recommendation stays a short headline
 export const MAX_VERIFY_FAILURES = 3; // consecutive done-gate failures before terminating
+// Bounded round-budget extensions granted at the ceiling when the deterministic floor is green
+// and the review is still producing concrete BLOCK signal, so a converging run finishes instead of
+// terminating with mergeable work behind an unresolved review.
+const MAX_AUTO_EXTENSIONS = 2;
 // The same execute outcome (member + normalized text) this many rounds running is treated as a
 // deterministic stall, independent of the manager's self-reported progress (issue #57).
 export const REPEAT_STALL_AT = 2;
@@ -1591,6 +1599,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       : undefined;
   let replanRequested = false;
   let status: RunCoordinatorResult["status"] = RUN_STATUS_MAX_ROUNDS;
+  // Rounds added per ceiling auto-extension — proportional to the run's budget so a small
+  // surface run (maxRounds 6) and the default (24) both extend by a sensible margin.
+  const autoExtendRounds = Math.max(4, Math.ceil(limits.maxRounds / 2));
 
   while (true) {
     if (opts.abortSignal?.aborted) {
@@ -1598,8 +1609,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       break;
     }
     debugLoop(`round ${ledger.round}: loop start (status target ${status})`);
-    if (ledger.round >= limits.maxRounds) {
-      status = RUN_STATUS_MAX_ROUNDS;
+    const effectiveMaxRounds = limits.maxRounds + (ledger.autoExtensions ?? 0) * autoExtendRounds;
+    if (ledger.round >= effectiveMaxRounds) {
       // A ceiling hit with code edited but never cleanly reviewed is the dangerous
       // false-negative: the loop may be hiding mergeable work behind an unsubstantiated
       // review BLOCK. Consult the deterministic floor once and name the state, so a
@@ -1609,7 +1620,6 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       const unresolvedReview =
         ceilCodeRound !== undefined && ceilCodeRound > (ledger.lastCleanReviewRound ?? -1);
       let ceilingVerification: VerificationRecord | undefined;
-      let ceilingSummary: string | undefined;
       if (
         unresolvedReview &&
         project &&
@@ -1617,12 +1627,50 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         verify.length > 0 &&
         !opts.abortSignal?.aborted
       ) {
-        const v = await runVerification(opts.getExec, verify, project.rootPath, ledger.round);
-        ceilingVerification = v;
-        ceilingSummary = v.passed
-          ? `Round ceiling reached with an unresolved review BLOCK, but the deterministic floor is GREEN (${v.command}) — the artifact passes on its own; the blocker is an unsubstantiated or unverified review, not a broken build. Human review recommended.`
-          : `Round ceiling reached with an unresolved review BLOCK and a RED deterministic check (${v.command}, exit ${v.exitCode}) — the artifact does not pass on its own.`;
+        ceilingVerification = await runVerification(
+          opts.getExec,
+          verify,
+          project.rootPath,
+          ledger.round,
+        );
+        // Bounded auto-extend: a GREEN floor plus an unresolved review still producing concrete
+        // BLOCK signal (not the empty-review pathology, which reviewGateFailures bounds to
+        // verification-failed) means the artifact is close and the review is narrowing a real
+        // defect class. Grant a bounded budget extension so it converges instead of terminating
+        // with mergeable work behind the review; a red floor or exhausted extensions falls through
+        // to terminate.
+        if (
+          ceilingVerification.passed &&
+          (ledger.reviewGateFailures ?? 0) === 0 &&
+          (ledger.autoExtensions ?? 0) < MAX_AUTO_EXTENSIONS
+        ) {
+          const autoExtensions = (ledger.autoExtensions ?? 0) + 1;
+          const note = `Round ceiling reached with a GREEN deterministic floor and an unresolved but concrete review BLOCK — extending the round budget by ${autoExtendRounds} (extension ${autoExtensions}/${MAX_AUTO_EXTENSIONS}) so the review can converge rather than ceiling-terminating.`;
+          ledger = {
+            ...ledger,
+            autoExtensions,
+            facts: foldFacts(ledger.facts, [cap(note, FACT_CAP)]),
+            transcript: append(ledger.transcript, {
+              round: ledger.round,
+              kind: "coordinator",
+              text: note,
+            }),
+            updatedAt: now(),
+          };
+          await persist(ledger);
+          continue;
+        }
       }
+      status = RUN_STATUS_MAX_ROUNDS;
+      const extendedNote =
+        (ledger.autoExtensions ?? 0) > 0
+          ? ` (after ${ledger.autoExtensions} budget extension${(ledger.autoExtensions ?? 0) === 1 ? "" : "s"})`
+          : "";
+      const ceilingSummary = ceilingVerification
+        ? ceilingVerification.passed
+          ? `Round ceiling reached with an unresolved review BLOCK, but the deterministic floor is GREEN (${ceilingVerification.command})${extendedNote} — the artifact passes on its own; the blocker is an unsubstantiated or unverified review, not a broken build. Human review recommended.`
+          : `Round ceiling reached with an unresolved review BLOCK and a RED deterministic check (${ceilingVerification.command}, exit ${ceilingVerification.exitCode})${extendedNote} — the artifact does not pass on its own.`
+        : undefined;
       // Persist a TERMINAL status so a same-task re-run starts fresh instead of
       // resuming this ceiling-hit ledger and short-circuiting straight back here.
       ledger = {
@@ -1794,7 +1842,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       progress: directive.progress,
       state: { round: ledger.round, stallCount: ledger.stallCount, resetCount: ledger.resetCount },
       roster: opts.roster,
-      limits,
+      // The pure decider enforces maxRounds independently, so it must see the same
+      // auto-extended ceiling the driver loop uses or it would end the run at the base budget.
+      limits: { ...limits, maxRounds: effectiveMaxRounds },
       repeatedOutcome: (ledger.outcomeRepeat?.count ?? 0) >= REPEAT_STALL_AT,
     });
     ledger = {
@@ -1855,7 +1905,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         }
         const review = await dispatch(
           reviewers,
-          "Adversarial review the current project diff and try to refute it. Cite exact file:line evidence. Only emit the sentinel RAI VERDICT: BLOCK when you can name a SPECIFIC, reproducible defect — a concrete failing input or a wrong line and why it is wrong — not a hunch and not an inability to verify. Apply two lenses beyond correctness, each still requiring a concrete citation: (1) CONSISTENCY — for any value the diff introduces into a shared or persisted structure (a field on a shared object, a stored record, a returned or serialized result), locate the OTHER code that produces that same field or structure and confirm the new value matches the shape, type, and convention that code already uses (for example an identifier vs a display label, raising an error vs a silent fallback, required vs optional, matching units); a divergence from a convention the surrounding code already follows is a defect when you cite both the diverging line and the code it is inconsistent with. (2) TEST ADEQUACY — a test guarding new behavior that cannot actually discriminate that behavior (for example one whose setup makes two different outcomes look identical, so it would pass even if the code were wrong) is a defect; cite the test and the case it fails to distinguish. If your refutation attempts all pass and you cannot identify or substantiate a concrete blocking defect, emit RAI VERDICT: PASS and record any residual concerns as caveats rather than blocking. If no blocker remains, clearly say RAI VERDICT: PASS.",
+          "Adversarial review the current project diff and try to refute it. Cite exact file:line evidence. Only emit the sentinel RAI VERDICT: BLOCK when you can name a SPECIFIC, reproducible defect — a concrete failing input or a wrong line and why it is wrong — not a hunch and not an inability to verify. Apply two lenses beyond correctness, each still requiring a concrete citation: (1) CONSISTENCY — for any value the diff introduces into a shared or persisted structure (a field on a shared object, a stored record, a returned or serialized result), locate the OTHER code that produces that same field or structure and confirm the new value matches the shape, type, and convention that code already uses (for example an identifier vs a display label, raising an error vs a silent fallback, required vs optional, matching units); a divergence from a convention the surrounding code already follows is a defect when you cite both the diverging line and the code it is inconsistent with. (2) TEST ADEQUACY — a test guarding new behavior that cannot actually discriminate that behavior (for example one whose setup makes two different outcomes look identical, so it would pass even if the code were wrong) is a defect; cite the test and the case it fails to distinguish. When you DO substantiate a blocking defect, do not stop at the first instance: in the SAME response enumerate every other site in the diff that shares its root cause — list each as file:line — and state that root cause in one sentence, so a single fix can close the whole class in one round instead of surfacing one instance per round. If your refutation attempts all pass and you cannot identify or substantiate a concrete blocking defect, emit RAI VERDICT: PASS and record any residual concerns as caveats rather than blocking. If no blocker remains, clearly say RAI VERDICT: PASS.",
           // The gate is a review by construction — capture the diff regardless of how this
           // instruction reads, instead of relying on the text containing a review keyword.
           { isReview: true },
