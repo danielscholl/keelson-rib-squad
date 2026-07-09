@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryTools, RibContext, RibExec, TokenUsage } from "@keelson/shared";
+import { errText } from "@keelson/shared";
 import {
   type ChangeQualityDiffNumstat,
   type DiffNameStatusEntry,
@@ -1488,8 +1489,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     void (async () => {
       try {
         await opts.publish?.();
-      } catch {
-        // best-effort
+      } catch (e) {
+        warnLoop(`live board publish failed (best-effort): ${errText(e)}`);
       }
     })();
   };
@@ -1704,9 +1705,6 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         updatedAt: now(),
       };
       await persist(ledger);
-      debugLoop(
-        `round ${ledger.round}: dispatch ${decided.step.speaker ?? "team"} (${actionLabel(decided.step)}) started`,
-      );
       continue;
     }
 
@@ -2070,7 +2068,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
                   : "[memory] outcome not recorded (deduped or blocked)";
               }
             }
-          } catch {
+          } catch (e) {
+            warnLoop(`memory distillation threw, falling back to reflectOutcome: ${errText(e)}`);
             if (!opts.abortSignal?.aborted) {
               memoryNote = (await reflectOutcome(
                 memory,
@@ -2112,8 +2111,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
                 updatedAt: now(),
               };
             }
-          } catch {
-            // fail-soft: a rejecting reflection seam must not crash a completed run
+          } catch (e) {
+            warnLoop(`member reflect-at-close threw (fail-soft): ${errText(e)}`);
           }
         }
       }
@@ -2172,6 +2171,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       updatedAt: now(),
     };
     await persist(ledger);
+    debugLoop(
+      `round ${ledger.round}: dispatch ${decided.step.speaker ?? "team"} (${actionLabel(decided.step)}) started`,
+    );
     // Live tool-trace relay (#113): the code arm streams tool_use folds here; each
     // (throttled) update re-persists the ledger with the growing in-flight trace so
     // the bound board's refresh shows the work as it happens. Writes chain serially
@@ -2190,7 +2192,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         inFlight: { ...inFlightBase.inFlight, tools: [...tools] },
         updatedAt: now(),
       };
-      livePersists = livePersists.then(() => persist(live)).catch(() => {});
+      livePersists = livePersists
+        .then(() => persist(live))
+        .catch((e) => warnLoop(`live trace persist failed (best-effort): ${errText(e)}`));
     };
     const codeTreeBefore =
       opts.getExec && project && decided.step.kind === "execute" && decided.step.mode === "code"
@@ -2393,8 +2397,8 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     // Fail-soft archival: persistence of run history must never fail the live run result.
     try {
       await archiveRun(opts.dataHome, finalLedger);
-    } catch {
-      // best-effort
+    } catch (e) {
+      warnLoop(`run archival failed (best-effort): ${errText(e)}`);
     }
   }
 
