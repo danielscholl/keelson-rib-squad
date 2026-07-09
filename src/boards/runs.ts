@@ -40,6 +40,7 @@ function statusTone(status: string): CanvasTone {
     case "gave-up":
       return "warn";
     case "max-rounds":
+    case "max-tokens":
       return "caution";
     case "verification-failed":
     case "change-quality-failed":

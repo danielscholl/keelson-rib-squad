@@ -6,6 +6,7 @@ import {
   SHORT_ACKNOWLEDGMENT_RE,
   type VerificationRecord,
 } from "../coordinator.ts";
+import { formatTokens, formatUsageTail } from "../format.ts";
 import type { ToolTrace } from "../turn-runner.ts";
 
 // Pure: a coordinator run ledger -> a canvas `board` (the Run-loop panel). No ledger — no run
@@ -145,12 +146,6 @@ export function charterDetail(name: string, charter: string): string {
   return text.replace(/^Cast from [^.]{1,80}\.\s*/i, "").trim();
 }
 
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
-  return String(n);
-}
-
 export function buildCoordinatorBoard(
   ledger: CoordinatorLedger | undefined,
   tones?: IdentityTones,
@@ -274,6 +269,8 @@ function sectionsFor(
       return doneSections(ledger, ledgerRounds, tones);
     case "max-rounds":
       return maxRoundsSections(ledger, ledgerRounds, tones);
+    case "max-tokens":
+      return maxTokensSections(ledger, ledgerRounds, tones);
     case "verification-failed":
     case "change-quality-failed":
       return failedSections(ledger, ledgerRounds, tones, scopeId);
@@ -452,6 +449,23 @@ function maxRoundsSections(
     : "Review where it stalled.";
   const sections: Section[] = [
     advisorySection("caution", `Needs you — the run hit its round budget. ${tail}`),
+  ];
+  if (ledger.verification) sections.push(verificationSection(ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  if (findings.length > 0) sections.push(findingsSection(findings));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  return sections;
+}
+
+function maxTokensSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
+  const findings = visibleFindings(ledger);
+  const sections: Section[] = [
+    advisorySection("caution", "Needs you — the run hit its token budget."),
   ];
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
@@ -831,7 +845,14 @@ function mindsSection(
 ): Section | undefined {
   const bySpeaker = new Map<
     string,
-    { turns: number; tokens: number; providers: Set<string>; last: CoordinatorEntry }
+    {
+      turns: number;
+      tokens: number;
+      inputTokens: number;
+      outputTokens: number;
+      providers: Set<string>;
+      last: CoordinatorEntry;
+    }
   >();
   for (const e of transcript) {
     if (e.kind !== "dispatch" && e.kind !== "code" && e.kind !== "workflow") continue;
@@ -840,11 +861,17 @@ function mindsSection(
     const agg = bySpeaker.get(speaker) ?? {
       turns: 0,
       tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
       providers: new Set<string>(),
       last: e,
     };
     agg.turns += 1;
-    if (e.usage) agg.tokens += e.usage.inputTokens + e.usage.outputTokens;
+    if (e.usage) {
+      agg.tokens += e.usage.inputTokens + e.usage.outputTokens;
+      agg.inputTokens += e.usage.inputTokens;
+      agg.outputTokens += e.usage.outputTokens;
+    }
     if (e.provider) agg.providers.add(e.provider);
     agg.last = e;
     bySpeaker.set(speaker, agg);
@@ -859,7 +886,18 @@ function mindsSection(
       ...(agg.providers.size > 0 ? { pill: { label: [...agg.providers].join("+") } } : {}),
       fields: [
         { label: "turns", value: agg.turns },
-        ...(agg.tokens > 0 ? [{ label: "tok", value: formatTokens(agg.tokens) }] : []),
+        ...(agg.tokens > 0
+          ? [
+              { label: "tok", value: formatTokens(agg.tokens) },
+              {
+                label: "in/out",
+                value: formatUsageTail({
+                  inputTokens: agg.inputTokens,
+                  outputTokens: agg.outputTokens,
+                }),
+              },
+            ]
+          : []),
         ...(agg.last.touched && (agg.last.touched.insertions || agg.last.touched.deletions)
           ? [
               {
@@ -1074,6 +1112,8 @@ function statusPill(status: CoordinatorLedger["status"]): { label: string; tone:
       return { label: "gave up", tone: "warn" };
     case "max-rounds":
       return { label: "max rounds", tone: "caution" };
+    case "max-tokens":
+      return { label: "max tokens", tone: "caution" };
     case "verification-failed":
       return { label: "verification failed", tone: "error" };
     case "change-quality-failed":

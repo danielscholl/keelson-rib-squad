@@ -310,6 +310,47 @@ describe("actionLabel", () => {
   });
 });
 
+describe("provenanceLines", () => {
+  test("groups by member, provider, and verb while summing usage", () => {
+    expect(
+      provenanceLines([
+        {
+          round: 1,
+          kind: "code",
+          speaker: "atlas",
+          provider: "copilot",
+          text: "one",
+          usage: { inputTokens: 900, outputTokens: 120 },
+        },
+        {
+          round: 2,
+          kind: "code",
+          speaker: "atlas",
+          provider: "copilot",
+          text: "two",
+          usage: { inputTokens: 300, outputTokens: 40 },
+        },
+        {
+          round: 2,
+          kind: "verify",
+          speaker: "vera",
+          provider: "copilot",
+          verdict: "pass",
+          text: "clean",
+        },
+      ]),
+    ).toEqual([
+      {
+        who: "atlas",
+        provider: "copilot",
+        verb: "coded",
+        usage: { inputTokens: 1200, outputTokens: 160 },
+      },
+      { who: "vera", provider: "copilot", verb: "reviewed" },
+    ]);
+  });
+});
+
 describe("withPlanContext", () => {
   test("adds the current manager plan and assigned step", () => {
     const prompt = withPlanContext("patch the dispatcher", [
@@ -529,6 +570,60 @@ describe("squad_coordinate tool diagnostics", () => {
     expect(capture.out().content).toContain('scope "alpha"');
     expect(capture.out().content).toContain("default (1)");
     expect(capture.out().content).toContain("beta (1)");
+  });
+
+  test("standup includes provenance usage and the run total", async () => {
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    const progressDirective = JSON.stringify({
+      action: "progress",
+      satisfied: false,
+      progress: true,
+      next_speaker: "atlas",
+      instruction: "summarize",
+    });
+    const replies = [
+      {
+        text: `go\n${progressDirective}`,
+      },
+      {
+        text: "did it",
+        providerId: "copilot",
+        usage: { inputTokens: 900, outputTokens: 120 },
+      },
+      { text: 'ok\n{"action":"done","summary":"finished it"}' },
+    ];
+    let i = 0;
+    const ctx = {
+      getDataDir: () => home,
+      runAgentTurn: () => {
+        const reply = replies[Math.min(i, replies.length - 1)]!;
+        i += 1;
+        return {
+          stream: oneShot(),
+          result: Promise.resolve({ status: "ok" as const, ...reply }),
+        };
+      },
+    } as unknown as RibContext;
+    const tools = rib.registerTools?.(ctx) ?? [];
+    const capture = captureTool();
+
+    await registeredTool(tools, "squad_coordinate").execute(
+      { task: "ship it" },
+      capture.ctx as never,
+    );
+
+    expect(capture.out().isError).toBe(false);
+    expect(capture.out().content).toContain(
+      "Worked by: atlas (copilot) contributed — 900 in / 120 out",
+    );
+    expect(capture.out().content).toContain("Tokens: 900 in / 120 out");
   });
 });
 
@@ -1211,6 +1306,60 @@ describe("runCoordinator loop", () => {
     expect(d.calls).toHaveLength(3);
   });
 
+  test("token budget stops a run at the next round boundary", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}',
+      ]),
+      dispatch: async (members, instruction): Promise<DispatchOutcome> => ({
+        task: instruction,
+        perMember: members.map((m) => ({
+          slug: m.slug,
+          name: m.name,
+          status: "ok" as const,
+          text: "worked",
+          providerId: "copilot",
+        })),
+        synthesis: "worked",
+        notes: [],
+        usage: { inputTokens: 1500, outputTokens: 500 },
+      }),
+      limits: { maxRounds: 10, maxStall: 99, maxResets: 99, maxTokens: 1000 },
+    });
+    expect(res.status).toBe("max-tokens");
+    expect(res.summary).toBe("Token budget reached (2k ≥ 1k).");
+    expect(res.ledger.status).toBe("max-tokens");
+    expect((await loadLedger(home))?.status).toBe("max-tokens");
+    expect(res.usage).toEqual({ inputTokens: 1500, outputTokens: 500 });
+  });
+
+  test("runs with usage continue normally when no token budget is set", async () => {
+    const res = await runCoordinator({
+      ...base(),
+      runAgentTurn: queuedRun([
+        'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}',
+        'done\n{"action":"done","summary":"finished it"}',
+      ]),
+      dispatch: async (members, instruction): Promise<DispatchOutcome> => ({
+        task: instruction,
+        perMember: members.map((m) => ({
+          slug: m.slug,
+          name: m.name,
+          status: "ok" as const,
+          text: "worked",
+          providerId: "copilot",
+        })),
+        synthesis: "worked",
+        notes: [],
+        usage: { inputTokens: 1500, outputTokens: 500 },
+      }),
+      limits: { maxRounds: 10, maxStall: 99, maxResets: 99 },
+    });
+    expect(res.status).toBe("done");
+    expect(res.summary).toBe("finished it");
+  });
+
   test("max-rounds persists a TERMINAL ledger so a same-task re-run starts fresh", async () => {
     const progress =
       'go\n{"action":"progress","satisfied":false,"progress":true,"next_speaker":"atlas","instruction":"keep going"}';
@@ -1613,6 +1762,8 @@ describe("runCoordinator loop", () => {
     expect(dispatchEntry?.durationMs).toBe(800);
     const coordEntry = res.ledger.transcript.find((e) => e.kind === "coordinator");
     expect(coordEntry?.at).toBe(NOW);
+    expect(res.provenance).toContain("atlas (claude) coded — 900 in / 120 out");
+    expect(res.usage).toEqual({ inputTokens: 1500, outputTokens: 200 });
   });
 
   test("surfaces timed-out code turns in the ledger and standup prompt", async () => {

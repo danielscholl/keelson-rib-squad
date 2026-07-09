@@ -59,6 +59,8 @@ export interface OrchestratorLimits {
   maxStall: number;
   // Re-plans before the loop gives up.
   maxResets: number;
+  // Optional cumulative token budget for the whole run; unset or 0 means unlimited.
+  maxTokens?: number;
 }
 
 export const DEFAULT_LIMITS: OrchestratorLimits = { maxRounds: 24, maxStall: 3, maxResets: 2 };

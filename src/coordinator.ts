@@ -21,6 +21,7 @@ import {
   type MemberContribution,
   reflectMembersAtClose,
 } from "./dispatch.ts";
+import { formatTokens, formatUsageTail } from "./format.ts";
 import {
   type DistillResult,
   distillOutcome,
@@ -196,6 +197,7 @@ export const LEDGER_STATUS_ACTIVE = "active" as const;
 export const RUN_STATUS_DONE = "done" as const;
 export const RUN_STATUS_GAVE_UP = "gave-up" as const;
 export const RUN_STATUS_MAX_ROUNDS = "max-rounds" as const;
+export const RUN_STATUS_MAX_TOKENS = "max-tokens" as const;
 export const RUN_STATUS_VERIFICATION_FAILED = "verification-failed" as const;
 export const RUN_STATUS_CHANGE_QUALITY_FAILED = "change-quality-failed" as const;
 export const RUN_STATUS_ABORTED = "aborted" as const;
@@ -204,6 +206,7 @@ export type CoordinatorTerminalStatus =
   | typeof RUN_STATUS_DONE
   | typeof RUN_STATUS_GAVE_UP
   | typeof RUN_STATUS_MAX_ROUNDS
+  | typeof RUN_STATUS_MAX_TOKENS
   | typeof RUN_STATUS_VERIFICATION_FAILED
   | typeof RUN_STATUS_CHANGE_QUALITY_FAILED
   | typeof RUN_STATUS_ABORTED;
@@ -215,6 +218,7 @@ function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTe
     status === RUN_STATUS_DONE ||
     status === RUN_STATUS_GAVE_UP ||
     status === RUN_STATUS_MAX_ROUNDS ||
+    status === RUN_STATUS_MAX_TOKENS ||
     status === RUN_STATUS_VERIFICATION_FAILED ||
     status === RUN_STATUS_CHANGE_QUALITY_FAILED ||
     status === RUN_STATUS_ABORTED
@@ -787,6 +791,8 @@ export interface RunCoordinatorResult {
   // Served-provider provenance compiled from the run's code/dispatch steps, e.g.
   // "atlas (claude) coded · vera (copilot) contributed". Absent when no step resolved a provider.
   provenance?: string;
+  // Run-total token usage summed across every work entry.
+  usage?: TokenUsage;
 }
 
 const DEFAULT_COORDINATOR_TIMEOUT_MS = 180_000;
@@ -1212,31 +1218,53 @@ export interface ProvenanceLine {
   who: string;
   provider: string;
   verb: string;
+  usage?: TokenUsage;
 }
 
-// Walk the transcript's execute entries into deduped (member, provider, verb) attributions —
+function addUsage(a?: TokenUsage, b?: TokenUsage): TokenUsage | undefined {
+  if (!a && !b) return undefined;
+  return {
+    inputTokens: (a?.inputTokens ?? 0) + (b?.inputTokens ?? 0),
+    outputTokens: (a?.outputTokens ?? 0) + (b?.outputTokens ?? 0),
+  };
+}
+
+// Walk the transcript's execute entries into (member, provider, verb) attributions —
 // the served-provider provenance the standup and Run-loop board surface for a mixed team.
 export function provenanceLines(transcript: readonly CoordinatorEntry[]): ProvenanceLine[] {
-  const seen = new Set<string>();
-  const out: ProvenanceLine[] = [];
+  const grouped = new Map<string, ProvenanceLine>();
   for (const e of transcript) {
     const verb = PROVENANCE_VERB[e.kind];
     if (!verb || !e.provider) continue;
     if (e.kind === "verify" && !e.verdict) continue;
     const who = e.speaker ?? "team";
     const key = `${who}|${e.provider}|${verb}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ who, provider: e.provider, verb });
+    const prior = grouped.get(key);
+    const usage = addUsage(prior?.usage, e.usage);
+    grouped.set(key, {
+      who,
+      provider: e.provider,
+      verb,
+      ...(usage ? { usage } : {}),
+    });
   }
-  return out;
+  return [...grouped.values()];
 }
 
 function summarizeProvenance(transcript: readonly CoordinatorEntry[]): string | undefined {
   const lines = provenanceLines(transcript);
   return lines.length
-    ? lines.map((l) => `${l.who} (${l.provider}) ${l.verb}`).join(" · ")
+    ? lines
+        .map(
+          (l) =>
+            `${l.who} (${l.provider}) ${l.verb}${l.usage ? ` — ${formatUsageTail(l.usage)}` : ""}`,
+        )
+        .join(" · ")
     : undefined;
+}
+
+function runUsageTotal(transcript: readonly CoordinatorEntry[]): TokenUsage | undefined {
+  return transcript.reduce<TokenUsage | undefined>((sum, e) => addUsage(sum, e.usage), undefined);
 }
 
 // Prefix a dispatched member's instruction with the team's recalled memory so the agent
@@ -1607,6 +1635,24 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       };
       await persist(ledger);
       break;
+    }
+
+    const maxTokens = limits.maxTokens ?? 0;
+    if (maxTokens > 0) {
+      const usage = runUsageTotal(ledger.transcript);
+      const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+      if (tokens >= maxTokens) {
+        status = RUN_STATUS_MAX_TOKENS;
+        ledger = {
+          ...ledger,
+          status: RUN_STATUS_MAX_TOKENS,
+          inFlight: undefined,
+          summary: `Token budget reached (${formatTokens(tokens)} ≥ ${formatTokens(maxTokens)}).`,
+          updatedAt: now(),
+        };
+        await persist(ledger);
+        break;
+      }
     }
 
     // Fold any operator steers queued since the last round into the run's facts so the manager's
@@ -2439,11 +2485,13 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
   }
 
   const provenance = summarizeProvenance(finalLedger.transcript);
+  const usage = runUsageTotal(finalLedger.transcript);
   return {
     ledger: finalLedger,
     rounds: finalLedger.round,
     status,
     summary: finalLedger.summary ?? `coordinator ended: ${status}`,
     ...(provenance ? { provenance } : {}),
+    ...(usage ? { usage } : {}),
   };
 }

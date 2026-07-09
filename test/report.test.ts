@@ -75,6 +75,14 @@ describe("buildRunReportHtml", () => {
     expect(html).toContain("2026-07-01 11:30");
   });
 
+  test("max-tokens renders with a warning status class", () => {
+    const page = buildRunReportHtml(ledger({ status: "max-tokens" }), {
+      runId: "r-max-tokens",
+      members,
+    });
+    expect(page).toContain('<span class="status warn">max-tokens</span>');
+  });
+
   test("stat tiles report rounds, total tokens, members, and findings", () => {
     for (const label of ["rounds", "total tokens", "members", "findings"]) {
       expect(html).toContain(`<div class="label">${label}</div>`);

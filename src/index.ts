@@ -56,6 +56,7 @@ import {
   saveLedger,
 } from "./coordinator.ts";
 import { captureDiffUnderReview, type DispatchOutcome, dispatchFanout } from "./dispatch.ts";
+import { formatUsageTail } from "./format.ts";
 import { slugify } from "./genesis.ts";
 import {
   CAST_KEY,
@@ -1512,6 +1513,15 @@ const coordinateSchema = z.object({
   maxRounds: z.number().int().min(1).max(100).optional(),
   maxStall: z.number().int().min(1).max(20).optional(),
   maxResets: z.number().int().min(1).max(20).optional(),
+  maxTokens: z
+    .number()
+    .int()
+    .min(1000)
+    .max(100_000_000)
+    .optional()
+    .describe(
+      "Cumulative token budget for the whole run; when cumulative usage crosses it the run halts with `max-tokens`, the token analogue of maxRounds.",
+    ),
   // Operator-supplied verification commands run at the done-gate (each via `bash -c` in the
   // project root); a red exit vetoes `done`. Omit to auto-detect package.json check/typecheck/test.
   verify: z
@@ -1556,7 +1566,7 @@ function makeCoordinateTool(
   return {
     name: "squad_coordinate",
     description:
-      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is a text dispatch, a confined coding turn that edits the repo (when `project` is set and the member is code-capable), or authoring a reusable workflow DAG (persisted as an artifact for the operator to run). `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` (1–100), `maxStall`, and `maxResets` (each 1–20) cap the loop; `verify` (optional shell commands, e.g. 'bun test', run via `bash -c` at the done-gate — a red exit vetoes done; NOT prose acceptance criteria). Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
+      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is a text dispatch, a confined coding turn that edits the repo (when `project` is set and the member is code-capable), or authoring a reusable workflow DAG (persisted as an artifact for the operator to run). `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` (1–100), `maxStall`, and `maxResets` (each 1–20) cap the loop; `maxTokens` caps cumulative run token usage; `verify` (optional shell commands, e.g. 'bun test', run via `bash -c` at the done-gate — a red exit vetoes done; NOT prose acceptance criteria). Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
     inputSchema: coordinateSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -1577,6 +1587,7 @@ function makeCoordinateTool(
         maxRounds,
         maxStall,
         maxResets,
+        maxTokens,
         verify: verifyInput,
       } = parsed.data;
       try {
@@ -1681,6 +1692,7 @@ function makeCoordinateTool(
               ...(maxRounds !== undefined ? { maxRounds } : {}),
               ...(maxStall !== undefined ? { maxStall } : {}),
               ...(maxResets !== undefined ? { maxResets } : {}),
+              ...(maxTokens !== undefined ? { maxTokens } : {}),
             },
           });
         } finally {
@@ -2226,6 +2238,10 @@ function summarizeCoordinator(result: RunCoordinatorResult): string {
   ];
   if (result.provenance) {
     lines.push("", `Worked by: ${result.provenance}`);
+  }
+  if (result.usage) {
+    if (!result.provenance) lines.push("");
+    lines.push(`Tokens: ${formatUsageTail(result.usage)}`);
   }
   if (result.ledger.verification) {
     const v = result.ledger.verification;
