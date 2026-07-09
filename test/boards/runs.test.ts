@@ -21,11 +21,15 @@ const run = (over: Partial<RunSummary> = {}): RunSummary => ({
 
 describe("buildRunsBoard", () => {
   test("renders one card per run with a status pill and a View action carrying the id", () => {
-    const board = buildRunsBoard([run(), run({ id: "r2", status: "max-rounds", round: 16 })]);
+    const board = buildRunsBoard([
+      run(),
+      run({ id: "r2", status: "max-rounds", round: 16 }),
+      run({ id: "r3", status: "max-tokens", round: 4 }),
+    ]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     const cards = board.sections.find((s) => s.kind === "cards");
     if (cards?.kind !== "cards") throw new Error("no cards section");
-    expect(cards.items).toHaveLength(2);
+    expect(cards.items).toHaveLength(3);
     const first = cards.items[0];
     // Markdown is stripped from the task title.
     expect(first?.title).toBe("Implement the usage tab");
@@ -37,6 +41,7 @@ describe("buildRunsBoard", () => {
     const report = first?.actions?.find((a) => a.type === REPORT_RUN_ACTION);
     expect(report?.payload).toEqual({ runId: "2026-07-02T16-14-45-216Z" });
     expect(cards.items[1]?.pill?.tone).toBe("caution");
+    expect(cards.items[2]?.pill?.tone).toBe("caution");
   });
 
   test("active cards carry a Stop action targeting the caller's scope", () => {
@@ -61,6 +66,7 @@ describe("buildRunsBoard", () => {
         run({ id: "verify", task: "verify", status: "verification-failed" }),
         run({ id: "quality", task: "quality", status: "change-quality-failed" }),
         run({ id: "rounds", task: "rounds", status: "max-rounds" }),
+        run({ id: "tokens", task: "tokens", status: "max-tokens" }),
       ],
       "beta",
     );
@@ -71,6 +77,7 @@ describe("buildRunsBoard", () => {
     expect(byTitle.get("done")?.actions?.some((a) => a.type === ROLLBACK_RUN_ACTION)).toBe(false);
     expect(byTitle.get("live")?.actions?.some((a) => a.type === ROLLBACK_RUN_ACTION)).toBe(false);
     expect(byTitle.get("rounds")?.actions?.some((a) => a.type === ROLLBACK_RUN_ACTION)).toBe(false);
+    expect(byTitle.get("tokens")?.actions?.some((a) => a.type === ROLLBACK_RUN_ACTION)).toBe(false);
 
     for (const id of ["aborted", "verify", "quality"]) {
       const rollback = byTitle.get(id)?.actions?.find((a) => a.type === ROLLBACK_RUN_ACTION);

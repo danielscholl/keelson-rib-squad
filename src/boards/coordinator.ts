@@ -269,6 +269,8 @@ function sectionsFor(
       return doneSections(ledger, ledgerRounds, tones);
     case "max-rounds":
       return maxRoundsSections(ledger, ledgerRounds, tones);
+    case "max-tokens":
+      return maxTokensSections(ledger, ledgerRounds, tones);
     case "verification-failed":
     case "change-quality-failed":
       return failedSections(ledger, ledgerRounds, tones, scopeId);
@@ -447,6 +449,23 @@ function maxRoundsSections(
     : "Review where it stalled.";
   const sections: Section[] = [
     advisorySection("caution", `Needs you — the run hit its round budget. ${tail}`),
+  ];
+  if (ledger.verification) sections.push(verificationSection(ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  if (findings.length > 0) sections.push(findingsSection(findings));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  return sections;
+}
+
+function maxTokensSections(
+  ledger: CoordinatorLedger,
+  ledgerRounds: number,
+  tones?: IdentityTones,
+): Section[] {
+  const findings = visibleFindings(ledger);
+  const sections: Section[] = [
+    advisorySection("caution", "Needs you — the run hit its token budget."),
   ];
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
@@ -1093,6 +1112,8 @@ function statusPill(status: CoordinatorLedger["status"]): { label: string; tone:
       return { label: "gave up", tone: "warn" };
     case "max-rounds":
       return { label: "max rounds", tone: "caution" };
+    case "max-tokens":
+      return { label: "max tokens", tone: "caution" };
     case "verification-failed":
       return { label: "verification failed", tone: "error" };
     case "change-quality-failed":

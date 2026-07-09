@@ -800,6 +800,19 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     );
   });
 
+  test("max-tokens shows a caution pill and token-budget advisory", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "max-tokens",
+        round: 4,
+        summary: "Token budget reached (12k ≥ 10k).",
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.header?.status).toEqual({ label: "max tokens", tone: "caution" });
+    expect(rowsTitled(board, "Advisory")[0]?.text).toContain("token budget");
+  });
+
   test("verification-failed: error pill, a red Verification row, an Advisory, and rollback", () => {
     const board = buildCoordinatorBoard(
       ledger({
@@ -879,6 +892,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
       "done",
       "gave-up",
       "max-rounds",
+      "max-tokens",
     ];
     const hasRollback = (status: CoordinatorLedger["status"]) => {
       const board = buildCoordinatorBoard(ledger({ status, scopeId: "alpha" }), undefined, "beta");
@@ -954,6 +968,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
       "done",
       "gave-up",
       "max-rounds",
+      "max-tokens",
       "verification-failed",
       "change-quality-failed",
     ];

@@ -52,6 +52,7 @@ function statusClass(status: string): string {
       return "info";
     case "gave-up":
     case "max-rounds":
+    case "max-tokens":
       return "warn";
     case "verification-failed":
     case "change-quality-failed":
