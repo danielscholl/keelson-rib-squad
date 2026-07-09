@@ -8,6 +8,7 @@
  */
 import { buildRosterBoard } from "../src/boards/roster.ts";
 import { readProposal } from "../src/cast.ts";
+import { listLiveRunsElsewhere } from "../src/live-runs.ts";
 import { readMembers } from "../src/member-store.ts";
 import { scopeDataHome, scopeMembersDir, squadDataHome } from "../src/paths.ts";
 import { readPendingGenesis } from "../src/pending-genesis.ts";
@@ -20,6 +21,7 @@ async function main() {
   // Fall back to squadDataHome() for a manual/standalone run.
   const home = process.argv[2]?.trim() || squadDataHome();
   const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
+  const liveRunsElsewhere = await listLiveRunsElsewhere(home, scopeId).catch(() => []);
   let members: Awaited<ReturnType<typeof readMembers>> = [];
   try {
     members = await readMembers(scopeMembersDir(home, scopeId));
@@ -32,7 +34,9 @@ async function main() {
   const scopedHome = scopeDataHome(home, scopeId);
   const pending = await readPendingGenesis(scopedHome).catch(() => null);
   const proposal = await readProposal(scopedHome).catch(() => undefined);
-  process.stdout.write(JSON.stringify(buildRosterBoard(members, pending, Date.now(), proposal)));
+  process.stdout.write(
+    JSON.stringify(buildRosterBoard(members, pending, Date.now(), proposal, liveRunsElsewhere)),
+  );
 }
 
 await main();

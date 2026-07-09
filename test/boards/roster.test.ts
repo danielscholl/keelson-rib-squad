@@ -41,6 +41,12 @@ function journey(board: ReturnType<typeof buildRosterBoard>) {
   if (section?.kind !== "journey") throw new Error("no journey section");
   return section.items;
 }
+function liveStrip(board: ReturnType<typeof buildRosterBoard>) {
+  const section = board.sections.find(
+    (s) => s.kind === "actions" && s.items.some((i) => i.type === "select-project"),
+  );
+  return section?.kind === "actions" ? section : undefined;
+}
 
 describe("buildRosterBoard cold start", () => {
   test("is a valid board with the roster header at 0 members", () => {
@@ -269,6 +275,70 @@ describe("buildRosterBoard populated", () => {
     const card = cards(buildRosterBoard([member()]))[0];
     expect(card?.fields?.some((f) => f.label === "cast")).toBe(false);
     expect(card?.reason).toBeUndefined();
+  });
+});
+
+describe("buildRosterBoard live runs elsewhere", () => {
+  test("renders a leading switch strip on the cold-start board", () => {
+    const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [
+      { scopeId: "beta", name: "rib-squad", task: "Ship the cue", round: 2 },
+    ]);
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.sections[0]?.kind).toBe("actions");
+    const strip = liveStrip(board);
+    expect(strip?.title).toBe("● 1 live run in rib-squad");
+    expect(strip?.items[0]).toMatchObject({
+      type: "select-project",
+      label: "Switch to rib-squad",
+      glyph: "→",
+      tone: "info",
+      payload: { scopeId: "beta" },
+    });
+  });
+
+  test("renders a leading switch strip on a populated roster", () => {
+    const board = buildRosterBoard(
+      [member()],
+      undefined,
+      Date.parse("2026-07-08T00:00:00.000Z"),
+      undefined,
+      [{ scopeId: "beta", name: "Beta", task: "Ship the cue", round: 2 }],
+    );
+
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.sections[0]).toBe(liveStrip(board));
+    expect(board.sections[1]?.kind).toBe("cards");
+  });
+
+  test("omitting or passing an empty live-runs list renders no strip", () => {
+    const omitted = buildRosterBoard([]);
+    const empty = buildRosterBoard(
+      [],
+      undefined,
+      Date.parse("2026-07-08T00:00:00.000Z"),
+      undefined,
+      [],
+    );
+
+    expect(empty).toEqual(omitted);
+    expect(liveStrip(omitted)).toBeUndefined();
+    expect(actionItems(omitted).some((i) => i.type === "select-project")).toBe(false);
+  });
+
+  test("pluralizes the title and falls back from name to scope id", () => {
+    const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [
+      { scopeId: "beta", name: "Beta", task: "Beta task", round: 1 },
+      { scopeId: "gamma", task: "Gamma task", round: 3 },
+    ]);
+    const strip = liveStrip(board);
+
+    expect(strip?.title).toBe("● 2 live runs in Beta, gamma");
+    expect(strip?.items.map((item) => item.label)).toEqual(["Switch to Beta", "Switch to gamma"]);
+    expect(strip?.items.map((item) => item.payload)).toEqual([
+      { scopeId: "beta" },
+      { scopeId: "gamma" },
+    ]);
   });
 });
 
