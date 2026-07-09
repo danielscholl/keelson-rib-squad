@@ -1593,6 +1593,19 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       break;
     }
 
+    const managerStartedAt = now();
+    ledger = {
+      ...ledger,
+      inFlight: {
+        round: ledger.round,
+        speaker: "coordinator",
+        action: "planning",
+        startedAt: managerStartedAt,
+      },
+      updatedAt: now(),
+    };
+    await persist(ledger);
+    debugLoop(`round ${ledger.round}: manager planning turn started`);
     const turn = await runConfinedTurn(
       opts.runAgentTurn,
       {
@@ -1637,6 +1650,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...(turn.usage ? { usage: turn.usage } : {}),
         ...(turn.durationMs !== undefined ? { durationMs: turn.durationMs } : {}),
       }),
+      inFlight: undefined,
       updatedAt: now(),
     };
 
