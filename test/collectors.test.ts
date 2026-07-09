@@ -9,7 +9,7 @@ import { buildRosterBoard } from "../src/boards/roster.ts";
 import { type CastProposalRecord, readProposal, writeProposal } from "../src/cast.ts";
 import { type CoordinatorLedger, loadLedger, saveLedger } from "../src/coordinator.ts";
 import { type MemberRecord, readMembers, scaffoldMember } from "../src/member-store.ts";
-import { scopeMembersDir } from "../src/paths.ts";
+import { scopeDataHome, scopeMembersDir } from "../src/paths.ts";
 import { readSelectedProject, writeSelectedProject } from "../src/scope.ts";
 
 const ROSTER = fileURLToPath(new URL("../bin/collect-roster.ts", import.meta.url));
@@ -45,7 +45,7 @@ const proposalRecord = (): CastProposalRecord => ({
   createdAt: "2026-06-06T00:00:00.000Z",
 });
 
-const ledgerRecord = (): CoordinatorLedger => ({
+const ledgerRecord = (over: Partial<CoordinatorLedger> = {}): CoordinatorLedger => ({
   task: "ship it",
   facts: ["a"],
   plan: ["step one"],
@@ -56,6 +56,7 @@ const ledgerRecord = (): CoordinatorLedger => ({
   transcript: [{ round: 0, kind: "coordinator", text: "hi" }],
   createdAt: "2026-06-06T00:00:00.000Z",
   updatedAt: "2026-06-06T00:00:00.000Z",
+  ...over,
 });
 
 let home: string;
@@ -106,5 +107,37 @@ describe("collector follows the persisted selection", () => {
     const scoped = await readMembers(scopeMembersDir(home, "alpha"));
     const expected = buildRosterBoard(scoped);
     expect(await runCollector(ROSTER, home)).toEqual(JSON.parse(JSON.stringify(expected)));
+  });
+
+  test("roster collector includes a switch strip for a live run in another scope", async () => {
+    await writeSelectedProject(home, { scopeId: "alpha", at: "2026-06-06T00:00:00.000Z" });
+    await saveLedger(
+      scopeDataHome(home, "beta"),
+      ledgerRecord({ scopeId: "beta", task: "ship elsewhere", round: 4 }),
+    );
+
+    const board = (await runCollector(ROSTER, home)) as ReturnType<typeof buildRosterBoard>;
+    const strip = board.sections.find(
+      (section) =>
+        section.kind === "actions" && section.items.some((item) => item.type === "select-project"),
+    );
+    expect(strip?.kind).toBe("actions");
+    const action =
+      strip?.kind === "actions" ? strip.items.find((item) => item.type === "select-project") : undefined;
+    expect(action?.payload).toEqual({ scopeId: "beta" });
+  });
+
+  test("roster collector hides the switch strip for a live run in the selected scope", async () => {
+    await writeSelectedProject(home, { scopeId: "beta", at: "2026-06-06T00:00:00.000Z" });
+    await saveLedger(
+      scopeDataHome(home, "beta"),
+      ledgerRecord({ scopeId: "beta", task: "ship elsewhere", round: 4 }),
+    );
+
+    const board = (await runCollector(ROSTER, home)) as ReturnType<typeof buildRosterBoard>;
+    const actions = board.sections.flatMap((section) =>
+      section.kind === "actions" ? section.items : [],
+    );
+    expect(actions.some((action) => action.type === "select-project")).toBe(false);
   });
 });
