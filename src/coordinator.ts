@@ -1554,6 +1554,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       status = RUN_STATUS_ABORTED;
       break;
     }
+    debugLoop(`round ${ledger.round}: loop start (status target ${status})`);
     if (ledger.round >= limits.maxRounds) {
       status = RUN_STATUS_MAX_ROUNDS;
       // A ceiling hit with code edited but never cleanly reviewed is the dangerous
@@ -1645,6 +1646,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     }
 
     const directive = parseCoordinatorDirective(turn.text) ?? fallbackDirective();
+    debugLoop(`round ${ledger.round}: manager turn ok in ${turn.durationMs ?? "?"}ms`);
     ledger = {
       ...ledger,
       facts: foldFacts(ledger.facts, directive.facts),
@@ -1702,6 +1704,9 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         updatedAt: now(),
       };
       await persist(ledger);
+      debugLoop(
+        `round ${ledger.round}: dispatch ${decided.step.speaker ?? "team"} (${actionLabel(decided.step)}) started`,
+      );
       continue;
     }
 
@@ -2204,6 +2209,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       onTool,
     });
     await livePersists.catch(() => {});
+    debugLoop(`round ${ledger.round}: dispatch settled`);
     // An abort during the execute arm returns aborted member results that would otherwise
     // fold a junk "(no synthesis)" fact and advance the round. Break before that fold/advance
     // — clearing only the pre-execute in-flight marker (at the UNCHANGED round) so a connected
@@ -2368,6 +2374,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       const count = fp === ledger.outcomeRepeat?.fingerprint ? ledger.outcomeRepeat.count + 1 : 1;
       ledger = { ...ledger, outcomeRepeat: { fingerprint: fp, count } };
     }
+    debugLoop(`round ${ledger.round} → ${ledger.round + 1}: round settled`);
     ledger = { ...ledger, round: ledger.round + 1, inFlight: undefined, updatedAt: now() };
     await persist(ledger);
   }
