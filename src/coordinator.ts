@@ -21,6 +21,7 @@ import {
   type MemberContribution,
   reflectMembersAtClose,
 } from "./dispatch.ts";
+import { formatTokens, formatUsageTail } from "./format.ts";
 import {
   type DistillResult,
   distillOutcome,
@@ -38,7 +39,6 @@ import {
   type ProgressLedger,
   type WorkflowStepOutcome,
 } from "./orchestrator.ts";
-import { formatTokens, formatUsageTail } from "./format.ts";
 import { hasBlockVerdict } from "./policies.ts";
 import { archiveRun } from "./runs-store.ts";
 import { runConfinedTurn, type ToolTrace } from "./turn-runner.ts";
