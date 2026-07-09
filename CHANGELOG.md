@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.23.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.22.0...v0.23.0) (2026-07-09)
+
+
+### Added
+
+* code-coherence + false-lesson-guard prompt nudges ([#204](https://github.com/danielscholl/keelson-rib-squad/issues/204)) ([2217292](https://github.com/danielscholl/keelson-rib-squad/commit/22172920827ef31229270344a3865f94ada0fe67))
+* **coordinator:** converge the done-gate on a green floor ([#203](https://github.com/danielscholl/keelson-rib-squad/issues/203)) ([c9f4e5c](https://github.com/danielscholl/keelson-rib-squad/commit/c9f4e5c930528ade1d4660be20032bbb629b4027))
+* surface run token usage and add maxTokens budget cap ([#201](https://github.com/danielscholl/keelson-rib-squad/issues/201)) ([f950709](https://github.com/danielscholl/keelson-rib-squad/commit/f950709b31eae66fdec967170264c4c0ecb0eaff))
+
 ## [0.22.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.21.0...v0.22.0) (2026-07-09)
 
 
