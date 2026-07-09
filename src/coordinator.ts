@@ -140,7 +140,7 @@ export interface DoneDisposition {
 
 export interface CoordinatorEntry {
   round: number;
-  kind: "coordinator" | "dispatch" | "code" | "workflow" | "replan" | "failed" | "verify";
+  kind: "coordinator" | "dispatch" | "code" | "workflow" | "replan" | "failed" | "verify" | "probe";
   speaker?: string;
   instruction?: string;
   text: string;
@@ -209,7 +209,7 @@ function isTerminalStatus(status: RunCoordinatorStatus): status is CoordinatorTe
 
 // The directive a coordinator turn must end with: `progress` carries the five Progress
 // Ledger answers + the next step, `done` carries the final summary.
-const COORDINATOR_ACTIONS: ReadonlySet<string> = new Set(["progress", "done"]);
+const COORDINATOR_ACTIONS: ReadonlySet<string> = new Set(["progress", "done", "probe"]);
 
 const FACT_CAP = 600; // per-fact char cap so one long synthesis can't bloat the ledger
 // Floor between live in-flight trace persists, so a tool-heavy turn (dozens of calls
@@ -256,6 +256,9 @@ interface ParsedDirective {
   needs: string[];
   summary?: string;
   dispositions?: DoneDisposition[];
+  // A deterministic read-only probe the manager requested this round instead of a member turn
+  // (#154). Only set when action === "probe"; the round loop runs it via the allowlist below.
+  probe?: ProbeRequest;
   head: string;
 }
 
@@ -290,6 +293,98 @@ function asDispositionRows(v: unknown): DoneDisposition[] {
   return rows;
 }
 
+// A deterministic read-only probe the manager may request instead of dispatching a member (#154).
+// `name` selects a fixed allowlist entry; `arg`/`count` are the only model-supplied inputs and are
+// validated per-probe. The manager NEVER supplies a command string — only these structured fields.
+export interface ProbeRequest {
+  name: string;
+  // `ls` reads this as its single path argument; other probes ignore it.
+  arg?: string;
+  // `git-log` reads this as the commit count (clamped 1–50); other probes ignore it.
+  count?: number;
+}
+
+type ProbeResolution = { ok: true; cmd: string; args: string[] } | { ok: false; error: string };
+
+const PROBE_COUNT_MIN = 1;
+const PROBE_COUNT_MAX = 50;
+const PROBE_COUNT_DEFAULT = 20;
+const PROBE_SUMMARY_CAP = 2000; // capped tail of a probe's output folded into the transcript
+// Conservative path charset for `ls`: rejecting a shell metacharacter (and `..` traversal) keeps
+// the probe a read-only, repo-confined observation even though args reach exec as an ARRAY — never
+// a shell string built from model output.
+const PROBE_PATH_ALLOWED = /^[\w./@-]+$/;
+
+function clampProbeCount(count: number | undefined): number {
+  if (typeof count !== "number" || !Number.isFinite(count)) return PROBE_COUNT_DEFAULT;
+  return Math.min(PROBE_COUNT_MAX, Math.max(PROBE_COUNT_MIN, Math.trunc(count)));
+}
+
+const PROBE_ERROR_ARG_CAP = 80;
+// A rejected probe's model-supplied name/arg is echoed into the error, which is folded into the
+// ledger transcript and the next-round manager prompt: strip control characters (newlines
+// included) and cap the length so untrusted input can never break prompt formatting or bloat
+// context.
+function sanitizeProbeInput(s: string): string {
+  let cleaned = "";
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    cleaned += code < 0x20 || code === 0x7f ? " " : ch;
+  }
+  cleaned = cleaned.trim();
+  return cleaned.length > PROBE_ERROR_ARG_CAP
+    ? `${cleaned.slice(0, PROBE_ERROR_ARG_CAP)}…`
+    : cleaned;
+}
+
+// Map a requested probe name to its concrete (cmd, args[]) pair. An unlisted name — or an invalid
+// argument — is REJECTED with a structured error and nothing is executed. Args are always an array;
+// model output is never interpolated into a shell string.
+export function resolveProbe(req: ProbeRequest): ProbeResolution {
+  switch (req.name) {
+    case "git-log":
+      return {
+        ok: true,
+        cmd: "git",
+        args: ["log", "--oneline", "-n", String(clampProbeCount(req.count))],
+      };
+    case "git-status":
+      return { ok: true, cmd: "git", args: ["status", "--porcelain"] };
+    case "ls": {
+      const path = req.arg?.trim();
+      if (!path) return { ok: false, error: "probe ls requires an 'arg' path" };
+      if (
+        !PROBE_PATH_ALLOWED.test(path) ||
+        path.includes("..") ||
+        path.startsWith("/") ||
+        path.startsWith("-")
+      ) {
+        return { ok: false, error: `probe ls rejected unsafe path: ${sanitizeProbeInput(path)}` };
+      }
+      // `--` forces ls to treat the path as an operand even if validation above has a gap,
+      // so a path can never be reinterpreted as a flag.
+      return { ok: true, cmd: "ls", args: ["--", path] };
+    }
+    default:
+      return { ok: false, error: `unknown probe: ${sanitizeProbeInput(req.name) || "(none)"}` };
+  }
+}
+
+function probeLabel(req: ProbeRequest): string {
+  if (req.name === "git-log") return `git-log (${clampProbeCount(req.count)})`;
+  if (req.name === "ls") return `ls ${req.arg ?? ""}`.trim();
+  return req.name;
+}
+
+function asProbeRequest(v: unknown): ProbeRequest {
+  if (!v || typeof v !== "object") return { name: "" };
+  const row = v as Record<string, unknown>;
+  const name = typeof row.name === "string" ? row.name.trim() : "";
+  const arg = typeof row.arg === "string" && row.arg.trim() ? row.arg.trim() : undefined;
+  const count = typeof row.count === "number" ? row.count : undefined;
+  return { name, ...(arg ? { arg } : {}), ...(count !== undefined ? { count } : {}) };
+}
+
 // Parse a coordinator turn's reply into a directive. Returns null when there is no
 // valid trailing directive (the caller falls back). Tolerant on field synonyms, so a
 // slightly-off model reply still routes.
@@ -311,6 +406,17 @@ export function parseCoordinatorDirective(text: string): ParsedDirective | null 
       needs,
       ...(summary ? { summary } : {}),
       ...(dispositions.length > 0 ? { dispositions } : {}),
+      head: match.head,
+    };
+  }
+  if (p.action === "probe") {
+    return {
+      progress: { isRequestSatisfied: false, isInLoop: false, isProgressBeingMade: true },
+      facts,
+      plan,
+      needs,
+      probe: asProbeRequest(p.probe),
+      ...(summary ? { summary } : {}),
       head: match.head,
     };
   }
@@ -476,6 +582,7 @@ function renderTranscriptEntry(e: CoordinatorEntry): string {
   }
   if (e.kind === "workflow") return `${e.speaker ?? "member"} workflow: ${e.text}`;
   if (e.kind === "verify") return `verify: ${e.text}`;
+  if (e.kind === "probe") return `probe: ${e.text}`;
   if (e.kind === "replan") return `replan: ${e.text}`;
   if (e.kind === "failed") return `failed: ${e.text}`;
   return `coordinator: ${e.text}`;
@@ -494,6 +601,7 @@ function coordinatorPrompt(
   roster: readonly Member[],
   replan: boolean,
   canCode: boolean,
+  canProbe: boolean,
   recalled: readonly string[],
   project?: { name: string; rootPath: string },
 ): string {
@@ -508,6 +616,12 @@ function coordinatorPrompt(
   const factsBlock = ledger.facts.length
     ? ledger.facts.map((f) => `- ${f}`).join("\n")
     : "(none yet)";
+  // The most recent read-only probe result (#154), surfaced verbatim so the manager acts on what
+  // it requested last round instead of re-requesting the same probe or dispatching a member to fetch it.
+  const lastProbe = [...ledger.transcript].reverse().find((e) => e.kind === "probe");
+  const probeBlock = lastProbe
+    ? `\nLatest read-only probe result (you requested this — use it; do NOT re-request the same probe):\n${lastProbe.text}\n`
+    : "";
   const failedBlock =
     replan && ledger.failedSteps?.length
       ? `\nAlready attempted and abandoned on the prior plan — do NOT resume these:\n${ledger.failedSteps
@@ -546,6 +660,11 @@ function coordinatorPrompt(
     : "";
   const workflowNote =
     '\n- to author a REUSABLE workflow (a DAG) for recurring/deterministic sub-work, add "mode":"workflow" with an instruction describing what it should do.';
+  // A read-only probe is a free, deterministic peek at the repo that spends NO member turn — offered
+  // only when the exec seam + a bound project make it runnable.
+  const probeNote = canProbe
+    ? '\n- to run a deterministic READ-ONLY probe of the repo INSTEAD of dispatching a member (no member turn is spent), end with {"action":"probe","probe":{"name":"..."}} — allowed names: "git-log" (recent commits; optional "count", 1–50), "git-status" (working-tree state), "ls" (list a path via "arg":"<path>"). The result returns to you next round.'
+    : "";
   const needsNote =
     '\n- if the members above lack a capability this goal needs, add "needs":["<the missing specialist, e.g. a security reviewer>"] so the operator can cast them. This is a non-blocking recommendation — keep going with the best available member; do NOT wait.';
   const dispatchNote =
@@ -560,14 +679,14 @@ ${planBlock}
 ${recalledNote}
 Findings so far:
 ${factsBlock}
-
+${probeBlock}
 Recent progress:
 ${renderTranscript(ledger.transcript)}
 
 Assess the state in one or two sentences of PROSE first (your reasoning is recorded), then END your reply with EXACTLY ONE JSON object on its own line and nothing after it:
 - to continue: {"action":"progress","satisfied":false,"in_loop":false,"progress":true,"next_speaker":"<member slug>","instruction":"<the single next instruction for that member>","plan":["step","step"],"facts":["any new finding"]}
 - when the Current plan above reads "(no plan yet)", the progress directive MUST include a non-empty "plan".
-- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${workflowNote}${needsNote}${dispatchNote}
+- when the goal is fully met: {"action":"done","summary":"<the final answer / outcome>"}${codeNote}${probeNote}${workflowNote}${needsNote}${dispatchNote}
 - if the task requires per-item dispositions, carry them ON the done directive itself — {"action":"done","summary":"...","dispositions":[{"threadRef":"...","disposition":"fixed|declined","note":"..."}]} — never in the prose.
 Set "satisfied" true only when the goal is genuinely complete. Pick next_speaker from the members above. Keep the instruction to ONE concrete step.`;
 }
@@ -1121,8 +1240,8 @@ function appendEntry(
   transcript: readonly CoordinatorEntry[],
   entry: CoordinatorEntry,
 ): CoordinatorEntry[] {
-  const limit = entry.kind === "verify" ? VERDICT_CAP : ENTRY_CAP;
-  // Verify entries feed reviewer verdicts into the manager prompt; prose keeps the tighter cap.
+  const limit = entry.kind === "verify" || entry.kind === "probe" ? VERDICT_CAP : ENTRY_CAP;
+  // Verify verdicts and probe results feed the manager prompt; prose keeps the tighter cap.
   const text = entry.text.length > limit ? `${entry.text.slice(0, limit - 1)}…` : entry.text;
   return [...transcript, { ...entry, text }].slice(-MAX_TRANSCRIPT);
 }
@@ -1464,6 +1583,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           opts.roster,
           replanRequested,
           Boolean(code),
+          Boolean(exec && project),
           recalled,
           opts.project,
         ),
@@ -1500,6 +1620,45 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
       }),
       updatedAt: now(),
     };
+
+    // Read-only probe hook (#154): when the manager requests a deterministic probe instead of a
+    // member, run it via the exec seam and re-prompt with the result next round — no member turn is
+    // spent. The allowlist maps name→(cmd,args[]); an unlisted name is rejected, never executed. The
+    // round still advances so a probe loop can't run the budget past its ceiling.
+    if (directive.probe) {
+      const resolved = resolveProbe(directive.probe);
+      let text: string;
+      if (!resolved.ok) {
+        text = `probe rejected: ${resolved.error}`;
+      } else if (!exec || !project) {
+        text = `probe skipped: exec seam or bound project unavailable — cannot run ${directive.probe.name}`;
+      } else {
+        const res = await exec.runText(resolved.cmd, resolved.args, {
+          cwd: project.rootPath,
+          acceptNonZeroExit: true,
+          timeoutMs: VERIFY_TIMEOUT_MS,
+        });
+        const exitCode = res.ok ? (res.exitCode ?? 0) : (res.code ?? 1);
+        const out = res.ok ? res.data : res.error;
+        const label = probeLabel(directive.probe);
+        text =
+          res.ok && exitCode === 0
+            ? `${label} →\n${tailCap(out.trim() || "(empty)", PROBE_SUMMARY_CAP)}`
+            : `${label} FAILED (exit ${exitCode})\n${tailCap(out, PROBE_SUMMARY_CAP)}`;
+      }
+      ledger = {
+        ...ledger,
+        transcript: append(ledger.transcript, {
+          round: ledger.round,
+          kind: "probe",
+          text,
+        }),
+        round: ledger.round + 1,
+        updatedAt: now(),
+      };
+      await persist(ledger);
+      continue;
+    }
 
     const decided = decideOrchestratorStep({
       progress: directive.progress,

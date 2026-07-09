@@ -29,6 +29,7 @@ import {
   parseCoordinatorDirective,
   provenanceLines,
   renderTranscript,
+  resolveProbe,
   runCoordinator,
   saveLedger,
   withPlanContext,
@@ -3277,5 +3278,183 @@ describe("squad_stop tool + coordinate run guard", () => {
       (e.text ?? "").includes("took over stale active coordinator ledger at round 3"),
     );
     expect(note).toBeDefined();
+  });
+});
+
+describe("runCoordinator probe hook (#154)", () => {
+  let home: string;
+  const base = () => ({
+    membersRoot: home,
+    dataHome: home,
+    roster: roster("atlas", "vera"),
+    task: "ship the feature",
+    now: () => NOW,
+    reflectAtClose: async () => [],
+  });
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "squad-coord-probe-"));
+  });
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  type ExecCall = { cmd: string; args: string[]; acceptNonZeroExit: boolean };
+  // A recording exec that answers baseline tree capture and probe reads. `probeOut` is keyed by the
+  // git subcommand (or the bare cmd, e.g. "ls"). In this suite only the probe hook passes
+  // acceptNonZeroExit (the baseline tree capture below never does), so filtering on it isolates
+  // probe-originated calls from that capture — not a claim that no other caller anywhere uses it.
+  const recordingExec = (
+    probeOut: Record<string, string> = {},
+  ): { exec: RibExec; calls: ExecCall[] } => {
+    const calls: ExecCall[] = [];
+    return {
+      calls,
+      exec: {
+        runJSON: async () => ({ ok: false as const, error: "unused", code: null }),
+        runText: async (cmd, args, opts) => {
+          calls.push({
+            cmd,
+            args: args.map(String),
+            acceptNonZeroExit: opts?.acceptNonZeroExit === true,
+          });
+          if (cmd === "git" && args[0] === "write-tree") {
+            return { ok: true as const, data: "deadbeef", exitCode: 0 };
+          }
+          const key = cmd === "git" ? String(args[0]) : cmd;
+          if (key in probeOut) return { ok: true as const, data: probeOut[key] ?? "", exitCode: 0 };
+          return { ok: true as const, data: "", exitCode: 0 };
+        },
+      },
+    };
+  };
+  const probeCalls = (calls: readonly ExecCall[]) => calls.filter((c) => c.acceptNonZeroExit);
+
+  test("rejects an out-of-allowlist probe and never reaches exec", async () => {
+    const { exec, calls } = recordingExec();
+    const d = fakeDispatch();
+    const res = await runCoordinator({
+      ...base(),
+      project: project("p1", "repo", "/repo"),
+      getExec: exec,
+      dispatch: d.fn,
+      runAgentTurn: queuedRun([
+        'peek\n{"action":"probe","probe":{"name":"rm-rf","arg":"/"}}',
+        'ok\n{"action":"done","summary":"done"}',
+      ]),
+    });
+    expect(res.status).toBe("done");
+    expect(probeCalls(calls)).toHaveLength(0);
+    const rejected = res.ledger.transcript.find(
+      (e) => e.kind === "probe" && e.text.includes("probe rejected"),
+    );
+    expect(rejected?.text).toContain("unknown probe: rm-rf");
+    expect(d.calls).toHaveLength(0);
+  });
+
+  test("an allowed probe's result reaches the next round without a member turn", async () => {
+    const { exec, calls } = recordingExec({ status: "M src/probed-file.ts" });
+    const d = fakeDispatch();
+    const seen: Parameters<NonNullable<RibContext["runAgentTurn"]>>[0][] = [];
+    const res = await runCoordinator({
+      ...base(),
+      project: project("p1", "repo", "/repo"),
+      getExec: exec,
+      dispatch: d.fn,
+      runAgentTurn: capturingQueuedRun(
+        [
+          'peek\n{"action":"probe","probe":{"name":"git-status"}}',
+          'ok\n{"action":"done","summary":"done"}',
+        ],
+        seen,
+      ),
+    });
+    expect(res.status).toBe("done");
+    const probed = probeCalls(calls);
+    expect(probed).toHaveLength(1);
+    expect(probed[0]?.cmd).toBe("git");
+    expect(probed[0]?.args).toEqual(["status", "--porcelain"]);
+    expect(seen[1]?.prompt).toContain("M src/probed-file.ts");
+    expect(d.calls).toHaveLength(0);
+    expect(res.ledger.transcript.filter((e) => e.kind === "dispatch")).toHaveLength(0);
+  });
+
+  test("probe only ever runs read-only allowlisted commands (never mutates the repo)", async () => {
+    const { exec, calls } = recordingExec({ status: " M x.ts", log: "abc123 init" });
+    const d = fakeDispatch();
+    const res = await runCoordinator({
+      ...base(),
+      project: project("p1", "repo", "/repo"),
+      getExec: exec,
+      dispatch: d.fn,
+      runAgentTurn: queuedRun([
+        'peek\n{"action":"probe","probe":{"name":"git-status"}}',
+        'peek\n{"action":"probe","probe":{"name":"git-log","count":5}}',
+        'ok\n{"action":"done","summary":"done"}',
+      ]),
+    });
+    expect(res.status).toBe("done");
+    const readOnly = (c: ExecCall) =>
+      (c.cmd === "git" && (c.args[0] === "status" || c.args[0] === "log")) ||
+      (c.cmd === "ls" && c.args[0] === "--");
+    const probed = probeCalls(calls);
+    expect(probed).toHaveLength(2);
+    expect(probed.every(readOnly)).toBe(true);
+    const MUTATING = new Set([
+      "commit",
+      "checkout",
+      "reset",
+      "restore",
+      "rm",
+      "clean",
+      "push",
+      "merge",
+      "rebase",
+      "stash",
+      "apply",
+      "mv",
+      "branch",
+      "tag",
+      "fetch",
+      "pull",
+    ]);
+    expect(calls.some((c) => c.cmd === "git" && MUTATING.has(c.args[0] ?? ""))).toBe(false);
+    expect(d.calls).toHaveLength(0);
+  });
+});
+
+describe("resolveProbe ls path validation", () => {
+  test("rejects an absolute path", () => {
+    const res = resolveProbe({ name: "ls", arg: "/etc" });
+    expect(res.ok).toBe(false);
+  });
+
+  test("rejects a path starting with a dash (option injection)", () => {
+    const res = resolveProbe({ name: "ls", arg: "-la" });
+    expect(res.ok).toBe(false);
+  });
+
+  test("rejects a traversal path", () => {
+    const res = resolveProbe({ name: "ls", arg: "../secrets" });
+    expect(res.ok).toBe(false);
+  });
+
+  test("accepts a plain relative path and forces it to an operand with --", () => {
+    const res = resolveProbe({ name: "ls", arg: "src/coordinator.ts" });
+    expect(res).toEqual({ ok: true, cmd: "ls", args: ["--", "src/coordinator.ts"] });
+  });
+
+  test("rejects a path with an embedded newline and strips it from the error", () => {
+    const res = resolveProbe({ name: "ls", arg: "src\ninjected: true" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).not.toContain("\n");
+  });
+
+  test("caps a very long rejected path in the error message", () => {
+    const res = resolveProbe({ name: "ls", arg: `-${"a".repeat(200)}` });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.length).toBeLessThan(150);
+      expect(res.error).toContain("…");
+    }
   });
 });
