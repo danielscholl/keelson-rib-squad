@@ -596,7 +596,7 @@ describe("assign-code action", () => {
       expect(res.data).toEqual({
         effect: "run-workflow",
         workflow: "squad-code-run",
-        args: { member: "coder", task: "add a --json flag" },
+        args: { member: "coder", ARGUMENTS: "add a --json flag" },
       });
     }
   });

@@ -380,15 +380,20 @@ Rules:
 // prompt turn whose only job is to call the matching squad tool exactly once, so the
 // verb becomes an inspectable workflow run (and, for coordinate, streams into the
 // promoted Run-loop panel). The tools do the real work; the model must not.
+//
+// The free-text "what to do" rides $ARGUMENTS, not $inputs.task, so both entry points
+// converge: the surface actions pass it as `args: { ARGUMENTS }` and the documented CLI
+// form (`keelson workflow run … --arguments "<task>"`) fills the same key — the chamber
+// convention.
 const COORDINATE_WF_PROMPT = `The operator has handed the squad a task to run its coordinator on:
 
-$inputs.task
+$ARGUMENTS
 
 Call the squad_coordinate tool EXACTLY ONCE, passing that text as \`task\` and \`maxRounds\`: 6 (a bounded surface run). Do NOT attempt the work yourself — the tool runs the whole plan→delegate→observe loop against the selected project and returns a summary. After it returns, reply with EXACTLY its summary text.`;
 
 const DISPATCH_WF_PROMPT = `The operator wants the whole squad to weigh in on one question:
 
-$inputs.task
+$ARGUMENTS
 
 Call the squad_dispatch tool EXACTLY ONCE, passing that text as \`task\` (leave \`members\` unset to fan out to every active member; leave \`synthesize\` at its default). Do NOT answer it yourself — the tool fans the question out and synthesizes the replies. After it returns, reply with EXACTLY its synthesized answer.`;
 
@@ -396,7 +401,7 @@ const CODE_WF_PROMPT = `The operator has assigned a coding task to one specific 
 
 Member slug: $inputs.member
 Task:
-$inputs.task
+$ARGUMENTS
 
 Call the squad_code tool EXACTLY ONCE with \`member\` set to that slug and \`task\` set to the task above. Do NOT write any code yourself — the tool runs a confined coding turn as that member against the selected project. After it returns, reply with EXACTLY its result.`;
 
@@ -3272,7 +3277,7 @@ function coordinateAction(action: RibAction): RibActionResult {
     data: {
       effect: "run-workflow",
       workflow: "squad-coordinate-run",
-      args: { task: task.slice(0, MAX_TASK_CHARS) },
+      args: { ARGUMENTS: task.slice(0, MAX_TASK_CHARS) },
       stay: true,
     },
   };
@@ -3291,7 +3296,7 @@ function dispatchAction(action: RibAction): RibActionResult {
     data: {
       effect: "run-workflow",
       workflow: "squad-dispatch-run",
-      args: { task: task.slice(0, MAX_TASK_CHARS) },
+      args: { ARGUMENTS: task.slice(0, MAX_TASK_CHARS) },
     },
   };
 }
@@ -3375,7 +3380,7 @@ async function assignCodeAction(action: RibAction): Promise<RibActionResult> {
     data: {
       effect: "run-workflow",
       workflow: "squad-code-run",
-      args: { member: slug, task: task.slice(0, MAX_TASK_CHARS) },
+      args: { member: slug, ARGUMENTS: task.slice(0, MAX_TASK_CHARS) },
     },
   };
 }

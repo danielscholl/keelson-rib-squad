@@ -412,6 +412,17 @@ describe("rib-squad", () => {
     }
   });
 
+  it("assign-work wrappers read the free-text task from $ARGUMENTS, not $inputs.task", () => {
+    // The surface actions pass the task as `args: { ARGUMENTS }` and the CLI `--arguments`
+    // flag fills the same key; a template drifting back to $inputs.task renders an empty
+    // task on the CLI path and completes "succeeded" having done nothing.
+    for (const name of ["squad-coordinate-run", "squad-dispatch-run", "squad-code-run"] as const) {
+      const prompt = (nodes(name)[0] as RawNode & { prompt?: string }).prompt ?? "";
+      expect(prompt).toContain("$ARGUMENTS");
+      expect(prompt).not.toContain("$inputs.task");
+    }
+  });
+
   it("coordinate/dispatch actions launch their run-workflow (coordinate stays on the surface)", async () => {
     const coord = await rib.onAction?.(
       { type: "coordinate", payload: { task: "ship it" } },
@@ -422,7 +433,7 @@ describe("rib-squad", () => {
       expect(coord.data).toEqual({
         effect: "run-workflow",
         workflow: "squad-coordinate-run",
-        args: { task: "ship it" },
+        args: { ARGUMENTS: "ship it" },
         stay: true,
       });
     }
