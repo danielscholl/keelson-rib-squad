@@ -74,6 +74,39 @@ describe("buildCastBoard with a proposal", () => {
     expect(vera?.trailing).toContain("text-only");
   });
 
+  test("a cast member names its ensemble in the trailing; an uncast one omits it", () => {
+    const items = memberRows(
+      buildCastBoard(
+        proposal({
+          members: [
+            {
+              name: "Mal",
+              role: "Tech Lead",
+              charter: "# Mal\n\n## Mission\n\nHold the map.",
+              tools: ["read"],
+              model: "claude-opus-4-8",
+              themeId: "firefly",
+              themeLabel: "Firefly",
+            },
+            {
+              name: "Atlas",
+              role: "Engineer",
+              charter: "# Atlas\n\n## Mission\n\nBuild.",
+              tools: ["code", "read"],
+            },
+          ],
+        }),
+      ),
+    );
+    const mal = items.find((r) => r.chip?.label === "Mal");
+    // The ensemble leads the trailing metadata, ahead of capability + model.
+    expect(mal?.trailing).toContain("Firefly");
+    expect(mal?.trailing?.startsWith("Firefly")).toBe(true);
+    // An uncast member carries no ensemble label — just its capability tags.
+    const atlas = items.find((r) => r.chip?.label === "Atlas");
+    expect(atlas?.trailing).toBe("code, read");
+  });
+
   test("always offers Approve & scaffold and Discard", () => {
     const types = actionItems(buildCastBoard(proposal())).map((i) => i.type);
     expect(types).toContain(APPROVE_CAST_ACTION);

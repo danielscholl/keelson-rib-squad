@@ -61,6 +61,8 @@ describe("rib-squad", () => {
     expect(surface?.layout.header?.key).toBe(ROSTER_KEY);
     expect(surface?.layout.header?.workflow).toBe("squad-roster");
     expect(surface?.layout.header?.cadenceMs).toBeGreaterThanOrEqual(30_000);
+    // Collapsible so the board's populated defaultCollapsed hint can fold it.
+    expect(surface?.layout.header?.collapsible).toBe(true);
   });
 
   it("declares no static actions — every control is a workflow or a board action", () => {

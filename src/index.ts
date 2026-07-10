@@ -2548,6 +2548,10 @@ const rib: Rib = {
           // modest cadence keeps it self-populating on open and fresh after a new
           // member without hammering.
           cadenceMs: 120_000,
+          // Collapsible so the seated roster can fold to its head strip: the board raises
+          // header.defaultCollapsed once populated, which the host honors only when the
+          // region opts in — without this the panel has no toggle and never folds.
+          collapsible: true,
           glyph: { char: "◆", tone: "brand" },
         },
         rows: [
