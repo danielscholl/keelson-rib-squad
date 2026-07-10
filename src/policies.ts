@@ -65,6 +65,16 @@ export function hasBlockVerdictDirective(text: string): boolean {
   return typeof verdict === "string" && verdict.trim().toLowerCase() === "block";
 }
 
+// Squad's own workflows all carry the `squad-` name prefix. The host stamps the
+// running workflow's name onto PolicyContext.workflowName on the workflow surface,
+// so the block-verdict floor enforces only squad's own review workflows — a foreign
+// workflow whose output merely ends with the verdict directive is left to its own
+// governance. An older host that doesn't populate workflowName reports undefined,
+// so the floor stands down there rather than gating a workflow it can't identify.
+function isOwnWorkflow(workflowName: string | undefined): boolean {
+  return typeof workflowName === "string" && workflowName.startsWith("squad-");
+}
+
 const raiFloor: Policy = {
   id: "rai-floor",
   on: [{ phase: "tool_call" }, { phase: "response" }],
@@ -91,13 +101,15 @@ const raiFloor: Policy = {
       return { outcome: "allow" };
     }
 
-    // response phase: deny only a STRUCTURED block verdict on the workflow surface — the
-    // trailing {"verdict":"block"} a review node emits. The loose prose sentinel is the
-    // coordinator's own rib-surface signal (hasBlockVerdict); gating every workflow response
-    // on it self-blocks any turn that merely quotes the sentinel.
+    // response phase: deny only a STRUCTURED block verdict emitted by one of squad's
+    // OWN workflows — the trailing {"verdict":"block"} a review node produces. Scoping
+    // to the workflow name keeps the floor off a foreign workflow whose output merely
+    // ends with the directive; the trailing-structure check (not the loose prose
+    // sentinel) additionally spares a squad turn that only quotes it.
     if (
       event.phase === "response" &&
       ctx.surface === "workflow" &&
+      isOwnWorkflow(ctx.workflowName) &&
       hasBlockVerdictDirective(event.text)
     ) {
       return {
