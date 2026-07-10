@@ -2503,6 +2503,15 @@ const rib: Rib = {
   id: "squad",
   displayName: "Squad",
 
+  contributeDocs: () => [
+    {
+      title: "Squad",
+      summary:
+        "The Squad rib for Keelson: cast a roster of coding agents, dispatch and coordinate parallel work, and open and review PRs, governed by policies and memory. Covers the coordinator loop, casting, method agency, and design.",
+      llmsFullUrl: "https://danielscholl.github.io/keelson-rib-squad/llms-full.txt",
+    },
+  ],
+
   // Binds the rib's keys to the canvas renderer; data arrives when the bound
   // collector/render workflow runs (squad-roster, squad-decisions).
   views: [
