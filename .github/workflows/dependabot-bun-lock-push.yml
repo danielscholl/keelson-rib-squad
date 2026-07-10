@@ -1,0 +1,60 @@
+name: Dependabot bun.lock push
+
+# Privileged half of the Dependabot lockfile sync (see dependabot-bun-lock.yml).
+# Runs in workflow_run so it never checks out the PR's untrusted head with a
+# write-scoped token; it only reads the vetted lockfile artifact the build
+# workflow produced and writes it back via the Contents API.
+
+on:
+  workflow_run:
+    workflows: ["Dependabot bun.lock sync"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  push-lockfile:
+    name: Push updated lockfile
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Download lockfile artifact
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          name: bun-lock
+          path: artifact
+
+      - name: Commit lockfiles via the Contents API
+        if: steps.download.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.DEPENDABOT_LOCKFILE_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          branch=$(cat artifact/pr/HEAD_REF)
+          for f in bun.lock docs/bun.lock; do
+            [ -f "artifact/$f" ] || continue
+            base64 -w0 "artifact/$f" > /tmp/content.b64
+            sha=$(gh api "repos/$REPO/contents/$f?ref=$branch" --jq .sha 2>/dev/null || true)
+            if [ -n "$sha" ]; then
+              gh api --method PUT "repos/$REPO/contents/$f" \
+                -f message="build(deps): sync $f with Dependabot manifest bump" \
+                -f content=@/tmp/content.b64 -f branch="$branch" -f sha="$sha"
+            else
+              gh api --method PUT "repos/$REPO/contents/$f" \
+                -f message="build(deps): sync $f with Dependabot manifest bump" \
+                -f content=@/tmp/content.b64 -f branch="$branch"
+            fi
+          done
