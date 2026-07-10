@@ -9,7 +9,13 @@ import { squadPolicies } from "../src/policies.ts";
 // only prove the rib's contributed policy decides correctly.
 
 const RIB: PolicyContext = { surface: "rib" };
+// A workflow-surface turn with no workflow identity — the shape an older host
+// that doesn't populate PolicyContext.workflowName still produces.
 const WF: PolicyContext = { surface: "workflow" };
+// A workflow-surface turn the host scopes to one of squad's OWN workflows, and
+// to a foreign workflow the floor must leave alone.
+const WF_OWN: PolicyContext = { surface: "workflow", workflowName: "squad-pr-review" };
+const WF_FOREIGN: PolicyContext = { surface: "workflow", workflowName: "fix-issue" };
 const CHAT: PolicyContext = { surface: "chat" };
 const MCP: PolicyContext = { surface: "mcp" };
 
@@ -97,17 +103,33 @@ describe("rai floor — merge / force-push", () => {
 });
 
 describe("rai floor — block verdict", () => {
-  test("denies a structured trailing block verdict on the workflow surface", async () => {
+  test("denies a structured trailing block verdict from one of squad's own workflows", async () => {
     for (const text of [
       '{"verdict":"block","reason":"unsafe"}',
       'Review complete — a concrete defect remains.\n\n{"verdict": "block", "reason": "off-by-one"}',
       '{"verdict":"BLOCK"}',
     ]) {
-      expect((await decide({ phase: "response", text }, WF)).outcome).toBe("deny");
+      expect((await decide({ phase: "response", text }, WF_OWN)).outcome).toBe("deny");
     }
   });
 
-  test("allows prose that only quotes or discusses the BLOCK sentinel on the workflow surface", async () => {
+  test("allows a block verdict from a foreign workflow — the floor only governs squad's own", async () => {
+    // The containment case: a non-squad workflow whose output ends with the verdict
+    // directive is left to its own governance, not gated by squad's floor.
+    for (const text of ['{"verdict":"block","reason":"unsafe"}', '{"verdict":"BLOCK"}']) {
+      expect((await decide({ phase: "response", text }, WF_FOREIGN)).outcome).toBe("allow");
+    }
+  });
+
+  test("allows a block verdict when the host reports no workflow name (older harness)", async () => {
+    // Without workflowName the floor can't tell whose workflow this is, so it stands
+    // down rather than gating a workflow it can't identify.
+    for (const text of ['{"verdict":"block","reason":"unsafe"}', '{"verdict":"BLOCK"}']) {
+      expect((await decide({ phase: "response", text }, WF)).outcome).toBe("allow");
+    }
+  });
+
+  test("allows prose that only quotes or discusses the BLOCK sentinel in squad's own workflow", async () => {
     // A workflow investigating the review machinery quotes the sentinel (or a non-trailing
     // verdict example) in passing — not the operative verdict, so the floor must allow it.
     for (const text of [
@@ -116,7 +138,7 @@ describe("rai floor — block verdict", () => {
       "The bug: hasBlockVerdict matches `RAI VERDICT: BLOCK` anywhere in prose, so an investigation quoting it self-blocks.",
       'A verdict node ends with {"verdict":"block"}, but this response keeps going with more analysis.',
     ]) {
-      expect((await decide({ phase: "response", text }, WF)).outcome).toBe("allow");
+      expect((await decide({ phase: "response", text }, WF_OWN)).outcome).toBe("allow");
     }
   });
 
@@ -126,7 +148,7 @@ describe("rai floor — block verdict", () => {
       "Looks good — no blocking issues found.",
       "I would block this if it shipped, but as written it passes.",
     ]) {
-      expect((await decide({ phase: "response", text }, WF)).outcome).toBe("allow");
+      expect((await decide({ phase: "response", text }, WF_OWN)).outcome).toBe("allow");
     }
   });
 
