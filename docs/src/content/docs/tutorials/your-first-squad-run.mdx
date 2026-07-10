@@ -65,8 +65,8 @@ projects before.
 With an empty roster, the surface shows a cold-start screen explaining that a
 squad is a team tuned to your project, with two ways to start one: cast it
 automatically from the repo, or author members yourself. Take the first path.
-Click **Cast a squad for the selected project**, optionally adding a short
-mission to focus it. On the Cosmos project something like "this is a small
+Click **Cast a squad**, optionally adding a short mission in the field it
+opens. On the Cosmos project something like "this is a small
 full-stack catalog app; weight the frontend and the API equally" works, and
 the scan does the rest. Remember your build is your own: the scan reads what
 your pipeline actually produced, so the cast it proposes will not match
@@ -138,10 +138,11 @@ same thing:
 </Steps>
 
 While a step is running, an **In flight** card names the acting member and the
-instruction it was given, so you can see work happening in real time instead
-of staring at a spinner. The **Transcript** section at the bottom of the panel
-is the hero: the most recent rounds, each labeled with who spoke and what
-happened.
+instruction it was given, with a live ticker of the tools it is using, so you
+can see work happening in real time instead of staring at a spinner. The
+round-by-round ledger at the bottom of the panel is the hero: one group per
+round (**Ledger · R1**, **R0 · team**), each entry labeled with who spoke and
+what happened.
 
 ## Watch the gates before it calls done
 
@@ -173,13 +174,20 @@ stays the one who actually merges.
 
 A finished run archives itself to the project's run history, and the **Runs**
 panel picks it up: a row with the run's status, the round it finished on, when
-it last updated, and the task text. Once code changes, the panel also grows a
-**Worked by** line naming which member, and which provider, actually did the
-work; the run's own closing summary carries the same line.
+it last updated, and the task text.
 
-The row on the Runs panel is deliberately coarse. If you want the full
-transcript, facts, and verification detail, that is sitting in the archived
-run file itself, under the project's own scope on disk.
+Do not be surprised if your first run's status is `max-rounds` rather than
+`done`. Six rounds must cover the survey, the implementation, the review, and
+the PR ceremony, and a coordinator that cannot *confirm* the last step will
+honestly decline to call the goal met rather than take a member's word for
+it. That is not a failure; it is the round ceiling doing its job. Read the
+ledger's last rounds and verify like an operator (`git log`, the draft PR):
+the work is often complete with only the formal confirmation unfinished.
+
+The row on the Runs panel is deliberately coarse. The per-member credit (who
+worked, on which provider, and what each turn spent) and the full round
+record live behind the row's **View** and **Report** actions, and the
+archived run file itself sits under the project's own scope on disk.
 
 ## What you proved
 
