@@ -1,5 +1,6 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { CastProposalRecord } from "../cast.ts";
+import { themeLabel } from "../casting/themes.ts";
 import { identityToneForSlot } from "../types.ts";
 import { charterDetail, charterDisplay } from "./coordinator.ts";
 
@@ -56,7 +57,10 @@ function rowFor(member: CastProposalRecord["members"][number]) {
   const excerpt = charterExcerpt(member.name, member.charter);
   const role = member.role.trim() || "Member";
   const tools = member.tools?.length ? member.tools.join(", ") : "text-only";
-  const trailing = [tools, member.model].filter(Boolean).join(" · ");
+  // The ensemble this member was cast into (e.g. "Firefly") — the same cast label the
+  // roster card shows, so the proposal names its cast before anything is seated.
+  const cast = castLabel(member);
+  const trailing = [cast, tools, member.model].filter(Boolean).join(" · ");
   // The identity assigned at propose time is the identity the member keeps on
   // the roster and in the run boards — the seat the operator approves.
   const tone = identityToneForSlot(member.identitySlot);
@@ -71,6 +75,15 @@ function rowFor(member: CastProposalRecord["members"][number]) {
     trailing,
     ...(detail ? { detail } : {}),
   };
+}
+
+// The member's ensemble label, mirroring the roster card's fallback: the persisted
+// themeLabel, else the catalog label for its themeId, else the raw id; undefined when
+// the member was left uncast (a plain-name proposal).
+function castLabel(member: CastProposalRecord["members"][number]): string | undefined {
+  if (member.themeLabel) return member.themeLabel;
+  if (member.themeId) return themeLabel(member.themeId) ?? member.themeId;
+  return undefined;
 }
 
 // The Approve/Discard verbs. Approve scaffolds the proposed members (collision-safe);
