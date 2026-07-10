@@ -32,3 +32,38 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # Catch a silently-dropped release: if a release PR merges without its
+  # `autorelease: pending` label (a GitHub label-API flake at PR-creation time
+  # can strip it), release-please bumps the manifest on main but never tags the
+  # release — a green run with no release. Assert the manifest version has a
+  # matching GitHub Release so that turns into a red build instead of a gap.
+  verify-release:
+    name: Verify release exists for manifest version
+    needs: release-please
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Assert a GitHub Release exists for the manifest version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(jq -r '.["."]' .release-please-manifest.json)"
+          tag="v${version}"
+          # release-please creates the Release in the job above; retry to ride
+          # out GitHub's eventual consistency before failing.
+          for attempt in 1 2 3; do
+            if gh release view "${tag}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              echo "ok: release ${tag} exists for manifest version ${version}"
+              exit 0
+            fi
+            echo "attempt ${attempt}: ${tag} not visible yet; retrying in 5s"
+            sleep 5
+          done
+          echo "::error::.release-please-manifest.json is at ${version} but no ${tag} release exists — a release was silently dropped. Most likely a release PR merged without its 'autorelease: pending' label; re-label the merged release PR and re-run this workflow to recover it." >&2
+          exit 1
