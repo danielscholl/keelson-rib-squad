@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.24.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.23.0...v0.24.0) (2026-07-10)
+
+
+### Added
+
+* **docs:** contribute the Squad docs corpus to keelson_docs ([#212](https://github.com/danielscholl/keelson-rib-squad/issues/212)) ([af055a7](https://github.com/danielscholl/keelson-rib-squad/commit/af055a7be0a8c17a15972f5ca60d177a1306e228))
+
+
+### Fixed
+
+* **coordinator:** flag a truncated code report for the manager ([#210](https://github.com/danielscholl/keelson-rib-squad/issues/210)) ([75ab139](https://github.com/danielscholl/keelson-rib-squad/commit/75ab139a793a3bb6ad808833e243083bb6bdc4d0))
+* **policies:** scope the rai-floor block-verdict deny to squad's own workflows ([#211](https://github.com/danielscholl/keelson-rib-squad/issues/211)) ([2727f4c](https://github.com/danielscholl/keelson-rib-squad/commit/2727f4c74e94a930187499dd13de5ecab8ac0ac3))
+* **squad:** read assign-work task from ARGUMENTS, not inputs.task ([#209](https://github.com/danielscholl/keelson-rib-squad/issues/209)) ([559d2f5](https://github.com/danielscholl/keelson-rib-squad/commit/559d2f5b0ce8f85db3281dffa582030030c7b394))
+* **squad:** show cast ensemble in proposal and make the roster collapsible ([#213](https://github.com/danielscholl/keelson-rib-squad/issues/213)) ([2b0f7ac](https://github.com/danielscholl/keelson-rib-squad/commit/2b0f7ac128b8466d120170ac47c18a2cf810e53a))
+
+
+### Documentation
+
+* **tutorials:** rebase the rail onto the Cosmos project and its backlog ([#205](https://github.com/danielscholl/keelson-rib-squad/issues/205)) ([1097566](https://github.com/danielscholl/keelson-rib-squad/commit/10975669a4f8dcbbc1529747d04bd7f7abde95e1))
+
 ## [0.23.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.22.0...v0.23.0) (2026-07-09)
 
 
