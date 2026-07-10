@@ -178,6 +178,11 @@ export interface CoordinatorEntry {
   at?: string;
   durationMs?: number;
   outcome?: "ok" | "error" | "timeout" | "aborted";
+  // A status-"ok" code turn whose report ends mid-sentence — the output-token-ceiling
+  // signature the turn result carries no signal for. Set so the manager weighs a cut-off
+  // summary explicitly instead of inferring it from the prose. Optional, like the fields
+  // above, so older ledgers keep loading.
+  truncated?: boolean;
   usage?: TokenUsage;
   tools?: ToolTrace[];
 }
@@ -610,13 +615,23 @@ function codeOutcomeFlag(e: CoordinatorEntry): string {
   return ` [timed out${after} — output truncated]`;
 }
 
+// A status-ok code turn whose report was cut mid-sentence (see looksTruncatedReport):
+// tell the manager the summary MAY be incomplete, not that the work failed, so it trusts
+// the recorded file changes / verify gate rather than spending a round probing. Hedged on
+// purpose — the flag is a heuristic, so it must not assert the turn's stop reason.
+function codeTruncationFlag(e: CoordinatorEntry): string {
+  return e.truncated
+    ? " [report may be cut off mid-sentence (possible token limit) — weigh the recorded changes and verify gate before treating it as failed]"
+    : "";
+}
+
 function renderTranscriptEntry(e: CoordinatorEntry): string {
   if (e.kind === "dispatch") return `${e.speaker ?? "team"} did: ${e.text}`;
   if (e.kind === "code") {
     const touched = e.touched
       ? ` [touched ${e.touched.files} file${e.touched.files === 1 ? "" : "s"}, +${e.touched.insertions} -${e.touched.deletions}]`
       : "";
-    return `${e.speaker ?? "member"} coded: ${e.text}${touched}${codeOutcomeFlag(e)}`;
+    return `${e.speaker ?? "member"} coded: ${e.text}${touched}${codeOutcomeFlag(e)}${codeTruncationFlag(e)}`;
   }
   if (e.kind === "workflow") return `${e.speaker ?? "member"} workflow: ${e.text}`;
   if (e.kind === "verify") return `verify: ${e.text}`;
@@ -832,6 +847,21 @@ function touchedFinding(touched?: {
 
 function isCodeNarration(paragraph: string): boolean {
   return CODE_FINDING_NARRATION_RE.test(paragraph) || SHORT_ACKNOWLEDGMENT_RE.test(paragraph);
+}
+
+// A completed coding turn normally ends its report on a full sentence. When the provider
+// hits an output-token ceiling it cuts the turn mid-sentence and still returns status
+// "ok" with no truncation signal on the result, so the coordinator otherwise infers
+// "cut off" from the prose and can burn a round probing to confirm work that actually
+// succeeded. This flags the mid-sentence signature so the manager weighs it explicitly.
+// Conservative on purpose: only a substantial report whose last non-space character is a
+// letter or comma (never terminal punctuation or a closing token) trips it, and a false
+// positive adds one advisory line to the manager prompt rather than failing the run or
+// spending an extra turn.
+export function looksTruncatedReport(text: string): boolean {
+  const trimmed = text.trimEnd();
+  if (trimmed.length < 80) return false;
+  return /[A-Za-z,]/.test(trimmed.charAt(trimmed.length - 1));
 }
 
 export function deriveCodeFinding(
@@ -2426,6 +2456,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         result.code.status === "ok"
           ? result.code.text.trim() || "(no output)"
           : (result.code.error ?? result.code.status);
+      const truncated = result.code.status === "ok" && looksTruncatedReport(text);
       let touched: { files: number; insertions: number; deletions: number } | undefined;
       let confinementNote: string | undefined;
       if (opts.getExec && project) {
@@ -2474,7 +2505,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
         ...ledger,
         facts: foldFacts(ledger.facts, [
           cap(
-            `[${decided.step.speaker ?? "member"} edited code] ${deriveCodeFinding(ledgerText, touched)}`,
+            `[${decided.step.speaker ?? "member"} edited code] ${deriveCodeFinding(ledgerText, touched)}${truncated ? " — ⚠ report may be cut off (possible token limit)" : ""}`,
             FACT_CAP,
           ),
         ]),
@@ -2490,6 +2521,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
           ...(result.code.usage ? { usage: result.code.usage } : {}),
           ...(result.code.durationMs !== undefined ? { durationMs: result.code.durationMs } : {}),
           ...(result.code.status !== "ok" ? { outcome: result.code.status } : {}),
+          ...(truncated ? { truncated: true } : {}),
         }),
         lastCodeRound: ledger.round,
         updatedAt: now(),

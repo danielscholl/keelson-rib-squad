@@ -24,6 +24,7 @@ import {
   deriveCodeFinding,
   failStuckTasks,
   loadLedger,
+  looksTruncatedReport,
   MAX_CHANGE_QUALITY_FAILURES,
   MAX_VERIFY_FAILURES,
   parseCoordinatorDirective,
@@ -424,6 +425,58 @@ describe("deriveCodeFinding", () => {
     expect(deriveCodeFinding("Okay.", { files: 1, insertions: 1, deletions: 0 })).toBe(
       "touched 1 file (+1 −0)",
     );
+  });
+});
+
+describe("looksTruncatedReport", () => {
+  test("flags a substantial report cut off mid-sentence", () => {
+    expect(
+      looksTruncatedReport(
+        "Branch pushed and the draft PR opened via gh pr create against origin. The commit is",
+      ),
+    ).toBe(true);
+  });
+
+  test("does not flag a substantial report that ends on a full sentence", () => {
+    expect(
+      looksTruncatedReport(
+        "Branch pushed and the draft PR opened via gh pr create against origin; the commit is 1a2b3c.",
+      ),
+    ).toBe(false);
+  });
+
+  test("does not flag a report that ends on a closing code fence", () => {
+    expect(
+      looksTruncatedReport(
+        "Refactored the handler and added a regression test. Final state of the diff is below:\n```\n+ new line\n```",
+      ),
+    ).toBe(false);
+  });
+
+  test("does not flag a short reply that lacks terminal punctuation", () => {
+    expect(looksTruncatedReport("Done")).toBe(false);
+  });
+});
+
+describe("renderTranscript truncation flag", () => {
+  test("flags a truncated code entry so the manager weighs it, not the prose", () => {
+    const entries: CoordinatorEntry[] = [
+      {
+        round: 4,
+        kind: "code",
+        speaker: "coder",
+        text: "Pushed the branch and opened the PR. Commit is",
+        truncated: true,
+      },
+    ];
+    expect(renderTranscript(entries)).toContain("may be cut off mid-sentence");
+  });
+
+  test("leaves a clean code entry unflagged", () => {
+    const entries: CoordinatorEntry[] = [
+      { round: 4, kind: "code", speaker: "coder", text: "Pushed the branch and opened the PR." },
+    ];
+    expect(renderTranscript(entries)).not.toContain("may be cut off");
   });
 });
 
