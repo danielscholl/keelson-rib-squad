@@ -69,10 +69,16 @@ mechanics, including the separate pin a coordinator run's manager can carry.
 
 Now hand atlas something small enough that you could describe the whole diff in a
 sentence: a small utility with a test, a validation check on one input, a config
-option wired through one path. For this walkthrough, imagine:
+option wired through one path. On the Cosmos project, backlog item 3 is that
+shape:
 
-> Add a `--json` flag to the roster export script so its output can be piped into
-> another tool, and cover it with a test.
+> Work item 3 in backlog.md: make the active category filter part of the URL, so
+> a filtered view survives a reload and can be shared as a link. Verify it the
+> way this build allows, and state how you verified it.
+
+(Every Cosmos build wires its filtering differently, which is exactly what makes
+this a fair coding task: atlas has to find the seam in your build before it can
+change it. On your own repository, substitute any change of the same size.)
 
 Use **"Assign a code task…"** on atlas's card and describe it. That launches
 `squad-code-run`, which calls `squad_code` once against atlas, confined to your

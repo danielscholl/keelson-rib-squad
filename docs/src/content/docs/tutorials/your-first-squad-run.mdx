@@ -17,8 +17,14 @@ result, and finish.
 A running Keelson server with a provider signed in (Copilot is the default).
 You will also want a real local git checkout you are comfortable letting a
 squad open a branch against: nothing here can merge or force-push, but the
-coding turn does read, edit, and commit for real. Actions that launch prompt
-turns (genesis, cast scan, dispatch, code, coordinate, and rendering Decisions)
+coding turn does read, edit, and commit for real. The natural choice is the
+Cosmos app the [keelson tutorial rail](https://danielscholl.github.io/keelson/docs/tutorials/frontend-mix/)
+builds, whose clone ships a
+[backlog](https://github.com/danielscholl/keelson-sample/blob/main/backlog.md)
+of scoped items this rail draws its tasks from; any real repository works if
+you bring your own small task. Actions that launch prompt
+turns (genesis, cast scan, dispatch, code, coordinate, and rendering the
+Decisions board)
 spend paid agent turns; the roster/run/runs boards themselves are refreshed by
 deterministic collectors.
 :::
@@ -42,13 +48,15 @@ the full contract on what installing wires up, see
 
 Squad's surface is project-scoped: the roster, the proposed cast, and the run
 loop are all scoped to whichever project is selected in the picker chip in the
-surface header. Register a real project before you cast anything:
+surface header. Register a real project before you cast anything (if you rode
+the keelson rail, your Cosmos clone is already registered as `frontend-mix`
+and you can skip this):
 
 ```bash
-keelson project add my-app ~/code/my-app
+keelson project add frontend-mix ~/code/my-frontend-mix
 ```
 
-Open the Squad surface and use the project picker chip to select `my-app`.
+Open the Squad surface and use the project picker chip to select it.
 Every panel clears to that project's own scope. A project you have never cast
 for always starts with an empty roster, even if you have cast squads for other
 projects before.
@@ -58,9 +66,12 @@ projects before.
 With an empty roster, the surface shows a cold-start screen explaining that a
 squad is a team tuned to your project, with two ways to start one: cast it
 automatically from the repo, or author members yourself. Take the first path.
-Click **Cast a squad for the selected project**, optionally adding a short
-mission to focus it, for example "prioritize the parts of the repo a new
-contributor touches first".
+Click **Cast a squad**, optionally adding a short mission in the field it
+opens. On the Cosmos project something like "this is a small
+full-stack catalog app; weight the frontend and the API equally" works, and
+the scan does the rest. Remember your build is your own: the scan reads what
+your pipeline actually produced, so the cast it proposes will not match
+anyone else's.
 
 That launches one confined, read-only agent turn: it can read the repo's
 languages, frameworks, layout, tests, and CI, but it cannot edit or run
@@ -85,11 +96,17 @@ question out to the whole roster in parallel; you want the other one, which
 runs a standing loop against your project.
 
 Click **Coordinate on a task** and type something small and concrete into the
-field it opens, scoped to the project you just cast for. For example:
+field it opens, scoped to the project you just cast for. The smallest item on
+the Cosmos backlog is the right size:
 
 ```text
-Fix the typo in the README's opening paragraph and open a draft PR for review.
+Work item 1 in backlog.md: add a small, unobtrusive credit saying the catalog
+is a fixed educational seed set of real astronomical objects, reachable from
+every page that shows catalog content. Open a draft PR for review.
 ```
+
+(On your own repository, substitute any change you could describe in one
+sentence.)
 
 Submitting it launches a standing coordinator run bound to your project. A run
 started this way, from the surface rather than from chat directly, is capped
@@ -122,10 +139,11 @@ same thing:
 </Steps>
 
 While a step is running, an **In flight** card names the acting member and the
-instruction it was given, so you can see work happening in real time instead
-of staring at a spinner. The **Transcript** section at the bottom of the panel
-is the hero: the most recent rounds, each labeled with who spoke and what
-happened.
+instruction it was given, with a live ticker of the tools it is using, so you
+can see work happening in real time instead of staring at a spinner. The
+round-by-round ledger at the bottom of the panel is the hero: one group per
+round (**Ledger · R1**, **R0 · team**), each entry labeled with who spoke and
+what happened.
 
 ## Watch the gates before it calls done
 
@@ -157,13 +175,20 @@ stays the one who actually merges.
 
 A finished run archives itself to the project's run history, and the **Runs**
 panel picks it up: a row with the run's status, the round it finished on, when
-it last updated, and the task text. Once code changes, the panel also grows a
-**Worked by** line naming which member, and which provider, actually did the
-work; the run's own closing summary carries the same line.
+it last updated, and the task text.
 
-The row on the Runs panel is deliberately coarse. If you want the full
-transcript, facts, and verification detail, that is sitting in the archived
-run file itself, under the project's own scope on disk.
+Do not be surprised if your first run's status is `max-rounds` rather than
+`done`. Six rounds must cover the survey, the implementation, the review, and
+the PR ceremony, and a coordinator that cannot *confirm* the last step will
+honestly decline to call the goal met rather than take a member's word for
+it. That is not a failure; it is the round ceiling doing its job. Read the
+ledger's last rounds and verify like an operator (`git log`, the draft PR):
+the work is often complete with only the formal confirmation unfinished.
+
+The row on the Runs panel is deliberately coarse. The per-member credit (who
+worked, on which provider, and what each turn spent) and the full round
+record live behind the row's **View** and **Report** actions, and the
+archived run file itself sits under the project's own scope on disk.
 
 ## What you proved
 
