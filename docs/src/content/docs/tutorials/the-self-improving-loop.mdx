@@ -80,8 +80,16 @@ on the Squad surface to watch it rather than sending you to the Workflows
 tab. You can launch the same run from the CLI instead:
 
 ```bash
-keelson workflow run squad-coordinate-run --arguments "audit how this app records a reaction: can two simultaneous requests both pass the daily-limit check and double-count? tell me the one change you would make first"
+cd <your project root>
+keelson workflow run squad-coordinate-run --inputs task="audit how this app records a reaction: can two simultaneous requests both pass the daily-limit check and double-count? tell me the one change you would make first"
 ```
+
+Two details make the CLI form work. The workflow reads its task from the
+`task` input, so pass it with `--inputs task="…"` (the generic `--arguments`
+flag fills a different input, and the run will end "succeeded" having
+coordinated nothing). And a CLI-launched run binds its project from your
+working directory, not from the scope selected on the Squad surface, so run
+it from inside the project.
 
 Watch the Run loop panel while it runs. The status pill moves from active to
 done, the round counter climbs, and you will see a Plan section once the
