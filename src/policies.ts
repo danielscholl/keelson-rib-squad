@@ -72,7 +72,7 @@ export function hasBlockVerdictDirective(text: string): boolean {
 // governance. An older host that doesn't populate workflowName reports undefined,
 // so the floor stands down there rather than gating a workflow it can't identify.
 function isOwnWorkflow(workflowName: string | undefined): boolean {
-  return workflowName?.startsWith("squad-") ?? false;
+  return typeof workflowName === "string" && workflowName.startsWith("squad-");
 }
 
 const raiFloor: Policy = {
