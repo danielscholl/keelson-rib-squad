@@ -118,8 +118,11 @@ async function existingScopeWorktree(
   const held = heldLeases.get(scopeId);
   if (held?.projectId === projectId) {
     if (existsSync(held.lease.path)) return held.lease.path;
-    // The checkout vanished under us (manual removal); drop the stale handle.
+    // The checkout vanished under us (manual removal); drop the stale handle and
+    // best-effort release so the host lease row doesn't linger (release of a gone
+    // worktree is idempotent host-side).
     heldLeases.delete(scopeId);
+    void held.lease.release().catch(() => {});
   }
   const persisted = await readWorkspaceRecord(scopeDataHome);
   if (persisted && persisted.projectId === projectId && existsSync(persisted.worktreePath)) {
