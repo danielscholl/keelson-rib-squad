@@ -2172,7 +2172,7 @@ function makeRollbackTool(
           emitResult(ctx, JSON.stringify({ ...preview, event: "noop" }, null, 2));
           return;
         }
-        await performRollbackSequence(plan, git, resolution.project.rootPath, run.runId);
+        await performRollbackSequence(plan, git, workspace.path, run.runId);
         await appendRollbackRow(dataHome, {
           type: "performed",
           runId: run.runId,
