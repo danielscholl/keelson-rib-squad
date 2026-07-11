@@ -156,7 +156,7 @@ export async function reuseScopeWorktree(opts: {
 // closure (removes the worktree + drops the host row). A rebound lease (post-
 // restart, closure lost) only clears the record; its worktree is left for host
 // reconcile / `keelson workspace` cleanup — a release-by-id seam would close that
-// gap (tracked upstream).
+// gap (keelson #555).
 export async function releaseScopeWorktree(opts: {
   scopeId: string;
   scopeDataHome: string;
