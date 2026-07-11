@@ -215,6 +215,7 @@ describe("memberCanCode", () => {
 describe("squad_code tool", () => {
   let home: string;
   let lastReq: RibAgentTurnRequest | undefined;
+  const extraDirs: string[] = [];
 
   function project(id: string, name: string, rootPath: string) {
     return { id, name, rootPath, createdAt: "2026-06-27T00:00:00.000Z" };
@@ -291,6 +292,7 @@ describe("squad_code tool", () => {
     rib.dispose?.();
     setSquadDataHome(undefined);
     await rm(home, { recursive: true, force: true });
+    await Promise.all(extraDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
   });
 
   test("is registered and state-changing", () => {
@@ -312,6 +314,7 @@ describe("squad_code tool", () => {
 
   test("routes the code turn into the leased worktree when the seam is present", async () => {
     const leaseDir = await mkdtemp(join(tmpdir(), "squad-code-lease-"));
+    extraDirs.push(leaseDir); // cleaned in afterEach even if an assertion below throws
     const tools = boot([project("p1", "keelson", "/repo/keelson")], "edited foo.ts", async () => ({
       id: "l1",
       path: leaseDir,
@@ -325,7 +328,6 @@ describe("squad_code tool", () => {
     // The turn is confined to the leased worktree, not the operator's checkout.
     expect(lastReq?.cwd).toBe(leaseDir);
     expect(lastReq?.allowedDirectories).toEqual([leaseDir]);
-    await rm(leaseDir, { recursive: true, force: true });
   });
 
   test("refuses a non-code member (never runs a turn)", async () => {
