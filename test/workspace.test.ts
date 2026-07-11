@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkspaceLease } from "@keelson/shared";
@@ -311,6 +311,21 @@ describe("releaseScopeWorktree", () => {
     expect(existsSync(recordPath())).toBe(false);
     // The orphaned worktree is left for host cleanup — the documented limitation.
     expect(existsSync(a.path)).toBe(true);
+  });
+
+  test("releases the lease even when clearing the record fails", async () => {
+    const s = stubAcquire();
+    await acquireScopeWorktree({
+      scopeId: "s1",
+      project: project(),
+      scopeDataHome: scopeHome,
+      acquire: s.acquire,
+    });
+    // Replace the record file with a directory so rm({ force }) throws (EISDIR).
+    await rm(recordPath());
+    await mkdir(recordPath());
+    await releaseScopeWorktree({ scopeId: "s1", scopeDataHome: scopeHome });
+    expect(s.released.has("lease-1")).toBe(true); // released despite the record-clear failure
   });
 
   test("release is a no-op when no lease is held", async () => {

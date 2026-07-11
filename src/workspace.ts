@@ -221,7 +221,16 @@ export function releaseScopeWorktree(opts: {
   return serializeByScope(scopeId, async () => {
     const held = heldLeases.get(scopeId);
     heldLeases.delete(scopeId);
-    await clearWorkspaceRecord(scopeDataHome);
+    // Clearing the record must not block the lease release — the lease (worktree +
+    // host row) is the resource that matters; a stale record self-heals on the next
+    // acquire (its worktree no longer exists).
+    try {
+      await clearWorkspaceRecord(scopeDataHome);
+    } catch (err) {
+      console.warn(
+        `[rib-squad] failed to clear workspace record for scope "${scopeId}": ${errText(err)}`,
+      );
+    }
     if (held) {
       await held.lease.release().catch((err) => {
         console.warn(
