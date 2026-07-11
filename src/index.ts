@@ -137,6 +137,7 @@ import {
   type Member,
   normalizeToolAllowlist,
 } from "./types.ts";
+import { acquireScopeWorktree, releaseScopeWorktree, reuseScopeWorktree } from "./workspace.ts";
 
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
 // dispose. refreshWorkflow re-runs a bound collector (squad-roster, squad-cast)
@@ -147,6 +148,10 @@ let refreshWorkflow: RibContext["refreshWorkflow"];
 let runAgentTurn: RibContext["runAgentTurn"];
 let getProjects: RibContext["getProjects"];
 let getProviders: RibContext["getProviders"];
+// Optional worktree-isolation seam: when present, a scope's mutations run in a
+// leased worktree instead of the operator's checkout (keelson #524). Absent on an
+// older harness — the rib degrades to project.rootPath.
+let acquireWorkspace: RibContext["acquireWorkspace"];
 // The run-detail drill-down: an imperatively-registered snapshot whose composer reads
 // the board the last View action selected. Cleared (and unregistered) in dispose.
 let snapshots: SnapshotManager | undefined;
@@ -793,6 +798,7 @@ function makeRetireMemberTool(
         await refresh?.("squad-roster");
         // Retiring the last member re-hides the member-gated coordinator panel.
         await refresh?.("squad-coordinator");
+        await releaseWorkspaceIfScopeEmpty(home, scopeId);
         emitResult(ctx, JSON.stringify({ ok: true, slug: parsed.data.slug }));
       } catch (e) {
         // retireMember throws when the dir is already gone — but a registry entry can
@@ -1028,11 +1034,17 @@ function makeCodeTool(
           );
           return;
         }
+        const workspace = await acquireScopeWorktree({
+          scopeId,
+          project: { id: boundProject.id, rootPath: boundProject.rootPath },
+          scopeDataHome: scopeDataHome(home, scopeId),
+          acquire: acquireWorkspace,
+        });
         const result = await runCodeTurn({
           runAgentTurn: turnSeam,
           membersRoot,
           member,
-          project: { name: boundProject.name, rootPath: boundProject.rootPath },
+          project: { name: boundProject.name, rootPath: workspace.path },
           task,
           abortSignal: ctx.abortSignal,
         });
@@ -1112,9 +1124,15 @@ function makeOpenPrTool(
           );
           return;
         }
+        const workspace = await reuseScopeWorktree({
+          scopeId: resolution.scopeId,
+          projectId: resolution.project.id,
+          rootPath: resolution.project.rootPath,
+          scopeDataHome: scopeDataHome(home, resolution.scopeId),
+        });
         const result = await openChangeRequest({
           exec: execSeam(),
-          cwd: resolution.project.rootPath,
+          cwd: workspace.path,
           title: parsed.data.title,
           body: parsed.data.body,
         });
@@ -1236,159 +1254,171 @@ async function runResolveReviewFlow(opts: {
   }
   if (activeRun && !liveActiveRun) activeCoordinateRuns.delete(scopeId);
 
-  const project = {
-    id: resolution.project.id,
-    name: resolution.project.name,
-    rootPath: resolution.project.rootPath,
-  };
-  const membersRoot = scopeMembersDir(home, scopeId);
-  const roster = (await readMembers(membersRoot)).filter((m) => m.status === "active");
-  if (roster.length === 0) {
-    const locations = await activeMemberScopeLocations(home);
-    return {
-      ok: false,
-      error: `no matching active members to coordinate in scope "${scopeId}"${locations ? `; active members live in: ${locations}` : ""}`,
-    };
-  }
-
-  const exec = execSeam();
-  const threadsResult = await fetchUnresolvedThreads(exec, project.rootPath);
-  if (!threadsResult.ok) return { ok: false, error: threadsResult.error };
-  const threads = threadsResult.data;
-  if (threads.length === 0)
-    return { ok: true, message: "squad_resolve_review: no unresolved review threads found" };
-
-  const beforeHead = await gitText(exec, project.rootPath, ["rev-parse", "HEAD"]);
-  if (!beforeHead.ok)
-    return { ok: false, error: `could not read HEAD before review run: ${beforeHead.error}` };
-
-  const controller = new AbortController();
-  const unlinkAbort = relayAbort(ctx.abortSignal, controller);
-  activeCoordinateRuns.set(scopeId, controller);
-  let result: RunCoordinatorResult;
   try {
-    result = await runCoordinator({
-      runAgentTurn: turnSeam,
-      membersRoot,
-      dataHome,
-      roster,
-      task: composeResolveReviewTask(threads),
+    const workspace = await reuseScopeWorktree({
       scopeId,
-      abortSignal: controller.signal,
-      takeSteers: () => takeSteersFor(scopeId),
-      publish: async () => {
-        await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
-        await refreshWorkflow?.("squad-roster")?.catch(() => {});
-      },
-      project,
-      ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
-      ...(memorySeam ? { getMemory: memorySeam } : {}),
-      getExec: exec,
-      verify: await autoDetectVerify(project.rootPath),
-      limits: DEFAULT_LIMITS,
+      projectId: resolution.project.id,
+      rootPath: resolution.project.rootPath,
+      scopeDataHome: dataHome,
     });
-  } finally {
-    unlinkAbort();
-    if (activeCoordinateRuns.get(scopeId) === controller) {
-      activeCoordinateRuns.delete(scopeId);
-      pendingSteers.delete(scopeId);
+    const project = {
+      id: resolution.project.id,
+      name: resolution.project.name,
+      rootPath: workspace.path,
+    };
+    const membersRoot = scopeMembersDir(home, scopeId);
+    const roster = (await readMembers(membersRoot)).filter((m) => m.status === "active");
+    if (roster.length === 0) {
+      const locations = await activeMemberScopeLocations(home);
+      return {
+        ok: false,
+        error: `no matching active members to coordinate in scope "${scopeId}"${locations ? `; active members live in: ${locations}` : ""}`,
+      };
     }
-  }
-  await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
-  await refreshWorkflow?.("squad-roster")?.catch(() => {});
-  if (result.status !== "done") {
-    return {
-      ok: false,
-      error: `coordinator did not reach done (status: ${result.status}); no review replies or resolves were sent`,
-    };
-  }
 
-  // Directive-carried rows are the primary channel (they survive ENTRY_CAP truncation);
-  // the transcript-tail prose parse remains as the fallback for a manager that answered
-  // in the older fenced-block form.
-  const ledgerRows = result.ledger.dispositions;
-  const parsed = ledgerRows?.length
-    ? validateDispositionRows(ledgerRows, threads)
-    : parseReviewDispositions(reviewTranscriptTail(result), threads);
-  if (!parsed.ok) {
-    return {
-      ok: false,
-      error: `could not parse review disposition block: ${parsed.reason}; no review replies or resolves were sent`,
-    };
-  }
+    const exec = execSeam();
+    const threadsResult = await fetchUnresolvedThreads(exec, project.rootPath);
+    if (!threadsResult.ok) return { ok: false, error: threadsResult.error };
+    const threads = threadsResult.data;
+    if (threads.length === 0)
+      return { ok: true, message: "squad_resolve_review: no unresolved review threads found" };
 
-  const afterHead = await gitText(exec, project.rootPath, ["rev-parse", "HEAD"]);
-  if (!afterHead.ok)
-    return { ok: false, error: `could not read HEAD after review run: ${afterHead.error}` };
-  const beforeSha = beforeHead.data.trim();
-  const afterSha = afterHead.data.trim();
-  if (!afterSha) {
-    return {
-      ok: false,
-      error:
-        "coordinator reached done but created no new commit; no push, review replies, or resolves were sent",
-    };
-  }
-  // A re-invocation whose fixes are already committed AND pushed (clean tree, branch not
-  // ahead of upstream) may proceed to replies/resolves without a new commit — refusing
-  // there would strand threads whose fixes are already public. Anything else keeps the
-  // fail-closed refusal.
-  const pushedNew = afterSha !== beforeSha;
-  if (!pushedNew) {
-    const clean = await gitText(exec, project.rootPath, ["status", "--porcelain"]);
-    const ahead = await gitText(exec, project.rootPath, ["rev-list", "--count", "@{u}..HEAD"]);
-    const alreadySynced =
-      clean.ok && clean.data.trim() === "" && ahead.ok && ahead.data.trim() === "0";
-    if (!alreadySynced) {
+    const beforeHead = await gitText(exec, project.rootPath, ["rev-parse", "HEAD"]);
+    if (!beforeHead.ok)
+      return { ok: false, error: `could not read HEAD before review run: ${beforeHead.error}` };
+
+    const controller = new AbortController();
+    const unlinkAbort = relayAbort(ctx.abortSignal, controller);
+    activeCoordinateRuns.set(scopeId, controller);
+    let result: RunCoordinatorResult;
+    try {
+      result = await runCoordinator({
+        runAgentTurn: turnSeam,
+        membersRoot,
+        dataHome,
+        roster,
+        task: composeResolveReviewTask(threads),
+        scopeId,
+        abortSignal: controller.signal,
+        takeSteers: () => takeSteersFor(scopeId),
+        publish: async () => {
+          await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+          await refreshWorkflow?.("squad-roster")?.catch(() => {});
+        },
+        project,
+        ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
+        ...(memorySeam ? { getMemory: memorySeam } : {}),
+        getExec: exec,
+        verify: await autoDetectVerify(project.rootPath),
+        limits: DEFAULT_LIMITS,
+      });
+    } finally {
+      unlinkAbort();
+      if (activeCoordinateRuns.get(scopeId) === controller) {
+        activeCoordinateRuns.delete(scopeId);
+        pendingSteers.delete(scopeId);
+      }
+    }
+    await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+    await refreshWorkflow?.("squad-roster")?.catch(() => {});
+    if (result.status !== "done") {
+      return {
+        ok: false,
+        error: `coordinator did not reach done (status: ${result.status}); no review replies or resolves were sent`,
+      };
+    }
+
+    // Directive-carried rows are the primary channel (they survive ENTRY_CAP truncation);
+    // the transcript-tail prose parse remains as the fallback for a manager that answered
+    // in the older fenced-block form.
+    const ledgerRows = result.ledger.dispositions;
+    const parsed = ledgerRows?.length
+      ? validateDispositionRows(ledgerRows, threads)
+      : parseReviewDispositions(reviewTranscriptTail(result), threads);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        error: `could not parse review disposition block: ${parsed.reason}; no review replies or resolves were sent`,
+      };
+    }
+
+    const afterHead = await gitText(exec, project.rootPath, ["rev-parse", "HEAD"]);
+    if (!afterHead.ok)
+      return { ok: false, error: `could not read HEAD after review run: ${afterHead.error}` };
+    const beforeSha = beforeHead.data.trim();
+    const afterSha = afterHead.data.trim();
+    if (!afterSha) {
       return {
         ok: false,
         error:
           "coordinator reached done but created no new commit; no push, review replies, or resolves were sent",
       };
     }
-  } else {
-    const pushed = await gitText(exec, project.rootPath, ["push"]);
-    if (!pushed.ok)
+    // A re-invocation whose fixes are already committed AND pushed (clean tree, branch not
+    // ahead of upstream) may proceed to replies/resolves without a new commit — refusing
+    // there would strand threads whose fixes are already public. Anything else keeps the
+    // fail-closed refusal.
+    const pushedNew = afterSha !== beforeSha;
+    if (!pushedNew) {
+      const clean = await gitText(exec, project.rootPath, ["status", "--porcelain"]);
+      const ahead = await gitText(exec, project.rootPath, ["rev-list", "--count", "@{u}..HEAD"]);
+      const alreadySynced =
+        clean.ok && clean.data.trim() === "" && ahead.ok && ahead.data.trim() === "0";
+      if (!alreadySynced) {
+        return {
+          ok: false,
+          error:
+            "coordinator reached done but created no new commit; no push, review replies, or resolves were sent",
+        };
+      }
+    } else {
+      const pushed = await gitText(exec, project.rootPath, ["push"]);
+      if (!pushed.ok)
+        return {
+          ok: false,
+          error: `git push failed; no review replies or resolves were sent: ${pushed.error}`,
+        };
+    }
+
+    const errors: string[] = [];
+    let resolved = 0;
+    for (const thread of threads) {
+      const disposition = parsed.dispositions.get(thread.threadRef);
+      if (!disposition) {
+        errors.push(`missing disposition for ${thread.threadRef}`);
+        continue;
+      }
+      const replied = await replyToThread(
+        exec,
+        project.rootPath,
+        thread,
+        reviewReplyBody(disposition, afterSha),
+      );
+      if (!replied.ok) {
+        errors.push(`${thread.threadRef}: ${replied.error}`);
+        continue;
+      }
+      if (disposition.disposition === "fixed") {
+        const marked = await resolveThread(exec, project.rootPath, thread);
+        if (marked.ok) resolved += 1;
+        else errors.push(`${thread.threadRef}: ${marked.error}`);
+      }
+    }
+    if (errors.length > 0) {
       return {
         ok: false,
-        error: `git push failed; no review replies or resolves were sent: ${pushed.error}`,
+        error: `review follow-up partially failed at ${afterSha}: ${errors.join("; ")}`,
       };
-  }
-
-  const errors: string[] = [];
-  let resolved = 0;
-  for (const thread of threads) {
-    const disposition = parsed.dispositions.get(thread.threadRef);
-    if (!disposition) {
-      errors.push(`missing disposition for ${thread.threadRef}`);
-      continue;
     }
-    const replied = await replyToThread(
-      exec,
-      project.rootPath,
-      thread,
-      reviewReplyBody(disposition, afterSha),
-    );
-    if (!replied.ok) {
-      errors.push(`${thread.threadRef}: ${replied.error}`);
-      continue;
-    }
-    if (disposition.disposition === "fixed") {
-      const marked = await resolveThread(exec, project.rootPath, thread);
-      if (marked.ok) resolved += 1;
-      else errors.push(`${thread.threadRef}: ${marked.error}`);
-    }
-  }
-  if (errors.length > 0) {
     return {
-      ok: false,
-      error: `review follow-up partially failed at ${afterSha}: ${errors.join("; ")}`,
+      ok: true,
+      message: `squad_resolve_review: ${pushedNew ? `pushed ${afterSha}` : `branch already up to date at ${afterSha}`}, replied to ${threads.length} thread(s), resolved ${resolved} fixed thread(s)`,
     };
+  } finally {
+    // The run has settled — fire the release that the mid-run guard deferred if the
+    // last member was retired during it.
+    await releaseWorkspaceIfScopeEmpty(home, scopeId);
   }
-  return {
-    ok: true,
-    message: `squad_resolve_review: ${pushedNew ? `pushed ${afterSha}` : `branch already up to date at ${afterSha}`}, replied to ${threads.length} thread(s), resolved ${resolved} fixed thread(s)`,
-  };
 }
 
 function makeResolveReviewTool(
@@ -1474,10 +1504,16 @@ function makeViewDiffTool(
           emitResult(ctx, "squad_view_diff: exec seam unavailable on this harness", true);
           return;
         }
+        const workspace = await reuseScopeWorktree({
+          scopeId: resolution.scopeId,
+          projectId: resolution.project.id,
+          rootPath: resolution.project.rootPath,
+          scopeDataHome: scopeDataHome(home, resolution.scopeId),
+        });
         const diff = (
           await captureDiffUnderReview(
             "view the project diff",
-            { name: resolution.project.name, rootPath: resolution.project.rootPath },
+            { name: resolution.project.name, rootPath: workspace.path },
             true,
             execSeam(),
           )
@@ -1625,13 +1661,20 @@ function makeCoordinateTool(
           activeLedger?.status === LEDGER_STATUS_ACTIVE && !liveActiveRun
             ? `took over stale active coordinator ledger at round ${activeLedger.round} (no live run controller was registered)`
             : undefined;
-        const project = resolution.project
-          ? {
-              id: resolution.project.id,
-              name: resolution.project.name,
-              rootPath: resolution.project.rootPath,
-            }
-          : undefined;
+        let project: { id: string; name: string; rootPath: string } | undefined;
+        if (resolution.project) {
+          const workspace = await acquireScopeWorktree({
+            scopeId,
+            project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+            scopeDataHome: dataHome,
+            acquire: acquireWorkspace,
+          });
+          project = {
+            id: resolution.project.id,
+            name: resolution.project.name,
+            rootPath: workspace.path,
+          };
+        }
         const membersRoot = scopeMembersDir(home, scopeId);
         const active = (await readMembers(membersRoot)).filter((m) => m.status === "active");
         const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
@@ -1706,6 +1749,10 @@ function makeCoordinateTool(
             activeCoordinateRuns.delete(scopeId);
             pendingSteers.delete(scopeId);
           }
+          // The run has settled (activeCoordinateRuns cleared above) — fire the release
+          // deferred if the last member was retired mid-run. In the finally so it runs
+          // even when runCoordinator throws; never-throws, so it can't mask the error.
+          await releaseWorkspaceIfScopeEmpty(home, scopeId);
         }
         // Push the Run-loop panel to the run's final state (the same publish path cast uses);
         // best-effort, so a refresh failure never masks the run's own result.
@@ -2060,7 +2107,13 @@ function makeRollbackTool(
           emitResult(ctx, `squad_rollback: ${run.error}`, true);
           return;
         }
-        const git = rollbackExec(execSeam(), resolution.project.rootPath);
+        const workspace = await reuseScopeWorktree({
+          scopeId: resolution.scopeId,
+          projectId: resolution.project.id,
+          rootPath: resolution.project.rootPath,
+          scopeDataHome: dataHome,
+        });
+        const git = rollbackExec(execSeam(), workspace.path);
         const performed = parsed.data.confirm
           ? await latestPerformedRollbackRow(dataHome, run.runId)
           : undefined;
@@ -2120,7 +2173,7 @@ function makeRollbackTool(
           emitResult(ctx, JSON.stringify({ ...preview, event: "noop" }, null, 2));
           return;
         }
-        await performRollbackSequence(plan, git, resolution.project.rootPath, run.runId);
+        await performRollbackSequence(plan, git, workspace.path, run.runId);
         await appendRollbackRow(dataHome, {
           type: "performed",
           runId: run.runId,
@@ -2904,6 +2957,7 @@ const rib: Rib = {
     runAgentTurn = ctx.runAgentTurn;
     getProjects = ctx.getProjects;
     getProviders = ctx.getProviders;
+    acquireWorkspace = ctx.acquireWorkspace;
     // The run-detail key composes from module state the View action sets; registered
     // here (the only hook with the ctx) and unregistered in dispose so a re-boot
     // re-registers cleanly against the new manager.
@@ -3040,6 +3094,7 @@ const rib: Rib = {
     runAgentTurn = undefined;
     getProjects = undefined;
     getProviders = undefined;
+    acquireWorkspace = undefined;
     unregisterRunDetail?.();
     unregisterRunDetail = undefined;
     unregisterReport?.();
@@ -3427,6 +3482,9 @@ async function retireAllAction(): Promise<RibActionResult> {
       }
       await retireCastingName(scopedHome, m.slug);
     }
+    if (!activeCoordinateRuns.has(scopeId)) {
+      await releaseScopeWorktree({ scopeId, scopeDataHome: scopedHome }).catch(() => {});
+    }
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
     return { ok: true, data: { retired } };
   } catch (e) {
@@ -3474,6 +3532,7 @@ async function resetSquadAction(): Promise<RibActionResult> {
     await clearLedger(scopedHome);
     await clearRollbacks(scopedHome);
     await clearProposal(scopedHome);
+    await releaseScopeWorktree({ scopeId, scopeDataHome: scopedHome }).catch(() => {});
 
     await refreshSquadPanels();
     return { ok: true, data: { retired } };
@@ -3582,6 +3641,27 @@ async function setModelAction(action: RibAction): Promise<RibActionResult> {
   }
 }
 
+// A scope's leased worktree (keelson #524) is held for the scope's lifetime; release
+// it once the scope empties out — the "on close" signal for the persistent lease.
+// Never while a coordinator run is live: removing its worktree would yank the run's
+// files mid-flight, so a run holds the lease until it settles (the run-end paths call
+// this again to fire the deferred release). Never throws — safe to call from a finally.
+async function releaseWorkspaceIfScopeEmpty(home: string, scopeId: string): Promise<void> {
+  if (activeCoordinateRuns.has(scopeId)) return;
+  try {
+    const remaining = (await readMembers(scopeMembersDir(home, scopeId))).filter(
+      (m) => m.status === "active",
+    );
+    if (remaining.length === 0) {
+      await releaseScopeWorktree({ scopeId, scopeDataHome: scopeDataHome(home, scopeId) });
+    }
+  } catch (err) {
+    console.warn(
+      `[rib-squad] deferred workspace release check failed for scope "${scopeId}": ${errText(err)}`,
+    );
+  }
+}
+
 async function retireAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const slug = asNonEmptyString(payload.slug);
@@ -3596,6 +3676,7 @@ async function retireAction(action: RibAction): Promise<RibActionResult> {
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
     // Retiring the last member re-hides the member-gated coordinator panel.
     await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+    await releaseWorkspaceIfScopeEmpty(home, scopeId);
     return { ok: true, data: { slug } };
   } catch (e) {
     // retireMember throws when the dir is already gone, but a registry entry can linger

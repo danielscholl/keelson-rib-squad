@@ -15,6 +15,7 @@ import rib from "../src/index.ts";
 import { type MemberRecord, scaffoldMember } from "../src/member-store.ts";
 import { scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import type { Member } from "../src/types.ts";
+import { __resetWorkspaceStateForTest } from "../src/workspace.ts";
 
 async function* stream(text: string): AsyncGenerator<MessageChunk> {
   yield { type: "text", content: text };
@@ -214,6 +215,7 @@ describe("memberCanCode", () => {
 describe("squad_code tool", () => {
   let home: string;
   let lastReq: RibAgentTurnRequest | undefined;
+  const extraDirs: string[] = [];
 
   function project(id: string, name: string, rootPath: string) {
     return { id, name, rootPath, createdAt: "2026-06-27T00:00:00.000Z" };
@@ -221,6 +223,7 @@ describe("squad_code tool", () => {
   function boot(
     projects: ReturnType<typeof project>[],
     reply = "edited foo.ts",
+    acquireWorkspace?: RibContext["acquireWorkspace"],
   ): readonly ToolDefinition[] {
     const ctx = {
       getExec: () => ({
@@ -234,6 +237,7 @@ describe("squad_code tool", () => {
         return fakeTurn(reply);
       },
       refreshWorkflow: async () => {},
+      ...(acquireWorkspace ? { acquireWorkspace } : {}),
     } as unknown as RibContext;
     return rib.registerTools?.(ctx) ?? [];
   }
@@ -280,6 +284,7 @@ describe("squad_code tool", () => {
   }
 
   beforeEach(async () => {
+    __resetWorkspaceStateForTest();
     home = await mkdtemp(join(tmpdir(), "squad-code-tool-"));
     lastReq = undefined;
   });
@@ -287,6 +292,7 @@ describe("squad_code tool", () => {
     rib.dispose?.();
     setSquadDataHome(undefined);
     await rm(home, { recursive: true, force: true });
+    await Promise.all(extraDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
   });
 
   test("is registered and state-changing", () => {
@@ -304,6 +310,24 @@ describe("squad_code tool", () => {
     expect(lastReq?.allowedDirectories).toEqual(["/repo/keelson"]);
     expect(lastReq?.allowedTools).toEqual([...CODE_TOOLS]);
     expect(out().content).toContain("Atlas");
+  });
+
+  test("routes the code turn into the leased worktree when the seam is present", async () => {
+    const leaseDir = await mkdtemp(join(tmpdir(), "squad-code-lease-"));
+    extraDirs.push(leaseDir); // cleaned in afterEach even if an assertion below throws
+    const tools = boot([project("p1", "keelson", "/repo/keelson")], "edited foo.ts", async () => ({
+      id: "l1",
+      path: leaseDir,
+      branch: "keelson/lease/squad-p1",
+      release: async () => {},
+    }));
+    await add({ slug: "atlas", name: "Atlas", tools: ["code", "read"] });
+    const { ctx, out } = capture();
+    await tool(tools).execute({ member: "atlas", task: "add a flag", project: "keelson" }, ctx);
+    expect(out().isError).toBe(false);
+    // The turn is confined to the leased worktree, not the operator's checkout.
+    expect(lastReq?.cwd).toBe(leaseDir);
+    expect(lastReq?.allowedDirectories).toEqual([leaseDir]);
   });
 
   test("refuses a non-code member (never runs a turn)", async () => {
