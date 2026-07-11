@@ -137,7 +137,7 @@ import {
   type Member,
   normalizeToolAllowlist,
 } from "./types.ts";
-import { releaseScopeWorktree, resolveScopeWorktree } from "./workspace.ts";
+import { acquireScopeWorktree, releaseScopeWorktree, reuseScopeWorktree } from "./workspace.ts";
 
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
 // dispose. refreshWorkflow re-runs a bound collector (squad-roster, squad-cast)
@@ -1034,7 +1034,7 @@ function makeCodeTool(
           );
           return;
         }
-        const workspace = await resolveScopeWorktree({
+        const workspace = await acquireScopeWorktree({
           scopeId,
           project: { id: boundProject.id, rootPath: boundProject.rootPath },
           scopeDataHome: scopeDataHome(home, scopeId),
@@ -1124,11 +1124,10 @@ function makeOpenPrTool(
           );
           return;
         }
-        const workspace = await resolveScopeWorktree({
+        const workspace = await reuseScopeWorktree({
           scopeId: resolution.scopeId,
-          project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+          rootPath: resolution.project.rootPath,
           scopeDataHome: scopeDataHome(home, resolution.scopeId),
-          acquire: acquireWorkspace,
         });
         const result = await openChangeRequest({
           exec: execSeam(),
@@ -1254,11 +1253,10 @@ async function runResolveReviewFlow(opts: {
   }
   if (activeRun && !liveActiveRun) activeCoordinateRuns.delete(scopeId);
 
-  const workspace = await resolveScopeWorktree({
+  const workspace = await reuseScopeWorktree({
     scopeId,
-    project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+    rootPath: resolution.project.rootPath,
     scopeDataHome: dataHome,
-    acquire: acquireWorkspace,
   });
   const project = {
     id: resolution.project.id,
@@ -1498,11 +1496,10 @@ function makeViewDiffTool(
           emitResult(ctx, "squad_view_diff: exec seam unavailable on this harness", true);
           return;
         }
-        const workspace = await resolveScopeWorktree({
+        const workspace = await reuseScopeWorktree({
           scopeId: resolution.scopeId,
-          project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+          rootPath: resolution.project.rootPath,
           scopeDataHome: scopeDataHome(home, resolution.scopeId),
-          acquire: acquireWorkspace,
         });
         const diff = (
           await captureDiffUnderReview(
@@ -1657,7 +1654,7 @@ function makeCoordinateTool(
             : undefined;
         let project: { id: string; name: string; rootPath: string } | undefined;
         if (resolution.project) {
-          const workspace = await resolveScopeWorktree({
+          const workspace = await acquireScopeWorktree({
             scopeId,
             project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
             scopeDataHome: dataHome,
@@ -2097,11 +2094,10 @@ function makeRollbackTool(
           emitResult(ctx, `squad_rollback: ${run.error}`, true);
           return;
         }
-        const workspace = await resolveScopeWorktree({
+        const workspace = await reuseScopeWorktree({
           scopeId: resolution.scopeId,
-          project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+          rootPath: resolution.project.rootPath,
           scopeDataHome: dataHome,
-          acquire: acquireWorkspace,
         });
         const git = rollbackExec(execSeam(), workspace.path);
         const performed = parsed.data.confirm

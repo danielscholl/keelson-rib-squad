@@ -6,8 +6,9 @@ import { join } from "node:path";
 import type { WorkspaceLease } from "@keelson/shared";
 import {
   __resetWorkspaceStateForTest,
+  acquireScopeWorktree,
   releaseScopeWorktree,
-  resolveScopeWorktree,
+  reuseScopeWorktree,
 } from "../src/workspace.ts";
 
 let root: string; // fake project root
@@ -56,9 +57,9 @@ afterEach(async () => {
 const project = () => ({ id: "p1", rootPath: root });
 const recordPath = () => join(scopeHome, "workspace.json");
 
-describe("resolveScopeWorktree", () => {
+describe("acquireScopeWorktree", () => {
   test("without the seam, falls back to the project root and persists nothing", async () => {
-    const res = await resolveScopeWorktree({
+    const res = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -70,7 +71,7 @@ describe("resolveScopeWorktree", () => {
 
   test("acquires a leased worktree and persists the record", async () => {
     const s = stubAcquire();
-    const res = await resolveScopeWorktree({
+    const res = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -85,13 +86,13 @@ describe("resolveScopeWorktree", () => {
 
   test("reuses the in-memory lease across calls (acquires once)", async () => {
     const s = stubAcquire();
-    const a = await resolveScopeWorktree({
+    const a = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
       acquire: s.acquire,
     });
-    const b = await resolveScopeWorktree({
+    const b = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -103,7 +104,7 @@ describe("resolveScopeWorktree", () => {
 
   test("different scopes get different worktrees", async () => {
     const s = stubAcquire();
-    const a = await resolveScopeWorktree({
+    const a = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -111,7 +112,7 @@ describe("resolveScopeWorktree", () => {
     });
     const otherHome = await mkdtemp(join(tmpdir(), "squad-scope2-"));
     tempDirs.push(otherHome);
-    const b = await resolveScopeWorktree({
+    const b = await acquireScopeWorktree({
       scopeId: "s2",
       project: project(),
       scopeDataHome: otherHome,
@@ -123,7 +124,7 @@ describe("resolveScopeWorktree", () => {
 
   test("rebinds to the persisted worktree path after in-memory state is lost", async () => {
     const s = stubAcquire();
-    const a = await resolveScopeWorktree({
+    const a = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -133,7 +134,7 @@ describe("resolveScopeWorktree", () => {
     // record and its worktree survive.
     __resetWorkspaceStateForTest();
     const s2 = stubAcquire();
-    const b = await resolveScopeWorktree({
+    const b = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -145,7 +146,7 @@ describe("resolveScopeWorktree", () => {
 
   test("re-acquires when the persisted worktree has vanished", async () => {
     const s = stubAcquire();
-    const a = await resolveScopeWorktree({
+    const a = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -154,7 +155,7 @@ describe("resolveScopeWorktree", () => {
     await rm(a.path, { recursive: true, force: true });
     __resetWorkspaceStateForTest();
     const s2 = stubAcquire();
-    const b = await resolveScopeWorktree({
+    const b = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -168,7 +169,7 @@ describe("resolveScopeWorktree", () => {
     const acquire = async () => {
       throw new Error("project is not a git repository");
     };
-    const res = await resolveScopeWorktree({
+    const res = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -181,13 +182,13 @@ describe("resolveScopeWorktree", () => {
   test("concurrent first-acquisitions of one scope share a single worktree", async () => {
     const s = stubAcquire();
     const [a, b] = await Promise.all([
-      resolveScopeWorktree({
+      acquireScopeWorktree({
         scopeId: "s1",
         project: project(),
         scopeDataHome: scopeHome,
         acquire: s.acquire,
       }),
-      resolveScopeWorktree({
+      acquireScopeWorktree({
         scopeId: "s1",
         project: project(),
         scopeDataHome: scopeHome,
@@ -202,7 +203,7 @@ describe("resolveScopeWorktree", () => {
 describe("releaseScopeWorktree", () => {
   test("runs the held lease closure and clears the record", async () => {
     const s = stubAcquire();
-    const a = await resolveScopeWorktree({
+    const a = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -217,7 +218,7 @@ describe("releaseScopeWorktree", () => {
 
   test("releasing a rebound lease clears the record without a closure", async () => {
     const s = stubAcquire();
-    const a = await resolveScopeWorktree({
+    const a = await acquireScopeWorktree({
       scopeId: "s1",
       project: project(),
       scopeDataHome: scopeHome,
@@ -234,5 +235,50 @@ describe("releaseScopeWorktree", () => {
   test("release is a no-op when no lease is held", async () => {
     await releaseScopeWorktree({ scopeId: "never", scopeDataHome: scopeHome });
     expect(existsSync(recordPath())).toBe(false);
+  });
+});
+
+describe("reuseScopeWorktree", () => {
+  test("follows a producer's established worktree without acquiring", async () => {
+    const s = stubAcquire();
+    const a = await acquireScopeWorktree({
+      scopeId: "s1",
+      project: project(),
+      scopeDataHome: scopeHome,
+      acquire: s.acquire,
+    });
+    const res = await reuseScopeWorktree({
+      scopeId: "s1",
+      rootPath: root,
+      scopeDataHome: scopeHome,
+    });
+    expect(res).toEqual({ path: a.path, leased: true });
+    expect(s.calls()).toBe(1); // reuse never acquires
+  });
+
+  test("falls back to the project root when no worktree is established", async () => {
+    const res = await reuseScopeWorktree({
+      scopeId: "s1",
+      rootPath: root,
+      scopeDataHome: scopeHome,
+    });
+    expect(res).toEqual({ path: root, leased: false });
+  });
+
+  test("rebinds to the persisted worktree after in-memory state is lost", async () => {
+    const s = stubAcquire();
+    const a = await acquireScopeWorktree({
+      scopeId: "s1",
+      project: project(),
+      scopeDataHome: scopeHome,
+      acquire: s.acquire,
+    });
+    __resetWorkspaceStateForTest();
+    const res = await reuseScopeWorktree({
+      scopeId: "s1",
+      rootPath: root,
+      scopeDataHome: scopeHome,
+    });
+    expect(res).toEqual({ path: a.path, leased: true });
   });
 });

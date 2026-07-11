@@ -14,11 +14,14 @@ import type { RibContext, WorkspaceLease } from "@keelson/shared";
 // Per-scope working tree. Squad's mutation tools (code, coordinate, open_pr,
 // resolve_review, view_diff, rollback) are independent MCP calls that share one
 // working tree across the run — so the isolation unit is the SCOPE, not a single
-// call. When the host exposes `acquireWorkspace`, the first mutation of a scope
-// leases an isolated worktree and every later call for that scope reuses it; a
-// concurrent squad run in another scope, or an external edit on the operator's
-// main checkout, no longer collide (keelson #524). Without the seam the whole rib
-// degrades to `project.rootPath` — the legacy behavior, unchanged.
+// call. A work PRODUCER (`acquireScopeWorktree`: squad_code / squad_coordinate)
+// leases an isolated worktree on first use; every CONSUMER of that work
+// (`reuseScopeWorktree`: open_pr / resolve_review / view_diff / rollback) follows
+// the established worktree but never leases its own — a consumer that leased a
+// fresh main-based checkout would act on the wrong branch. A concurrent squad run
+// in another scope, or an external edit on the operator's main checkout, no longer
+// collide (keelson #524). Without the seam the whole rib degrades to
+// `project.rootPath` — the legacy behavior, unchanged.
 //
 // The seam is acquire-only (no list / release-by-id), so reuse holds the lease
 // object in memory. The `{ leaseId, worktreePath }` record persists so a restart
@@ -73,10 +76,29 @@ async function clearWorkspaceRecord(scopeDataHome: string): Promise<void> {
   await rm(join(scopeDataHome, WORKSPACE_FILE), { force: true });
 }
 
-// Resolve-or-acquire the scope's working tree. Reuse (in-memory, then persisted
-// path) precedes any acquisition; concurrent first-mutations of one scope share a
-// single in-flight acquisition rather than racing two worktrees into existence.
-export async function resolveScopeWorktree(opts: {
+// The scope's existing worktree, if one is live (in-memory handle, then persisted
+// path). Returns undefined when nothing is established — the caller decides whether
+// to acquire (a work producer) or fall back to the project root (a consumer).
+async function existingScopeWorktree(
+  scopeId: string,
+  scopeDataHome: string,
+): Promise<string | undefined> {
+  const held = heldLeases.get(scopeId);
+  if (held) {
+    if (existsSync(held.path)) return held.path;
+    // The checkout vanished under us (manual removal); drop the stale handle.
+    heldLeases.delete(scopeId);
+  }
+  const persisted = await readWorkspaceRecord(scopeDataHome);
+  if (persisted && existsSync(persisted.worktreePath)) return persisted.worktreePath;
+  return undefined;
+}
+
+// For a work PRODUCER (squad_code / squad_coordinate): reuse the scope's worktree
+// if one is live, else lease a fresh one. Concurrent first-mutations of one scope
+// share a single in-flight acquisition rather than racing two worktrees into being.
+// Falls back to the project root when the seam is absent or acquisition fails.
+export async function acquireScopeWorktree(opts: {
   scopeId: string;
   project: { id: string; rootPath: string };
   scopeDataHome: string;
@@ -84,17 +106,8 @@ export async function resolveScopeWorktree(opts: {
 }): Promise<ResolvedWorkspace> {
   const { scopeId, project, scopeDataHome, acquire } = opts;
 
-  const held = heldLeases.get(scopeId);
-  if (held) {
-    if (existsSync(held.path)) return { path: held.path, leased: true };
-    // The checkout vanished under us (manual removal); drop the stale handle.
-    heldLeases.delete(scopeId);
-  }
-
-  const persisted = await readWorkspaceRecord(scopeDataHome);
-  if (persisted && existsSync(persisted.worktreePath)) {
-    return { path: persisted.worktreePath, leased: true };
-  }
+  const existing = await existingScopeWorktree(scopeId, scopeDataHome);
+  if (existing) return { path: existing, leased: true };
 
   if (!acquire) return { path: project.rootPath, leased: false };
 
@@ -121,6 +134,20 @@ export async function resolveScopeWorktree(opts: {
     );
     return { path: project.rootPath, leased: false };
   }
+}
+
+// For a CONSUMER of the scope's work (open_pr / resolve_review / view_diff /
+// rollback): follow the producer's established worktree when one is live, else the
+// project root. It must NEVER acquire — a consumer that leased a fresh main-based
+// worktree would act on the wrong branch (e.g. resolve_review would push the empty
+// lease branch, not the PR branch its threads live on).
+export async function reuseScopeWorktree(opts: {
+  scopeId: string;
+  rootPath: string;
+  scopeDataHome: string;
+}): Promise<ResolvedWorkspace> {
+  const existing = await existingScopeWorktree(opts.scopeId, opts.scopeDataHome);
+  return existing ? { path: existing, leased: true } : { path: opts.rootPath, leased: false };
 }
 
 // Release the scope's worktree — call on scope close (last member retired, squad
