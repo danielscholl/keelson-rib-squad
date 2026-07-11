@@ -18,11 +18,13 @@ directly from the keelson home). Everything below is relative to that home.
 | `casting-registry.json` | The default scope's theatrical-casting record. |
 | `coordinator-ledger.json` | The default scope's live coordinator run, if one is in progress. |
 | `runs/{id}.json` | The default scope's archived coordinator runs. |
+| `workspace.json` | The default scope's leased worktree record (`leaseId`, `worktreePath`), when the harness provides workspace isolation. |
 | `projects/{segment}/members/{slug}/` | A project scope's member directories. |
 | `projects/{segment}/cast-proposal.json` | That project scope's pending cast proposal, if any. |
 | `projects/{segment}/casting-registry.json` | That project scope's theatrical-casting record. |
 | `projects/{segment}/coordinator-ledger.json` | That project scope's live coordinator run, if one is in progress. |
 | `projects/{segment}/runs/{id}.json` | That project scope's archived coordinator runs. |
+| `projects/{segment}/workspace.json` | That project scope's leased worktree record, when the harness provides workspace isolation. |
 | `selected-project.json` | The operator's current project selection, at the home root regardless of scope. |
 | `projects.json` | A snapshot of the known project catalog, at the home root regardless of scope. |
 

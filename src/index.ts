@@ -137,6 +137,7 @@ import {
   type Member,
   normalizeToolAllowlist,
 } from "./types.ts";
+import { releaseScopeWorktree, resolveScopeWorktree } from "./workspace.ts";
 
 // Seams captured in registerTools (the only hook with the full ctx) and cleared in
 // dispose. refreshWorkflow re-runs a bound collector (squad-roster, squad-cast)
@@ -147,6 +148,10 @@ let refreshWorkflow: RibContext["refreshWorkflow"];
 let runAgentTurn: RibContext["runAgentTurn"];
 let getProjects: RibContext["getProjects"];
 let getProviders: RibContext["getProviders"];
+// Optional worktree-isolation seam: when present, a scope's mutations run in a
+// leased worktree instead of the operator's checkout (keelson #524). Absent on an
+// older harness — the rib degrades to project.rootPath.
+let acquireWorkspace: RibContext["acquireWorkspace"];
 // The run-detail drill-down: an imperatively-registered snapshot whose composer reads
 // the board the last View action selected. Cleared (and unregistered) in dispose.
 let snapshots: SnapshotManager | undefined;
@@ -793,6 +798,7 @@ function makeRetireMemberTool(
         await refresh?.("squad-roster");
         // Retiring the last member re-hides the member-gated coordinator panel.
         await refresh?.("squad-coordinator");
+        await releaseWorkspaceIfScopeEmpty(home, scopeId);
         emitResult(ctx, JSON.stringify({ ok: true, slug: parsed.data.slug }));
       } catch (e) {
         // retireMember throws when the dir is already gone — but a registry entry can
@@ -1028,11 +1034,17 @@ function makeCodeTool(
           );
           return;
         }
+        const workspace = await resolveScopeWorktree({
+          scopeId,
+          project: { id: boundProject.id, rootPath: boundProject.rootPath },
+          scopeDataHome: scopeDataHome(home, scopeId),
+          acquire: acquireWorkspace,
+        });
         const result = await runCodeTurn({
           runAgentTurn: turnSeam,
           membersRoot,
           member,
-          project: { name: boundProject.name, rootPath: boundProject.rootPath },
+          project: { name: boundProject.name, rootPath: workspace.path },
           task,
           abortSignal: ctx.abortSignal,
         });
@@ -1112,9 +1124,15 @@ function makeOpenPrTool(
           );
           return;
         }
+        const workspace = await resolveScopeWorktree({
+          scopeId: resolution.scopeId,
+          project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+          scopeDataHome: scopeDataHome(home, resolution.scopeId),
+          acquire: acquireWorkspace,
+        });
         const result = await openChangeRequest({
           exec: execSeam(),
-          cwd: resolution.project.rootPath,
+          cwd: workspace.path,
           title: parsed.data.title,
           body: parsed.data.body,
         });
@@ -1236,10 +1254,16 @@ async function runResolveReviewFlow(opts: {
   }
   if (activeRun && !liveActiveRun) activeCoordinateRuns.delete(scopeId);
 
+  const workspace = await resolveScopeWorktree({
+    scopeId,
+    project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+    scopeDataHome: dataHome,
+    acquire: acquireWorkspace,
+  });
   const project = {
     id: resolution.project.id,
     name: resolution.project.name,
-    rootPath: resolution.project.rootPath,
+    rootPath: workspace.path,
   };
   const membersRoot = scopeMembersDir(home, scopeId);
   const roster = (await readMembers(membersRoot)).filter((m) => m.status === "active");
@@ -1474,10 +1498,16 @@ function makeViewDiffTool(
           emitResult(ctx, "squad_view_diff: exec seam unavailable on this harness", true);
           return;
         }
+        const workspace = await resolveScopeWorktree({
+          scopeId: resolution.scopeId,
+          project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+          scopeDataHome: scopeDataHome(home, resolution.scopeId),
+          acquire: acquireWorkspace,
+        });
         const diff = (
           await captureDiffUnderReview(
             "view the project diff",
-            { name: resolution.project.name, rootPath: resolution.project.rootPath },
+            { name: resolution.project.name, rootPath: workspace.path },
             true,
             execSeam(),
           )
@@ -1625,13 +1655,20 @@ function makeCoordinateTool(
           activeLedger?.status === LEDGER_STATUS_ACTIVE && !liveActiveRun
             ? `took over stale active coordinator ledger at round ${activeLedger.round} (no live run controller was registered)`
             : undefined;
-        const project = resolution.project
-          ? {
-              id: resolution.project.id,
-              name: resolution.project.name,
-              rootPath: resolution.project.rootPath,
-            }
-          : undefined;
+        let project: { id: string; name: string; rootPath: string } | undefined;
+        if (resolution.project) {
+          const workspace = await resolveScopeWorktree({
+            scopeId,
+            project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+            scopeDataHome: dataHome,
+            acquire: acquireWorkspace,
+          });
+          project = {
+            id: resolution.project.id,
+            name: resolution.project.name,
+            rootPath: workspace.path,
+          };
+        }
         const membersRoot = scopeMembersDir(home, scopeId);
         const active = (await readMembers(membersRoot)).filter((m) => m.status === "active");
         const wanted = requested && requested.length > 0 ? new Set(requested) : undefined;
@@ -2060,7 +2097,13 @@ function makeRollbackTool(
           emitResult(ctx, `squad_rollback: ${run.error}`, true);
           return;
         }
-        const git = rollbackExec(execSeam(), resolution.project.rootPath);
+        const workspace = await resolveScopeWorktree({
+          scopeId: resolution.scopeId,
+          project: { id: resolution.project.id, rootPath: resolution.project.rootPath },
+          scopeDataHome: dataHome,
+          acquire: acquireWorkspace,
+        });
+        const git = rollbackExec(execSeam(), workspace.path);
         const performed = parsed.data.confirm
           ? await latestPerformedRollbackRow(dataHome, run.runId)
           : undefined;
@@ -2904,6 +2947,7 @@ const rib: Rib = {
     runAgentTurn = ctx.runAgentTurn;
     getProjects = ctx.getProjects;
     getProviders = ctx.getProviders;
+    acquireWorkspace = ctx.acquireWorkspace;
     // The run-detail key composes from module state the View action sets; registered
     // here (the only hook with the ctx) and unregistered in dispose so a re-boot
     // re-registers cleanly against the new manager.
@@ -3040,6 +3084,7 @@ const rib: Rib = {
     runAgentTurn = undefined;
     getProjects = undefined;
     getProviders = undefined;
+    acquireWorkspace = undefined;
     unregisterRunDetail?.();
     unregisterRunDetail = undefined;
     unregisterReport?.();
@@ -3427,6 +3472,9 @@ async function retireAllAction(): Promise<RibActionResult> {
       }
       await retireCastingName(scopedHome, m.slug);
     }
+    if (!activeCoordinateRuns.has(scopeId)) {
+      await releaseScopeWorktree({ scopeId, scopeDataHome: scopedHome }).catch(() => {});
+    }
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
     return { ok: true, data: { retired } };
   } catch (e) {
@@ -3474,6 +3522,7 @@ async function resetSquadAction(): Promise<RibActionResult> {
     await clearLedger(scopedHome);
     await clearRollbacks(scopedHome);
     await clearProposal(scopedHome);
+    await releaseScopeWorktree({ scopeId, scopeDataHome: scopedHome }).catch(() => {});
 
     await refreshSquadPanels();
     return { ok: true, data: { retired } };
@@ -3582,6 +3631,22 @@ async function setModelAction(action: RibAction): Promise<RibActionResult> {
   }
 }
 
+// A scope's leased worktree (keelson #524) is held for the scope's lifetime; release
+// it once the scope empties out — the "on close" signal for the persistent lease.
+// Never while a coordinator run is live: removing its worktree would yank the run's
+// files mid-flight, so a run holds the lease until it settles.
+async function releaseWorkspaceIfScopeEmpty(home: string, scopeId: string): Promise<void> {
+  if (activeCoordinateRuns.has(scopeId)) return;
+  const remaining = (await readMembers(scopeMembersDir(home, scopeId))).filter(
+    (m) => m.status === "active",
+  );
+  if (remaining.length === 0) {
+    await releaseScopeWorktree({ scopeId, scopeDataHome: scopeDataHome(home, scopeId) }).catch(
+      () => {},
+    );
+  }
+}
+
 async function retireAction(action: RibAction): Promise<RibActionResult> {
   const payload = (action.payload ?? {}) as Record<string, unknown>;
   const slug = asNonEmptyString(payload.slug);
@@ -3596,6 +3661,7 @@ async function retireAction(action: RibAction): Promise<RibActionResult> {
     await refreshWorkflow?.("squad-roster")?.catch(() => {});
     // Retiring the last member re-hides the member-gated coordinator panel.
     await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+    await releaseWorkspaceIfScopeEmpty(home, scopeId);
     return { ok: true, data: { slug } };
   } catch (e) {
     // retireMember throws when the dir is already gone, but a registry entry can linger
