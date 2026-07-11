@@ -1126,6 +1126,7 @@ function makeOpenPrTool(
         }
         const workspace = await reuseScopeWorktree({
           scopeId: resolution.scopeId,
+          projectId: resolution.project.id,
           rootPath: resolution.project.rootPath,
           scopeDataHome: scopeDataHome(home, resolution.scopeId),
         });
@@ -1255,6 +1256,7 @@ async function runResolveReviewFlow(opts: {
 
   const workspace = await reuseScopeWorktree({
     scopeId,
+    projectId: resolution.project.id,
     rootPath: resolution.project.rootPath,
     scopeDataHome: dataHome,
   });
@@ -1498,6 +1500,7 @@ function makeViewDiffTool(
         }
         const workspace = await reuseScopeWorktree({
           scopeId: resolution.scopeId,
+          projectId: resolution.project.id,
           rootPath: resolution.project.rootPath,
           scopeDataHome: scopeDataHome(home, resolution.scopeId),
         });
@@ -2096,6 +2099,7 @@ function makeRollbackTool(
         }
         const workspace = await reuseScopeWorktree({
           scopeId: resolution.scopeId,
+          projectId: resolution.project.id,
           rootPath: resolution.project.rootPath,
           scopeDataHome: dataHome,
         });

@@ -24,17 +24,25 @@ import type { RibContext, WorkspaceLease } from "@keelson/shared";
 // `project.rootPath` — the legacy behavior, unchanged.
 //
 // The seam is acquire-only (no list / release-by-id), so reuse holds the lease
-// object in memory. The `{ leaseId, worktreePath }` record persists so a restart
-// rebinds to the same checkout by PATH (the open_pr → resolve_review chain stays
-// on one branch across a restart); a rebound lease has no release closure, so it
-// falls back to `git worktree remove` and lets host reconcile drop the row.
+// object in memory. The `{ projectId, leaseId, worktreePath }` record persists so a
+// restart rebinds to the same checkout by PATH (the open_pr → resolve_review chain
+// stays on one branch across a restart); a rebound lease has no release closure, so
+// releasing it only clears the record and leaves the worktree for host cleanup
+// (keelson #555). The record's projectId guards against reusing a worktree after a
+// scope's bound project changed.
 
 const WORKSPACE_FILE = "workspace.json";
 
-const heldLeases = new Map<string, WorkspaceLease>();
+interface HeldLease {
+  lease: WorkspaceLease;
+  projectId: string;
+}
+
+const heldLeases = new Map<string, HeldLease>();
 const acquiring = new Map<string, Promise<WorkspaceLease>>();
 
 interface WorkspaceRecord {
+  projectId: string;
   leaseId: string;
   worktreePath: string;
 }
@@ -59,9 +67,14 @@ async function readWorkspaceRecord(scopeDataHome: string): Promise<WorkspaceReco
   }
   try {
     const parsed = JSON.parse(raw) as Partial<WorkspaceRecord>;
-    if (typeof parsed?.leaseId !== "string" || !parsed.leaseId) return undefined;
+    if (typeof parsed?.projectId !== "string" || !parsed.projectId) return undefined;
+    if (typeof parsed.leaseId !== "string" || !parsed.leaseId) return undefined;
     if (typeof parsed.worktreePath !== "string" || !parsed.worktreePath) return undefined;
-    return { leaseId: parsed.leaseId, worktreePath: parsed.worktreePath };
+    return {
+      projectId: parsed.projectId,
+      leaseId: parsed.leaseId,
+      worktreePath: parsed.worktreePath,
+    };
   } catch {
     return undefined;
   }
@@ -76,21 +89,26 @@ async function clearWorkspaceRecord(scopeDataHome: string): Promise<void> {
   await rm(join(scopeDataHome, WORKSPACE_FILE), { force: true });
 }
 
-// The scope's existing worktree, if one is live (in-memory handle, then persisted
-// path). Returns undefined when nothing is established — the caller decides whether
-// to acquire (a work producer) or fall back to the project root (a consumer).
+// The scope's existing worktree, if one is live for THIS project (in-memory handle,
+// then persisted path). A projectId mismatch — the scope rebound to a different
+// project — is ignored, never mis-routed to the old project's checkout. Returns
+// undefined when nothing is established; the caller decides whether to acquire (a
+// work producer) or fall back to the project root (a consumer).
 async function existingScopeWorktree(
   scopeId: string,
+  projectId: string,
   scopeDataHome: string,
 ): Promise<string | undefined> {
   const held = heldLeases.get(scopeId);
-  if (held) {
-    if (existsSync(held.path)) return held.path;
+  if (held?.projectId === projectId) {
+    if (existsSync(held.lease.path)) return held.lease.path;
     // The checkout vanished under us (manual removal); drop the stale handle.
     heldLeases.delete(scopeId);
   }
   const persisted = await readWorkspaceRecord(scopeDataHome);
-  if (persisted && existsSync(persisted.worktreePath)) return persisted.worktreePath;
+  if (persisted && persisted.projectId === projectId && existsSync(persisted.worktreePath)) {
+    return persisted.worktreePath;
+  }
   return undefined;
 }
 
@@ -106,7 +124,7 @@ export async function acquireScopeWorktree(opts: {
 }): Promise<ResolvedWorkspace> {
   const { scopeId, project, scopeDataHome, acquire } = opts;
 
-  const existing = await existingScopeWorktree(scopeId, scopeDataHome);
+  const existing = await existingScopeWorktree(scopeId, project.id, scopeDataHome);
   if (existing) return { path: existing, leased: true };
 
   if (!acquire) return { path: project.rootPath, leased: false };
@@ -115,11 +133,20 @@ export async function acquireScopeWorktree(opts: {
   if (!inflight) {
     inflight = acquire({ projectId: project.id, purpose: `squad:${scopeId}` })
       .then(async (lease) => {
-        heldLeases.set(scopeId, lease);
-        await writeWorkspaceRecord(scopeDataHome, {
-          leaseId: lease.id,
-          worktreePath: lease.path,
-        });
+        heldLeases.set(scopeId, { lease, projectId: project.id });
+        // Persist is only a rebind convenience — a write failure must NOT defeat the
+        // isolation we just acquired, so swallow it (restart-rebind is degraded).
+        try {
+          await writeWorkspaceRecord(scopeDataHome, {
+            projectId: project.id,
+            leaseId: lease.id,
+            worktreePath: lease.path,
+          });
+        } catch (err) {
+          console.warn(
+            `[rib-squad] leased a workspace for scope "${scopeId}" but persisting its record failed (rebind won't survive a restart): ${errText(err)}`,
+          );
+        }
         return lease;
       })
       .finally(() => acquiring.delete(scopeId));
@@ -130,7 +157,7 @@ export async function acquireScopeWorktree(opts: {
     return { path: lease.path, leased: true };
   } catch (err) {
     console.warn(
-      `[squad] workspace lease acquisition failed for scope "${scopeId}"; using project root: ${errText(err)}`,
+      `[rib-squad] workspace lease acquisition failed for scope "${scopeId}"; using project root: ${errText(err)}`,
     );
     return { path: project.rootPath, leased: false };
   }
@@ -143,10 +170,11 @@ export async function acquireScopeWorktree(opts: {
 // lease branch, not the PR branch its threads live on).
 export async function reuseScopeWorktree(opts: {
   scopeId: string;
+  projectId: string;
   rootPath: string;
   scopeDataHome: string;
 }): Promise<ResolvedWorkspace> {
-  const existing = await existingScopeWorktree(opts.scopeId, opts.scopeDataHome);
+  const existing = await existingScopeWorktree(opts.scopeId, opts.projectId, opts.scopeDataHome);
   return existing ? { path: existing, leased: true } : { path: opts.rootPath, leased: false };
 }
 
@@ -162,13 +190,17 @@ export async function releaseScopeWorktree(opts: {
   scopeDataHome: string;
 }): Promise<void> {
   const { scopeId, scopeDataHome } = opts;
+  // Let an in-flight acquisition settle first — otherwise its post-settle writes
+  // (heldLeases + record) would land after we clear them and leak the lease.
+  const inflight = acquiring.get(scopeId);
+  if (inflight) await inflight.catch(() => {});
   const held = heldLeases.get(scopeId);
   heldLeases.delete(scopeId);
   await clearWorkspaceRecord(scopeDataHome);
   if (held) {
-    await held.release().catch((err) => {
+    await held.lease.release().catch((err) => {
       console.warn(
-        `[squad] failed to release workspace lease for scope "${scopeId}": ${errText(err)}`,
+        `[rib-squad] failed to release workspace lease for scope "${scopeId}": ${errText(err)}`,
       );
     });
   }

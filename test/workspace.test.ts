@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkspaceLease } from "@keelson/shared";
@@ -81,7 +81,7 @@ describe("acquireScopeWorktree", () => {
     expect(res.path).not.toBe(root);
     expect(s.calls()).toBe(1);
     const rec = JSON.parse(await readFile(recordPath(), "utf8"));
-    expect(rec).toEqual({ leaseId: "lease-1", worktreePath: res.path });
+    expect(rec).toEqual({ projectId: "p1", leaseId: "lease-1", worktreePath: res.path });
   });
 
   test("reuses the in-memory lease across calls (acquires once)", async () => {
@@ -165,6 +165,44 @@ describe("acquireScopeWorktree", () => {
     expect(s2.calls()).toBe(1);
   });
 
+  test("re-acquires when the persisted worktree is bound to a different project", async () => {
+    const s = stubAcquire();
+    const a = await acquireScopeWorktree({
+      scopeId: "s1",
+      project: { id: "p1", rootPath: root },
+      scopeDataHome: scopeHome,
+      acquire: s.acquire,
+    });
+    // The scope rebound to a different project; the p1 worktree must not be reused.
+    __resetWorkspaceStateForTest();
+    const s2 = stubAcquire();
+    const b = await acquireScopeWorktree({
+      scopeId: "s1",
+      project: { id: "p2", rootPath: root },
+      scopeDataHome: scopeHome,
+      acquire: s2.acquire,
+    });
+    expect(b.path).not.toBe(a.path);
+    expect(s2.calls()).toBe(1);
+  });
+
+  test("keeps isolation when persisting the record fails", async () => {
+    const s = stubAcquire();
+    // A scopeDataHome nested under a regular file makes writeWorkspaceRecord's mkdir
+    // fail — the acquired lease must still be used, not discarded for the root.
+    const filePath = join(await mkdtemp(join(tmpdir(), "squad-file-")), "not-a-dir");
+    await writeFile(filePath, "x");
+    const res = await acquireScopeWorktree({
+      scopeId: "s1",
+      project: project(),
+      scopeDataHome: join(filePath, "nested"),
+      acquire: s.acquire,
+    });
+    expect(res.leased).toBe(true);
+    expect(res.path).not.toBe(root);
+    expect(s.calls()).toBe(1);
+  });
+
   test("falls back to the project root when acquisition throws", async () => {
     const acquire = async () => {
       throw new Error("project is not a git repository");
@@ -236,6 +274,48 @@ describe("releaseScopeWorktree", () => {
     await releaseScopeWorktree({ scopeId: "never", scopeDataHome: scopeHome });
     expect(existsSync(recordPath())).toBe(false);
   });
+
+  test("waits for an in-flight acquisition and releases the resulting lease", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "squad-lease-race-"));
+    tempDirs.push(dir);
+    let acquireCalled = false;
+    let releaseCalled = false;
+    let settle!: () => void;
+    const acquire = async (): Promise<WorkspaceLease> => {
+      acquireCalled = true;
+      await new Promise<void>((r) => {
+        settle = r;
+      });
+      return {
+        id: "lrace",
+        path: dir,
+        branch: "b",
+        release: async () => {
+          releaseCalled = true;
+        },
+      };
+    };
+    const acquiringP = acquireScopeWorktree({
+      scopeId: "s1",
+      project: project(),
+      scopeDataHome: scopeHome,
+      acquire,
+    });
+    while (!acquireCalled) await new Promise((r) => setTimeout(r, 1));
+    const releasingP = releaseScopeWorktree({ scopeId: "s1", scopeDataHome: scopeHome });
+    settle(); // let the acquisition settle only after release is already awaiting it
+    await acquiringP;
+    await releasingP;
+    expect(releaseCalled).toBe(true);
+    // No leaked state: the post-settle writes were cleared by the release.
+    const after = await reuseScopeWorktree({
+      scopeId: "s1",
+      projectId: "p1",
+      rootPath: root,
+      scopeDataHome: scopeHome,
+    });
+    expect(after.leased).toBe(false);
+  });
 });
 
 describe("reuseScopeWorktree", () => {
@@ -249,6 +329,7 @@ describe("reuseScopeWorktree", () => {
     });
     const res = await reuseScopeWorktree({
       scopeId: "s1",
+      projectId: "p1",
       rootPath: root,
       scopeDataHome: scopeHome,
     });
@@ -259,10 +340,30 @@ describe("reuseScopeWorktree", () => {
   test("falls back to the project root when no worktree is established", async () => {
     const res = await reuseScopeWorktree({
       scopeId: "s1",
+      projectId: "p1",
       rootPath: root,
       scopeDataHome: scopeHome,
     });
     expect(res).toEqual({ path: root, leased: false });
+  });
+
+  test("ignores a persisted worktree bound to a different project", async () => {
+    const s = stubAcquire();
+    await acquireScopeWorktree({
+      scopeId: "s1",
+      project: project(),
+      scopeDataHome: scopeHome,
+      acquire: s.acquire,
+    });
+    __resetWorkspaceStateForTest();
+    // Same scope id, different bound project — must not route to p1's worktree.
+    const res = await reuseScopeWorktree({
+      scopeId: "s1",
+      projectId: "p2",
+      rootPath: "/other/repo",
+      scopeDataHome: scopeHome,
+    });
+    expect(res).toEqual({ path: "/other/repo", leased: false });
   });
 
   test("rebinds to the persisted worktree after in-memory state is lost", async () => {
@@ -276,6 +377,7 @@ describe("reuseScopeWorktree", () => {
     __resetWorkspaceStateForTest();
     const res = await reuseScopeWorktree({
       scopeId: "s1",
+      projectId: "p1",
       rootPath: root,
       scopeDataHome: scopeHome,
     });
