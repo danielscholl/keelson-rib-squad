@@ -1749,14 +1749,15 @@ function makeCoordinateTool(
             activeCoordinateRuns.delete(scopeId);
             pendingSteers.delete(scopeId);
           }
+          // The run has settled (activeCoordinateRuns cleared above) — fire the release
+          // deferred if the last member was retired mid-run. In the finally so it runs
+          // even when runCoordinator throws; never-throws, so it can't mask the error.
+          await releaseWorkspaceIfScopeEmpty(home, scopeId);
         }
         // Push the Run-loop panel to the run's final state (the same publish path cast uses);
         // best-effort, so a refresh failure never masks the run's own result.
         await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
         await refreshWorkflow?.("squad-roster")?.catch(() => {});
-        // The run has settled (activeCoordinateRuns cleared above) — fire the release
-        // that was deferred if the last member was retired mid-run.
-        await releaseWorkspaceIfScopeEmpty(home, scopeId);
         emitResult(ctx, summarizeCoordinator(result), result.status === "error");
       } catch (e) {
         emitResult(ctx, `squad_coordinate failed: ${errText(e)}`, true);
