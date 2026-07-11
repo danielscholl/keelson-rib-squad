@@ -129,6 +129,19 @@ export async function acquireScopeWorktree(opts: {
 
   if (!acquire) return { path: project.rootPath, leased: false };
 
+  // The scope rebound to a different project: release the old project's lease before
+  // acquiring the new one, or overwriting the in-memory handle would strand it. (A
+  // rebound-only stale lease — persisted, no closure — is the keelson #555 gap.)
+  const stale = heldLeases.get(scopeId);
+  if (stale && stale.projectId !== project.id) {
+    heldLeases.delete(scopeId);
+    await stale.lease.release().catch((err) => {
+      console.warn(
+        `[rib-squad] failed to release stale-project workspace lease for scope "${scopeId}": ${errText(err)}`,
+      );
+    });
+  }
+
   let inflight = acquiring.get(scopeId);
   if (!inflight) {
     inflight = acquire({ projectId: project.id, purpose: `squad:${scopeId}` })

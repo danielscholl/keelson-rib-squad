@@ -186,11 +186,32 @@ describe("acquireScopeWorktree", () => {
     expect(s2.calls()).toBe(1);
   });
 
+  test("releases the old in-memory lease when the scope rebinds to a different project", async () => {
+    const s = stubAcquire();
+    const a = await acquireScopeWorktree({
+      scopeId: "s1",
+      project: { id: "p1", rootPath: root },
+      scopeDataHome: scopeHome,
+      acquire: s.acquire,
+    });
+    const b = await acquireScopeWorktree({
+      scopeId: "s1",
+      project: { id: "p2", rootPath: root },
+      scopeDataHome: scopeHome,
+      acquire: s.acquire,
+    });
+    expect(b.path).not.toBe(a.path);
+    expect(s.calls()).toBe(2);
+    expect(s.released.has("lease-1")).toBe(true); // the old project's lease was released
+  });
+
   test("keeps isolation when persisting the record fails", async () => {
     const s = stubAcquire();
     // A scopeDataHome nested under a regular file makes writeWorkspaceRecord's mkdir
     // fail — the acquired lease must still be used, not discarded for the root.
-    const filePath = join(await mkdtemp(join(tmpdir(), "squad-file-")), "not-a-dir");
+    const fileDir = await mkdtemp(join(tmpdir(), "squad-file-"));
+    tempDirs.push(fileDir);
+    const filePath = join(fileDir, "not-a-dir");
     await writeFile(filePath, "x");
     const res = await acquireScopeWorktree({
       scopeId: "s1",
