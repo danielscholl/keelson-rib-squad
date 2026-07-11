@@ -186,6 +186,28 @@ describe("acquireScopeWorktree", () => {
     expect(s2.calls()).toBe(1);
   });
 
+  test("concurrent acquisitions for different projects don't mis-route to one worktree", async () => {
+    const s = stubAcquire();
+    const [a, b] = await Promise.all([
+      acquireScopeWorktree({
+        scopeId: "s1",
+        project: { id: "p1", rootPath: root },
+        scopeDataHome: scopeHome,
+        acquire: s.acquire,
+      }),
+      acquireScopeWorktree({
+        scopeId: "s1",
+        project: { id: "p2", rootPath: root },
+        scopeDataHome: scopeHome,
+        acquire: s.acquire,
+      }),
+    ]);
+    // Serialized, so the second re-evaluates instead of awaiting the first's promise:
+    // each project gets its own worktree rather than p2 mis-routing onto p1's.
+    expect(a.path).not.toBe(b.path);
+    expect(s.calls()).toBe(2);
+  });
+
   test("releases the old in-memory lease when the scope rebinds to a different project", async () => {
     const s = stubAcquire();
     const a = await acquireScopeWorktree({

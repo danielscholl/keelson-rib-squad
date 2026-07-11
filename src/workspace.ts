@@ -39,7 +39,23 @@ interface HeldLease {
 }
 
 const heldLeases = new Map<string, HeldLease>();
-const acquiring = new Map<string, Promise<WorkspaceLease>>();
+
+// Every state-mutating op for a scope (acquire, release) runs under a per-scope
+// chain, so they never interleave — a second acquire for the same scope sees the
+// first's settled lease and reuses it, and a rebind or release can't race a
+// half-finished acquisition. Reads (reuseScopeWorktree) stay lock-free.
+const scopeChains = new Map<string, Promise<unknown>>();
+
+function serializeByScope<T>(scopeId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = scopeChains.get(scopeId) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  const guard = next.catch(() => {});
+  scopeChains.set(scopeId, guard);
+  void guard.then(() => {
+    if (scopeChains.get(scopeId) === guard) scopeChains.delete(scopeId);
+  });
+  return next;
+}
 
 interface WorkspaceRecord {
   projectId: string;
@@ -113,67 +129,61 @@ async function existingScopeWorktree(
 }
 
 // For a work PRODUCER (squad_code / squad_coordinate): reuse the scope's worktree
-// if one is live, else lease a fresh one. Concurrent first-mutations of one scope
-// share a single in-flight acquisition rather than racing two worktrees into being.
-// Falls back to the project root when the seam is absent or acquisition fails.
-export async function acquireScopeWorktree(opts: {
+// if one is live, else lease a fresh one. Serialized per scope, so concurrent
+// first-mutations of one scope share the same worktree (the second sees the first's
+// lease) instead of racing two into being. Falls back to the project root when the
+// seam is absent or acquisition fails.
+export function acquireScopeWorktree(opts: {
   scopeId: string;
   project: { id: string; rootPath: string };
   scopeDataHome: string;
   acquire: RibContext["acquireWorkspace"];
 }): Promise<ResolvedWorkspace> {
   const { scopeId, project, scopeDataHome, acquire } = opts;
+  return serializeByScope(scopeId, async () => {
+    const existing = await existingScopeWorktree(scopeId, project.id, scopeDataHome);
+    if (existing) return { path: existing, leased: true };
 
-  const existing = await existingScopeWorktree(scopeId, project.id, scopeDataHome);
-  if (existing) return { path: existing, leased: true };
+    if (!acquire) return { path: project.rootPath, leased: false };
 
-  if (!acquire) return { path: project.rootPath, leased: false };
+    // The scope rebound to a different project: release the old project's lease
+    // before acquiring the new one, or overwriting the in-memory handle would strand
+    // it. (A rebound-only stale lease — persisted, no closure — is the keelson #555 gap.)
+    const stale = heldLeases.get(scopeId);
+    if (stale && stale.projectId !== project.id) {
+      heldLeases.delete(scopeId);
+      await stale.lease.release().catch((err) => {
+        console.warn(
+          `[rib-squad] failed to release stale-project workspace lease for scope "${scopeId}": ${errText(err)}`,
+        );
+      });
+    }
 
-  // The scope rebound to a different project: release the old project's lease before
-  // acquiring the new one, or overwriting the in-memory handle would strand it. (A
-  // rebound-only stale lease — persisted, no closure — is the keelson #555 gap.)
-  const stale = heldLeases.get(scopeId);
-  if (stale && stale.projectId !== project.id) {
-    heldLeases.delete(scopeId);
-    await stale.lease.release().catch((err) => {
+    let lease: WorkspaceLease;
+    try {
+      lease = await acquire({ projectId: project.id, purpose: `squad:${scopeId}` });
+    } catch (err) {
       console.warn(
-        `[rib-squad] failed to release stale-project workspace lease for scope "${scopeId}": ${errText(err)}`,
+        `[rib-squad] workspace lease acquisition failed for scope "${scopeId}"; using project root: ${errText(err)}`,
       );
-    });
-  }
-
-  let inflight = acquiring.get(scopeId);
-  if (!inflight) {
-    inflight = acquire({ projectId: project.id, purpose: `squad:${scopeId}` })
-      .then(async (lease) => {
-        heldLeases.set(scopeId, { lease, projectId: project.id });
-        // Persist is only a rebind convenience — a write failure must NOT defeat the
-        // isolation we just acquired, so swallow it (restart-rebind is degraded).
-        try {
-          await writeWorkspaceRecord(scopeDataHome, {
-            projectId: project.id,
-            leaseId: lease.id,
-            worktreePath: lease.path,
-          });
-        } catch (err) {
-          console.warn(
-            `[rib-squad] leased a workspace for scope "${scopeId}" but persisting its record failed (rebind won't survive a restart): ${errText(err)}`,
-          );
-        }
-        return lease;
-      })
-      .finally(() => acquiring.delete(scopeId));
-    acquiring.set(scopeId, inflight);
-  }
-  try {
-    const lease = await inflight;
+      return { path: project.rootPath, leased: false };
+    }
+    heldLeases.set(scopeId, { lease, projectId: project.id });
+    // Persist is only a rebind convenience — a write failure must NOT defeat the
+    // isolation we just acquired, so swallow it (restart-rebind is degraded).
+    try {
+      await writeWorkspaceRecord(scopeDataHome, {
+        projectId: project.id,
+        leaseId: lease.id,
+        worktreePath: lease.path,
+      });
+    } catch (err) {
+      console.warn(
+        `[rib-squad] leased a workspace for scope "${scopeId}" but persisting its record failed (rebind won't survive a restart): ${errText(err)}`,
+      );
+    }
     return { path: lease.path, leased: true };
-  } catch (err) {
-    console.warn(
-      `[rib-squad] workspace lease acquisition failed for scope "${scopeId}"; using project root: ${errText(err)}`,
-    );
-    return { path: project.rootPath, leased: false };
-  }
+  });
 }
 
 // For a CONSUMER of the scope's work (open_pr / resolve_review / view_diff /
@@ -198,30 +208,30 @@ export async function reuseScopeWorktree(opts: {
 // restart, closure lost) only clears the record; its worktree is left for host
 // reconcile / `keelson workspace` cleanup — a release-by-id seam would close that
 // gap (keelson #555).
-export async function releaseScopeWorktree(opts: {
+export function releaseScopeWorktree(opts: {
   scopeId: string;
   scopeDataHome: string;
 }): Promise<void> {
   const { scopeId, scopeDataHome } = opts;
-  // Let an in-flight acquisition settle first — otherwise its post-settle writes
-  // (heldLeases + record) would land after we clear them and leak the lease.
-  const inflight = acquiring.get(scopeId);
-  if (inflight) await inflight.catch(() => {});
-  const held = heldLeases.get(scopeId);
-  heldLeases.delete(scopeId);
-  await clearWorkspaceRecord(scopeDataHome);
-  if (held) {
-    await held.lease.release().catch((err) => {
-      console.warn(
-        `[rib-squad] failed to release workspace lease for scope "${scopeId}": ${errText(err)}`,
-      );
-    });
-  }
+  // Serialized behind any in-flight acquisition, so its writes (heldLeases + record)
+  // have already landed and can't reappear after we clear them and leak the lease.
+  return serializeByScope(scopeId, async () => {
+    const held = heldLeases.get(scopeId);
+    heldLeases.delete(scopeId);
+    await clearWorkspaceRecord(scopeDataHome);
+    if (held) {
+      await held.lease.release().catch((err) => {
+        console.warn(
+          `[rib-squad] failed to release workspace lease for scope "${scopeId}": ${errText(err)}`,
+        );
+      });
+    }
+  });
 }
 
-// Test-only: clear the in-memory lease/acquisition maps between cases so the
+// Test-only: clear the in-memory lease + per-scope chain maps between cases so the
 // module-global state does not leak across tests.
 export function __resetWorkspaceStateForTest(): void {
   heldLeases.clear();
-  acquiring.clear();
+  scopeChains.clear();
 }
