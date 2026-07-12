@@ -1722,6 +1722,9 @@ function makeCoordinateTool(
         // can throw and leak a perpetually-running op row; the publish closure reads it at
         // call time, by which point the run has started and it is set.
         let op: OpHandle | undefined;
+        // publish fires after every ledger persist (many per round) — de-dupe op frames so
+        // run_events carries one frame per round/status change, not one per persist.
+        let lastOpFrame = "";
         const runOpts: RunCoordinatorOptions = {
           runAgentTurn: turnSeam,
           membersRoot,
@@ -1733,17 +1736,17 @@ function makeCoordinateTool(
           ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
           abortSignal: controller.signal,
           takeSteers: () => takeSteersFor(scopeId),
-          publish: async () => {
+          publish: async (led) => {
             await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
             await refreshWorkflow?.("squad-roster")?.catch(() => {});
-            if (op) {
-              const led = await loadLedger(dataHome).catch(() => undefined);
-              if (led)
-                op.progress(`round ${led.round} · ${led.status}`, {
-                  round: led.round,
-                  status: led.status,
-                });
-            }
+            if (!op) return;
+            const frame = `${led.round}:${led.status}`;
+            if (frame === lastOpFrame) return;
+            lastOpFrame = frame;
+            op.progress(`round ${led.round} · ${led.status}`, {
+              round: led.round,
+              status: led.status,
+            });
           },
           ...(project ? { project } : {}),
           ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),

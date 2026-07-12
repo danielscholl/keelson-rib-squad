@@ -805,8 +805,11 @@ export interface RunCoordinatorOptions {
   // Injected clock for deterministic tests; defaults to wall-clock.
   now?: () => string;
   // Best-effort progress publisher invoked after each ledger persist so the host can push a
-  // fresh Run-loop board per round. Undefined leaves persistence byte-for-byte as today.
-  publish?: () => void | Promise<void>;
+  // fresh Run-loop board per round. Receives the just-persisted ledger so a consumer can read
+  // the round/status without re-reading from disk (persist fires many times per round — a
+  // consumer that emits per-round frames should de-dupe). Undefined leaves persistence
+  // byte-for-byte as today.
+  publish?: (ledger: CoordinatorLedger) => void | Promise<void>;
   takeoverNote?: string;
 }
 
@@ -1572,7 +1575,7 @@ export async function runCoordinator(opts: RunCoordinatorOptions): Promise<RunCo
     // run loop (a try/catch can't rescue a hung refresh — only not awaiting it can).
     void (async () => {
       try {
-        await opts.publish?.();
+        await opts.publish?.(next);
       } catch (e) {
         warnLoop(`live board publish failed (best-effort): ${errText(e)}`);
       }
