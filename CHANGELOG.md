@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.24.0...v0.25.0) (2026-07-12)
+
+
+### Added
+
+* **coordinator:** detach squad_coordinate onto the op registry ([#220](https://github.com/danielscholl/keelson-rib-squad/issues/220)) ([c2c5fa8](https://github.com/danielscholl/keelson-rib-squad/commit/c2c5fa8c0f4df8edba74447b6096f8683553be89)), closes [#217](https://github.com/danielscholl/keelson-rib-squad/issues/217)
+* **workspace:** run scope mutations in a leased worktree ([#218](https://github.com/danielscholl/keelson-rib-squad/issues/218)) ([e95026f](https://github.com/danielscholl/keelson-rib-squad/commit/e95026fcd6d45975a6ce6583495f2da29420526a))
+
 ## [0.24.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.23.0...v0.24.0) (2026-07-10)
 
 
