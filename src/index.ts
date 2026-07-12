@@ -1718,7 +1718,6 @@ function makeCoordinateTool(
           return;
         }
         const controller = new AbortController();
-        activeCoordinateRuns.set(scopeId, controller);
         // Assigned just before dispatch (below) so nothing between registration and the run
         // can throw and leak a perpetually-running op row; the publish closure reads it at
         // call time, by which point the run has started and it is set.
@@ -1784,6 +1783,10 @@ function makeCoordinateTool(
           onSteer: (note) => queueSteer(scopeId, note),
         });
         const unlinkOpAbort = op ? relayAbort(op.signal, controller) : () => {};
+        // Mark the scope live only now — after setup (op registration, exec seam) can no
+        // longer throw. A failure above lands in the outer catch with no live entry to
+        // strand and no settleRun to run; from here every path reaches settleRun.
+        activeCoordinateRuns.set(scopeId, controller);
 
         if (op) {
           const handle = op;

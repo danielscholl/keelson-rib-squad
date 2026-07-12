@@ -842,6 +842,50 @@ describe("squad_coordinate tool diagnostics", () => {
     expect(capture.out().content).toContain("Coordinator —");
     expect(capture.out().content).toContain("finished it");
   });
+
+  test("a registerOp that throws unwinds cleanly and does not strand the scope live", async () => {
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    const throwingCtx = {
+      getDataDir: () => home,
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+      registerOp: () => {
+        throw new Error("op registry down");
+      },
+    } as unknown as RibContext;
+    const toolsA = rib.registerTools?.(throwingCtx) ?? [];
+    const captureA = captureTool();
+    await registeredTool(toolsA, "squad_coordinate").execute(
+      { task: "ship it" },
+      captureA.ctx as never,
+    );
+    expect(captureA.out().isError).toBe(true);
+    expect(captureA.out().content).toContain("failed");
+
+    // The failed setup must not have marked the scope live — a fresh run dispatches rather
+    // than erroring "already has a live coordinator run".
+    const op = makeOpStub("op-after-throw");
+    const goodCtx = {
+      getDataDir: () => home,
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+      registerOp: op.register,
+    } as unknown as RibContext;
+    const toolsB = rib.registerTools?.(goodCtx) ?? [];
+    const captureB = captureTool();
+    await registeredTool(toolsB, "squad_coordinate").execute(
+      { task: "ship it" },
+      captureB.ctx as never,
+    );
+    expect(captureB.out().isError).toBe(false);
+    expect(captureB.out().content).toContain("op-after-throw");
+    await waitFor(() => op.settled() !== undefined);
+  });
 });
 
 describe("runCoordinator loop", () => {
