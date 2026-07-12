@@ -3,6 +3,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   CanvasBoardView,
+  OpHandle,
   Project,
   Rib,
   RibAction,
@@ -51,6 +52,7 @@ import {
   LEDGER_STATUS_ACTIVE,
   loadLedger,
   RUN_STATUS_ABORTED,
+  type RunCoordinatorOptions,
   type RunCoordinatorResult,
   runCoordinator,
   saveLedger,
@@ -152,6 +154,12 @@ let getProviders: RibContext["getProviders"];
 // leased worktree instead of the operator's checkout (keelson #524). Absent on an
 // older harness — the rib degrades to project.rootPath.
 let acquireWorkspace: RibContext["acquireWorkspace"];
+// Optional durable-op seam (keelson #526): when present, squad_coordinate registers its
+// coordinator loop as a run, returns the run id at once, and streams round frames — so an
+// MCP client isn't blocked for the whole multi-round run (#520). stop/steer route through
+// the same per-scope machinery squad_stop/squad_steer use. Absent on an older harness — the
+// rib degrades to blocking the tool call until the loop settles.
+let registerOp: RibContext["registerOp"];
 // The run-detail drill-down: an imperatively-registered snapshot whose composer reads
 // the board the last View action selected. Cleared (and unregistered) in dispose.
 let snapshots: SnapshotManager | undefined;
@@ -1607,7 +1615,7 @@ function makeCoordinateTool(
   return {
     name: "squad_coordinate",
     description:
-      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is a text dispatch, a confined coding turn that edits the repo (when `project` is set and the member is code-capable), or authoring a reusable workflow DAG (persisted as an artifact for the operator to run). `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` (1–100), `maxStall`, and `maxResets` (each 1–20) cap the loop; `maxTokens` caps cumulative run token usage; `verify` (optional shell commands, e.g. 'bun test', run via `bash -c` at the done-gate — a red exit vetoes done; NOT prose acceptance criteria). Returns the final summary + a round-by-round trace. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
+      "Run the squad's Magentic coordinator on a task: a standing manager turn plans, delegates one step at a time to the best-suited member, tracks progress in a durable ledger, and stops when the goal is met or it gives up. Each step is a text dispatch, a confined coding turn that edits the repo (when `project` is set and the member is code-capable), or authoring a reusable workflow DAG (persisted as an artifact for the operator to run). `task` is the goal; `members` (optional slugs) limits the team (default: all active); `project` (optional id/name) confines code steps to that repo (omit for a reasoning-only run); `maxRounds` (1–100), `maxStall`, and `maxResets` (each 1–20) cap the loop; `maxTokens` caps cumulative run token usage; `verify` (optional shell commands, e.g. 'bun test', run via `bash -c` at the done-gate — a red exit vetoes done; NOT prose acceptance criteria). On a harness with the op registry it returns a run id at once (a multi-round run outlives one tool call) — poll run_status for the final summary + round-by-round trace and run_events for progress; otherwise it blocks and returns the summary directly. NOT for a single one-off question (squad_dispatch) or a single direct code edit (squad_code).",
     inputSchema: coordinateSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -1710,54 +1718,112 @@ function makeCoordinateTool(
           return;
         }
         const controller = new AbortController();
-        const unlinkAbort = relayAbort(ctx.abortSignal, controller);
-        activeCoordinateRuns.set(scopeId, controller);
-        let result: RunCoordinatorResult;
-        try {
-          result = await runCoordinator({
-            runAgentTurn: turnSeam,
-            membersRoot,
-            dataHome,
-            roster,
-            task,
-            scopeId,
-            ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
-            ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
-            abortSignal: controller.signal,
-            takeSteers: () => takeSteersFor(scopeId),
-            publish: async () => {
-              await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
-              await refreshWorkflow?.("squad-roster")?.catch(() => {});
-            },
-            ...(project ? { project } : {}),
-            ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
-            ...(memorySeam ? { getMemory: memorySeam } : {}),
-            ...(execSeam ? { getExec: execSeam() } : {}),
-            ...(verify.length > 0 ? { verify } : {}),
-            ...(takeoverNote ? { takeoverNote } : {}),
-            limits: {
-              ...DEFAULT_LIMITS,
-              ...(maxRounds !== undefined ? { maxRounds } : {}),
-              ...(maxStall !== undefined ? { maxStall } : {}),
-              ...(maxResets !== undefined ? { maxResets } : {}),
-              ...(maxTokens !== undefined ? { maxTokens } : {}),
-            },
-          });
-        } finally {
-          unlinkAbort();
+        // Assigned just before dispatch (below) so nothing between registration and the run
+        // can throw and leak a perpetually-running op row; the publish closure reads it at
+        // call time, by which point the run has started and it is set.
+        let op: OpHandle | undefined;
+        // publish fires after every ledger persist (many per round) — de-dupe op frames so
+        // run_events carries one frame per round/status change, not one per persist.
+        let lastOpFrame = "";
+        const runOpts: RunCoordinatorOptions = {
+          runAgentTurn: turnSeam,
+          membersRoot,
+          dataHome,
+          roster,
+          task,
+          scopeId,
+          ...(normalizedManagerProvider ? { managerProvider: normalizedManagerProvider } : {}),
+          ...(coherentManagerModel ? { managerModel: coherentManagerModel } : {}),
+          abortSignal: controller.signal,
+          takeSteers: () => takeSteersFor(scopeId),
+          publish: async (led) => {
+            await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+            await refreshWorkflow?.("squad-roster")?.catch(() => {});
+            if (!op) return;
+            const frame = `${led.round}:${led.status}`;
+            if (frame === lastOpFrame) return;
+            lastOpFrame = frame;
+            op.progress(`round ${led.round} · ${led.status}`, {
+              round: led.round,
+              status: led.status,
+            });
+          },
+          ...(project ? { project } : {}),
+          ...(runWorkflowSeam ? { runWorkflow: runWorkflowSeam } : {}),
+          ...(memorySeam ? { getMemory: memorySeam } : {}),
+          ...(execSeam ? { getExec: execSeam() } : {}),
+          ...(verify.length > 0 ? { verify } : {}),
+          ...(takeoverNote ? { takeoverNote } : {}),
+          limits: {
+            ...DEFAULT_LIMITS,
+            ...(maxRounds !== undefined ? { maxRounds } : {}),
+            ...(maxStall !== undefined ? { maxStall } : {}),
+            ...(maxResets !== undefined ? { maxResets } : {}),
+            ...(maxTokens !== undefined ? { maxTokens } : {}),
+          },
+        };
+        // Clear the live-run tracking and fire the deferred workspace release (if the last
+        // member was retired mid-run). Never throws, so it can't mask a run's own result.
+        const settleRun = async (): Promise<void> => {
           if (activeCoordinateRuns.get(scopeId) === controller) {
             activeCoordinateRuns.delete(scopeId);
             pendingSteers.delete(scopeId);
           }
-          // The run has settled (activeCoordinateRuns cleared above) — fire the release
-          // deferred if the last member was retired mid-run. In the finally so it runs
-          // even when runCoordinator throws; never-throws, so it can't mask the error.
           await releaseWorkspaceIfScopeEmpty(home, scopeId);
+          // Push the Run-loop panel to the run's final state; best-effort.
+          await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
+          await refreshWorkflow?.("squad-roster")?.catch(() => {});
+        };
+
+        // Register the run as a durable op when the seam is present — last, so the block
+        // above can't throw and orphan it. run_cancel aborts its signal (relayed to the
+        // controller, stopping the loop like squad_stop); run_steer delivers a note into the
+        // same queue squad_steer drains.
+        op = registerOp?.({
+          kind: "squad_coordinate",
+          title: task.replace(/\s+/g, " ").trim().slice(0, 80),
+          projectId: project?.id ?? null,
+          onSteer: (note) => queueSteer(scopeId, note),
+        });
+        const unlinkOpAbort = op ? relayAbort(op.signal, controller) : () => {};
+        // Mark the scope live only now — after setup (op registration, exec seam) can no
+        // longer throw. A failure above lands in the outer catch with no live entry to
+        // strand and no settleRun to run; from here every path reaches settleRun.
+        activeCoordinateRuns.set(scopeId, controller);
+
+        if (op) {
+          const handle = op;
+          // Detached: return the run id now; the loop runs in the background (its own
+          // controller, decoupled from this request) and settles the op, so an MCP client
+          // polls run_status/run_events instead of blocking for the whole run (#520).
+          void (async () => {
+            try {
+              const result = await runCoordinator(runOpts);
+              handle.done({ status: result.status, summary: summarizeCoordinator(result) });
+            } catch (e) {
+              handle.error(`squad_coordinate failed: ${errText(e)}`);
+            } finally {
+              unlinkOpAbort();
+              await settleRun();
+            }
+          })();
+          emitResult(
+            ctx,
+            `squad_coordinate: dispatched run ${handle.id} for scope "${scopeId}". Poll run_status("${handle.id}") for the summary and run_events("${handle.id}") for round progress; stop with squad_stop (or run_cancel), steer with squad_steer (or run_steer).`,
+          );
+          return;
         }
-        // Push the Run-loop panel to the run's final state (the same publish path cast uses);
-        // best-effort, so a refresh failure never masks the run's own result.
-        await refreshWorkflow?.("squad-coordinator")?.catch(() => {});
-        await refreshWorkflow?.("squad-roster")?.catch(() => {});
+
+        // Blocking fallback (older harness with no op registry): await the loop and return
+        // the summary directly, tying the run to this request's abort signal as before.
+        const unlinkAbort = relayAbort(ctx.abortSignal, controller);
+        let result: RunCoordinatorResult;
+        try {
+          result = await runCoordinator(runOpts);
+        } finally {
+          unlinkAbort();
+          await settleRun();
+        }
         emitResult(ctx, summarizeCoordinator(result), result.status === "error");
       } catch (e) {
         emitResult(ctx, `squad_coordinate failed: ${errText(e)}`, true);
@@ -1770,7 +1836,7 @@ function makeStopTool(projectsSeam: RibContext["getProjects"]): ToolDefinition {
   return {
     name: "squad_stop",
     description:
-      "Stop the live coordinator run for the resolved squad scope. `project` (optional id/name) resolves scope like squad_coordinate — an unknown project errors; with no project and no selection it stops the default scope. Returns once the stop has been requested. NOT for listing past runs (squad_runs) or starting a run (squad_coordinate).",
+      "Stop the live coordinator run for the resolved squad scope. `project` (optional id/name) resolves scope like squad_coordinate — an unknown project errors; with no project and no selection it stops the default scope. Returns once the stop has been requested. A detached run can also be stopped by its run id via the generic run_cancel. NOT for listing past runs (squad_runs) or starting a run (squad_coordinate).",
     inputSchema: stopSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -1817,7 +1883,7 @@ function makeSteerTool(projectsSeam: RibContext["getProjects"]): ToolDefinition 
   return {
     name: "squad_steer",
     description:
-      "Inject an operator instruction into the live coordinator run for the resolved squad scope; the run folds it into its facts and honors it on the next round. `project` (optional id/name) resolves scope like squad_coordinate. Errors when no run is live in scope. NOT for starting a run (squad_coordinate) or stopping one (squad_stop).",
+      "Inject an operator instruction into the live coordinator run for the resolved squad scope; the run folds it into its facts and honors it on the next round. `project` (optional id/name) resolves scope like squad_coordinate. Errors when no run is live in scope. A detached run can also be steered by its run id via the generic run_steer. NOT for starting a run (squad_coordinate) or stopping one (squad_stop).",
     inputSchema: steerSchema,
     state_changing: true,
     async execute(input, ctx) {
@@ -2198,6 +2264,17 @@ function stopCoordinateScope(scopeId: string): { ok: true } | { ok: false; error
   return { ok: true };
 }
 
+// Queue an operator steer for the scope's live run to drain at its next round. Trims and
+// drops empties; no liveness check — the op registry only delivers run_steer to a live op,
+// and steerCoordinateScope (the squad_steer path) guards liveness before calling.
+function queueSteer(scopeId: string, instruction: string): void {
+  const trimmed = instruction.trim();
+  if (!trimmed) return;
+  const queued = pendingSteers.get(scopeId) ?? [];
+  queued.push(trimmed);
+  pendingSteers.set(scopeId, queued);
+}
+
 function steerCoordinateScope(
   scopeId: string,
   instruction: string,
@@ -2208,9 +2285,7 @@ function steerCoordinateScope(
   if (!controller || controller.signal.aborted) {
     return { ok: false, error: `no live coordinator run in scope "${scopeId}"` };
   }
-  const queued = pendingSteers.get(scopeId) ?? [];
-  queued.push(trimmed);
-  pendingSteers.set(scopeId, queued);
+  queueSteer(scopeId, trimmed);
   return { ok: true };
 }
 
@@ -2958,6 +3033,7 @@ const rib: Rib = {
     getProjects = ctx.getProjects;
     getProviders = ctx.getProviders;
     acquireWorkspace = ctx.acquireWorkspace;
+    registerOp = ctx.registerOp;
     // The run-detail key composes from module state the View action sets; registered
     // here (the only hook with the ctx) and unregistered in dispose so a re-boot
     // re-registers cleanly against the new manager.
@@ -3095,6 +3171,7 @@ const rib: Rib = {
     getProjects = undefined;
     getProviders = undefined;
     acquireWorkspace = undefined;
+    registerOp = undefined;
     unregisterRunDetail?.();
     unregisterRunDetail = undefined;
     unregisterReport?.();

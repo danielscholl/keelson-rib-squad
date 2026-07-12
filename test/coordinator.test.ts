@@ -7,7 +7,11 @@ import { promisify } from "node:util";
 import type {
   MemoryTools,
   MessageChunk,
+  OpHandle,
   RecallResponse,
+  RegisterOpRequest,
+  RibAgentTurn,
+  RibAgentTurnRequest,
   RibContext,
   RibExec,
   ToolDefinition,
@@ -189,6 +193,55 @@ function captureTool(): { ctx: unknown; out: () => { content: string; isError: b
     },
     out: () => ({ content, isError }),
   };
+}
+
+type OpEvent =
+  | { kind: "log" | "progress"; message: string; data?: unknown }
+  | { kind: "done"; result?: unknown }
+  | { kind: "error"; message: string };
+
+// A stand-in for the host op registry (keelson #526): captures the registration request,
+// records frames, and exposes an abortable signal so a test can simulate run_cancel/run_steer.
+function makeOpStub(id = "op-test-1") {
+  const controller = new AbortController();
+  const events: OpEvent[] = [];
+  let settled: "done" | "error" | undefined;
+  let request: RegisterOpRequest | undefined;
+  const handle: OpHandle = {
+    id,
+    signal: controller.signal,
+    log: (message, data) => events.push({ kind: "log", message, data }),
+    progress: (message, data) => events.push({ kind: "progress", message, data }),
+    done: (result) => {
+      settled ??= "done";
+      events.push({ kind: "done", result });
+    },
+    error: (message) => {
+      settled ??= "error";
+      events.push({ kind: "error", message });
+    },
+  };
+  return {
+    register: (req: RegisterOpRequest): OpHandle => {
+      request = req;
+      return handle;
+    },
+    cancel: () => controller.abort(),
+    steer: (note: string) => request?.onSteer?.(note),
+    request: () => request,
+    events: () => events,
+    settled: () => settled,
+    result: () =>
+      events.find((e): e is Extract<OpEvent, { kind: "done" }> => e.kind === "done")?.result,
+  };
+}
+
+async function waitFor(pred: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = performance.now();
+  while (!pred()) {
+    if (performance.now() - start > timeoutMs) throw new Error("waitFor: timed out");
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 
 // A memory seam that captures every writeback (so a test can assert what the loop recorded)
@@ -677,6 +730,161 @@ describe("squad_coordinate tool diagnostics", () => {
       "Worked by: atlas (copilot) contributed — 900 in / 120 out",
     );
     expect(capture.out().content).toContain("Tokens: 900 in / 120 out");
+  });
+
+  test("detaches onto the op registry: returns a run id and settles the op with the summary", async () => {
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    const op = makeOpStub();
+    const ctx = {
+      getDataDir: () => home,
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+      registerOp: op.register,
+    } as unknown as RibContext;
+    const tools = rib.registerTools?.(ctx) ?? [];
+    const capture = captureTool();
+
+    await registeredTool(tools, "squad_coordinate").execute(
+      { task: "ship it" },
+      capture.ctx as never,
+    );
+
+    // The tool result is a prompt dispatch (the run id), NOT the summary — that lands on the op.
+    expect(capture.out().isError).toBe(false);
+    expect(capture.out().content).toContain("op-test-1");
+    expect(capture.out().content).toContain("run_status");
+    expect(capture.out().content).not.toContain("finished it");
+    // Registered as a steerable squad_coordinate run.
+    expect(op.request()?.kind).toBe("squad_coordinate");
+    expect(op.request()?.title).toBeTruthy();
+    expect(typeof op.request()?.onSteer).toBe("function");
+
+    await waitFor(() => op.settled() !== undefined);
+    expect(op.settled()).toBe("done");
+    const result = op.result() as { status: string; summary: string };
+    expect(result.status).toBe("done");
+    expect(result.summary).toContain("finished it");
+    // Round progress reached run_events via at least one progress frame (publish is fire-and-forget).
+    await waitFor(() => op.events().some((e) => e.kind === "progress"));
+  });
+
+  test("run_cancel aborts a detached run: op.signal stops the loop", async () => {
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    const op = makeOpStub("op-cancel-1");
+    // A manager turn that resolves only once the run is aborted, so the loop stays live until
+    // run_cancel relays op.signal to the run controller.
+    const ctx = {
+      getDataDir: () => home,
+      runAgentTurn: (req: RibAgentTurnRequest): RibAgentTurn => ({
+        stream: oneShot(),
+        result: new Promise((resolve) => {
+          if (req.abortSignal?.aborted) return resolve({ status: "ok" as const, text: "" });
+          req.abortSignal?.addEventListener(
+            "abort",
+            () => resolve({ status: "ok" as const, text: "" }),
+            { once: true },
+          );
+        }),
+      }),
+      registerOp: op.register,
+    } as unknown as RibContext;
+    const tools = rib.registerTools?.(ctx) ?? [];
+    const capture = captureTool();
+
+    await registeredTool(tools, "squad_coordinate").execute(
+      { task: "ship it" },
+      capture.ctx as never,
+    );
+    expect(op.settled()).toBeUndefined();
+
+    op.cancel();
+
+    await waitFor(() => op.settled() !== undefined);
+    expect(op.settled()).toBe("done");
+    expect((op.result() as { status: string }).status).toBe("aborted");
+  });
+
+  test("without the op registry, the tool blocks and returns the summary directly (fallback)", async () => {
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    const ctx = {
+      getDataDir: () => home,
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+    } as unknown as RibContext;
+    const tools = rib.registerTools?.(ctx) ?? [];
+    const capture = captureTool();
+
+    await registeredTool(tools, "squad_coordinate").execute(
+      { task: "ship it" },
+      capture.ctx as never,
+    );
+
+    expect(capture.out().isError).toBe(false);
+    expect(capture.out().content).toContain("Coordinator —");
+    expect(capture.out().content).toContain("finished it");
+  });
+
+  test("a registerOp that throws unwinds cleanly and does not strand the scope live", async () => {
+    await scaffoldMember(scopeMembersDir(home, DEFAULT_SCOPE_ID), {
+      slug: "atlas",
+      name: "Atlas",
+      role: "Engineer",
+      charter: "# Atlas",
+      status: "active",
+      createdAt: NOW,
+    });
+    const throwingCtx = {
+      getDataDir: () => home,
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+      registerOp: () => {
+        throw new Error("op registry down");
+      },
+    } as unknown as RibContext;
+    const toolsA = rib.registerTools?.(throwingCtx) ?? [];
+    const captureA = captureTool();
+    await registeredTool(toolsA, "squad_coordinate").execute(
+      { task: "ship it" },
+      captureA.ctx as never,
+    );
+    expect(captureA.out().isError).toBe(true);
+    expect(captureA.out().content).toContain("failed");
+
+    // The failed setup must not have marked the scope live — a fresh run dispatches rather
+    // than erroring "already has a live coordinator run".
+    const op = makeOpStub("op-after-throw");
+    const goodCtx = {
+      getDataDir: () => home,
+      runAgentTurn: queuedRun(['ok\n{"action":"done","summary":"finished it"}']),
+      registerOp: op.register,
+    } as unknown as RibContext;
+    const toolsB = rib.registerTools?.(goodCtx) ?? [];
+    const captureB = captureTool();
+    await registeredTool(toolsB, "squad_coordinate").execute(
+      { task: "ship it" },
+      captureB.ctx as never,
+    );
+    expect(captureB.out().isError).toBe(false);
+    expect(captureB.out().content).toContain("op-after-throw");
+    await waitFor(() => op.settled() !== undefined);
   });
 });
 
