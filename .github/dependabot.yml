@@ -37,6 +37,14 @@ updates:
     labels:
       - dependencies
       - documentation
+    # astro check (@astrojs/check -> @astrojs/language-server) drives the docs
+    # typecheck through TypeScript's programmatic LanguageService API, which the
+    # TS7 native compiler does not yet expose — a TS major bump crashes the check.
+    # Hold docs on TS 6 until the Astro toolchain supports the new TS7 API.
+    ignore:
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
     groups:
       astro:
         patterns:
