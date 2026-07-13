@@ -46,15 +46,21 @@ jobs:
           branch=$(cat artifact/pr/HEAD_REF)
           for f in bun.lock docs/bun.lock; do
             [ -f "artifact/$f" ] || continue
+            # Read the base64 body from a file via -F content=@file: gh's @file
+            # read syntax is honored only by -F, not -f (a `-f content=@file`
+            # uploads the literal string "@file" and the Contents API 422s), and
+            # reading from a file keeps the body out of argv — a large
+            # docs/bun.lock base64 (>128 KiB) would otherwise blow past Linux's
+            # per-argument limit and gh would fail to start.
             base64 -w0 "artifact/$f" > /tmp/content.b64
             sha=$(gh api "repos/$REPO/contents/$f?ref=$branch" --jq .sha 2>/dev/null || true)
             if [ -n "$sha" ]; then
               gh api --method PUT "repos/$REPO/contents/$f" \
                 -f message="build(deps): sync $f with Dependabot manifest bump" \
-                -f content=@/tmp/content.b64 -f branch="$branch" -f sha="$sha"
+                -F content=@/tmp/content.b64 -f branch="$branch" -f sha="$sha"
             else
               gh api --method PUT "repos/$REPO/contents/$f" \
                 -f message="build(deps): sync $f with Dependabot manifest bump" \
-                -f content=@/tmp/content.b64 -f branch="$branch"
+                -F content=@/tmp/content.b64 -f branch="$branch"
             fi
           done
