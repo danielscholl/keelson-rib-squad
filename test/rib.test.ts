@@ -29,7 +29,7 @@ function wf(name: string) {
   return wfs.find((w) => (w.definition as { name?: string }).name === name);
 }
 function nodes(name: string): RawNode[] {
-  return ((wf(name)?.definition as { nodes?: RawNode[] }).nodes ?? []) as RawNode[];
+  return ((wf(name)?.definition as { nodes?: RawNode[] })?.nodes ?? []) as RawNode[];
 }
 
 // registerTools (exercised below) captures the data home into a module global;
@@ -74,7 +74,7 @@ describe("rib-squad", () => {
     const roster = wfs.find((w) => (w.definition as { name?: string }).name === "squad-roster");
     expect(roster?.bindSnapshotKey).toBe(ROSTER_KEY);
     const node = (roster?.definition as { nodes?: { bash?: string; output_schema?: unknown }[] })
-      .nodes?.[0];
+      ?.nodes?.[0];
     expect(node?.bash).toContain("collect-roster.ts");
     expect(node?.output_schema).toBeDefined();
 
@@ -84,7 +84,7 @@ describe("rib-squad", () => {
       genesis?.definition as {
         nodes?: { allowed_tools?: string[]; fail_on_tool_error?: boolean }[];
       }
-    ).nodes?.[0];
+    )?.nodes?.[0];
     expect(gNode?.allowed_tools).toEqual(["squad_casting_options", "squad_emit_member"]);
     expect(gNode?.fail_on_tool_error).toBe(true);
   });
