@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.26.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.26.0...v0.26.1) (2026-07-14)
+
+
+### Fixed
+
+* **cast:** count the scan receipt across provider tool vocabularies ([#233](https://github.com/danielscholl/keelson-rib-squad/issues/233)) ([689dcfa](https://github.com/danielscholl/keelson-rib-squad/commit/689dcfa5f48fa8415a653a5ec6f65829acc68902))
+* **turn-runner:** digest tool-trace targets across provider vocabularies ([#235](https://github.com/danielscholl/keelson-rib-squad/issues/235)) ([aeca6ca](https://github.com/danielscholl/keelson-rib-squad/commit/aeca6ca5a018a2ec94804f2d2b1fef7ffd256370))
+
 ## [0.26.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.25.0...v0.26.0) (2026-07-14)
 
 
