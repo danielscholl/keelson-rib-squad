@@ -5,7 +5,7 @@ import type {
   RibContext,
   TokenUsage,
 } from "@keelson/shared";
-import { errText } from "@keelson/shared";
+import { errText, toolPresentation } from "@keelson/shared";
 
 // One confined agent turn run to its settled result, the discipline cast.ts and
 // dispatch.ts each established: own a per-turn AbortController linked to the parent
@@ -164,7 +164,7 @@ async function consumeResult(
 
 function foldToolChunk(chunk: MessageChunk, trace: TraceState): boolean {
   if (chunk.type === "tool_use") {
-    const target = digestTarget(chunk.toolInput);
+    const target = digestTarget(chunk.toolName, chunk.toolInput);
     const entry: ToolTrace = { name: chunk.toolName, ...(target ? { target } : {}) };
     trace.entries.push(entry);
     trace.ids.push(chunk.id);
@@ -185,18 +185,33 @@ function foldToolChunk(chunk: MessageChunk, trace: TraceState): boolean {
   return false;
 }
 
-// The argument keys that most identify a tool call, in preference order — a file
-// being edited, a command being run, a query being searched.
-const TARGET_KEYS = ["file_path", "path", "command", "cmd", "query", "pattern", "url", "name"];
+// Fallback argument keys, only for a tool the shared contract doesn't classify (a rib
+// tool, an unknown built-in): those resolve to kind "tool", which carries no primary
+// field of its own. Kept behind toolPresentation rather than replaced by it so no
+// trace that names its subject today loses it.
+const FALLBACK_KEYS = ["file_path", "path", "command", "cmd", "query", "pattern", "url", "name"];
 
-function digestTarget(input?: Record<string, unknown>): string | undefined {
+// The identifying argument of a tool call — the file read, the command run, the query
+// searched. Resolved through the shared contract first: each provider spells the same
+// argument differently (claude's file_path vs copilot's path/filePath) and names the
+// same built-in differently, and toolPresentation owns both mappings per tool kind. A
+// local key list can only ever track one vendor's spelling.
+function digestTarget(toolName: string, input?: Record<string, unknown>): string | undefined {
+  const raw = toolPresentation(toolName, input).primary ?? firstStringOf(input, FALLBACK_KEYS);
+  if (!raw) return undefined;
+  const t = raw.trim();
+  if (t.length === 0) return undefined;
+  return t.length > TARGET_CAP ? `${t.slice(0, TARGET_CAP - 1)}…` : t;
+}
+
+function firstStringOf(
+  input: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): string | undefined {
   if (!input) return undefined;
-  for (const key of TARGET_KEYS) {
+  for (const key of keys) {
     const v = input[key];
-    if (typeof v === "string" && v.trim().length > 0) {
-      const t = v.trim();
-      return t.length > TARGET_CAP ? `${t.slice(0, TARGET_CAP - 1)}…` : t;
-    }
+    if (typeof v === "string" && v.trim().length > 0) return v;
   }
   return undefined;
 }
