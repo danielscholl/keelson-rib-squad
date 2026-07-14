@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { Member } from "../src/types.ts";
-import { identitySlotForIndex, identityToneForSlot, identityTonesByMember } from "../src/types.ts";
+import {
+  IDENTITY_SLOT_COUNT,
+  identitySlotForIndex,
+  identityToneForSlot,
+  identityTonesByMember,
+  normalizeIdentitySlot,
+} from "../src/types.ts";
 
 const member = (over: Partial<Member> = {}): Member => ({
   slug: "lead",
@@ -29,8 +35,37 @@ describe("identityToneForSlot", () => {
     expect(identityToneForSlot(2.5)).toBe("neutral");
   });
 
-  test("slot assignment clamps the cast index into the slot range", () => {
-    expect(identityToneForSlot(identitySlotForIndex(7))).toBe("id-olive");
+  test("a cast index past the ramp folds to neutral rather than repeating a hue", () => {
+    expect([0, 1, 2, 3, 4, 5].map((i) => identityToneForSlot(identitySlotForIndex(i)))).toEqual([
+      "id-blue",
+      "id-amber",
+      "id-teal",
+      "id-rose",
+      "id-olive",
+      "neutral",
+    ]);
+    expect(identityToneForSlot(identitySlotForIndex(7))).toBe("neutral");
+  });
+});
+
+describe("normalizeIdentitySlot", () => {
+  test("the out-of-ramp sentinel round-trips instead of folding onto slot 0", () => {
+    // readMembers passes no fallback index, so bounding the domain below the
+    // sentinel would reload a 6th member as slot 0 — the first member's hue.
+    expect(normalizeIdentitySlot(IDENTITY_SLOT_COUNT)).toBe(IDENTITY_SLOT_COUNT);
+    expect(identityToneForSlot(normalizeIdentitySlot(IDENTITY_SLOT_COUNT))).toBe("neutral");
+  });
+
+  test("the five seated slots survive a round-trip", () => {
+    expect([0, 1, 2, 3, 4].map((s) => normalizeIdentitySlot(s))).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  test("a slot outside the domain is drift — repaired from cast order", () => {
+    expect(normalizeIdentitySlot(99, 2)).toBe(2);
+    expect(normalizeIdentitySlot(undefined, 2)).toBe(2);
+    expect(normalizeIdentitySlot(-1, 3)).toBe(3);
+    expect(normalizeIdentitySlot(2.5, 1)).toBe(1);
+    expect(normalizeIdentitySlot("nope", 0)).toBe(0);
   });
 });
 
