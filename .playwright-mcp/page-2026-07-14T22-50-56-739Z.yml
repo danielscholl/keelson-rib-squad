@@ -1,0 +1,70 @@
+- generic [ref=f2e2]:
+  - generic [ref=f2e3]:
+    - banner [ref=f2e4]:
+      - generic [ref=f2e5]:
+        - button "New chat" [ref=f2e6] [cursor=pointer]:
+          - generic [ref=f2e7]: Keelson
+        - navigation "Primary" [ref=f2e8]:
+          - button "Chat" [ref=f2e9] [cursor=pointer]
+          - button "Workflows" [ref=f2e10] [cursor=pointer]
+          - button "CIMPL" [ref=f2e45] [cursor=pointer]
+          - button "Squad" [pressed] [ref=f2e46] [cursor=pointer]
+          - button "Chamber" [ref=f2e47] [cursor=pointer]
+      - button "Harness controls, 4 pending memory items" [ref=f2e13] [cursor=pointer]:
+        - img "4 pending" [ref=f2e17]
+    - generic [ref=f2e48]:
+      - banner [ref=f2e49]:
+        - generic [ref=f2e50]:
+          - heading "Squad" [level=1] [ref=f2e51]
+          - paragraph [ref=f2e52]: Author members · cast a squad · assign work
+        - 'button "Project: squad-scratch. Change project." [active] [ref=f2e103] [cursor=pointer]':
+          - generic [ref=f2e54]: Project
+          - generic [ref=f2e55]: ·
+          - generic [ref=f2e56]: squad-scratch
+          - generic [ref=f2e57]: ▾
+      - generic [ref=f2e58]:
+        - generic [ref=f2e60]:
+          - button "Collapse region" [expanded] [ref=f2e61] [cursor=pointer]: ▾
+          - generic [ref=f2e62]: ◆
+          - generic [ref=f2e63]: Roster
+          - generic [ref=f2e65]: 0 members
+          - generic [ref=f2e66]: updated just now
+        - generic [ref=f2e68]:
+          - generic [ref=f2e69]: One scan of the repo composes the team — you approve before anything is created.
+          - generic [ref=f2e107]:
+            - generic [ref=f2e108]: Cast a squad from this repo
+            - button "Cast a squad" [ref=f2e111] [cursor=pointer]:
+              - generic [ref=f2e112]: ✦
+              - text: Cast a squad
+          - generic [ref=f2e113]:
+            - generic [ref=f2e114]: or seat one member yourself
+            - generic [ref=f2e115]:
+              - button "Lead — Direction, scope, and trade-off calls" [ref=f2e117] [cursor=pointer]:
+                - generic [ref=f2e118]: ＋
+                - text: Lead — Direction, scope, and trade-off calls
+              - button "Engineer — Implementation, debugging, and design" [ref=f2e120] [cursor=pointer]:
+                - generic [ref=f2e121]: ＋
+                - text: Engineer — Implementation, debugging, and design
+              - button "Reviewer — Correctness, clarity, and risk review" [ref=f2e123] [cursor=pointer]:
+                - generic [ref=f2e124]: ＋
+                - text: Reviewer — Correctness, clarity, and risk review
+              - button "Tester — Coverage, edge cases, and regressions" [ref=f2e126] [cursor=pointer]:
+                - generic [ref=f2e127]: ＋
+                - text: Tester — Coverage, edge cases, and regressions
+              - button "Describe & author" [ref=f2e129] [cursor=pointer]:
+                - generic [ref=f2e130]: ✎
+                - text: Describe & author
+          - generic [ref=f2e132]:
+            - generic [ref=f2e133]:
+              - generic [ref=f2e134]: "1"
+              - generic [ref=f2e135]: Cast
+              - generic [ref=f2e136]: The scan proposes a team; you approve or discard it.
+            - generic [ref=f2e137]:
+              - generic [ref=f2e138]: "2"
+              - generic [ref=f2e139]: Meet
+              - generic [ref=f2e140]: Each member becomes a chat agent you can enter and talk to.
+            - generic [ref=f2e141]:
+              - generic [ref=f2e142]: "3"
+              - generic [ref=f2e143]: Run
+              - generic [ref=f2e144]: Give the squad a task — the loop's rounds and findings stream here.
+  - status
