@@ -93,19 +93,39 @@ the member exists.
 
 ### Review the proposal
 
-The scan publishes to the Proposed squad board, one card per proposed member:
-a name, a role, the tools it would carry (or "text-only" if none), any
-provider pin, and a charter excerpt so you can judge the member before it
-becomes real. Nothing is written to the roster yet. From here you have two
-choices:
+The scan publishes to the Proposed squad board, which shows the bench the way
+the roster will show it once seated: one card per proposed member wearing the
+identity colour it will keep for life, its role, the tools it would carry (or
+"text-only" if none), any provider pin, and — under `why cast:` — the scan's
+own one-line reason for the seat, naming the files that make it necessary.
+Nothing is written to the roster yet.
 
-- **Approve & scaffold** authors every proposed member as a real chat agent
-  and clears the proposal. An existing member with the same name is kept,
-  not overwritten, so approving twice is safe. Members are scaffolded from
-  the same casting path genesis uses, so a themed name (if theming is
-  active) and an identical file layout apply here too.
-- **Discard proposal** drops the pending proposal without touching the
-  roster. You can cast again from the roster afterward.
+Above the bench sit your mission and the scan's thesis for the team. Beside it
+is the **scan receipt**: how many files the scan actually opened, how many
+searches it ran, and how long it took, counted from the turn itself rather than
+from the model's account of it. A team proposed off six files in forty seconds
+and one proposed off thirty-one files in two minutes are different claims, and
+the receipt is what tells them apart. If your provider doesn't report what the
+scan opened, the rail says so rather than showing a receipt it can't stand
+behind.
+
+### Pick the seats you want
+
+**Click a card to drop that seat**; click it again to pick it back. A dropped
+seat keeps its charter and its reason — you need both to decide whether to pick
+it back — but loses its ring and its colour, and stops counting toward the
+Approve button. Dropping a seat costs a file write; it does not re-run the scan.
+
+- **Approve & scaffold** authors the picked members as real chat agents and
+  clears the proposal. The button names the count it will seat. An existing
+  member with the same name is kept, not overwritten, so approving twice is
+  safe. Members are scaffolded from the same casting path genesis uses, so a
+  themed name (if theming is active) and an identical file layout apply here
+  too. A dropped seat is never created, and its cast name goes back to the pool.
+- **Discard proposal** drops the whole pending proposal without touching the
+  roster. Casting again runs a fresh scan — a new model turn, up to five
+  minutes — and proposes a *different* team, not this one minus your objection.
+  To change the team and keep this scan, drop the seats you don't want instead.
 
 Both actions are confirm-guarded before they run.
 

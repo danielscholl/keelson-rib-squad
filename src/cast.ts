@@ -11,6 +11,7 @@ import {
 } from "./casting/registry.ts";
 import { slugify } from "./genesis.ts";
 import { assignableProviders, validateProviderPin } from "./provider-pins.ts";
+import { digestTarget } from "./turn-runner.ts";
 import { normalizeIdentitySlot, normalizeToolAllowlist } from "./types.ts";
 
 // Auto-cast: inspect a project and propose the team best suited to it. This is the
@@ -101,6 +102,9 @@ export interface CastProposalRecord {
   summary?: string;
   notes: string[];
   createdAt: string;
+  // What the scan turn actually read, counted from its tool_use chunks. Absent when
+  // the capture came back empty — never synthesized from the model's self-report.
+  read?: ScanReceipt;
 }
 
 export type ProposeCastResult =
@@ -277,6 +281,7 @@ export async function proposeCast(opts: ProposeCastOptions): Promise<ProposeCast
       members,
       ...(parsed.data.summary?.trim() ? { summary: parsed.data.summary.trim() } : {}),
       notes,
+      ...(outcome.read ? { read: outcome.read } : {}),
       createdAt: new Date().toISOString(),
     },
   };
@@ -311,6 +316,16 @@ interface TurnOutcome {
   status: "ok" | "error" | "timeout" | "aborted";
   text: string;
   error?: string;
+  read?: ScanReceipt;
+}
+
+// What the scan turn actually did, counted from its own tool_use chunks. This is the
+// one thing on the cast board a confabulation can't produce: the model writes the
+// members, the harness writes this.
+export interface ScanReceipt {
+  files: string[];
+  searches: number;
+  ms: number;
 }
 
 // Run the scan turn to its settled result, mirroring dispatch.ts's executeTurn:
@@ -330,11 +345,13 @@ async function runScanTurn(
   parentSignal?.addEventListener("abort", onParentAbort, { once: true });
 
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const capture: ScanCapture = { files: new Set(), searches: 0 };
+  const startedAt = Date.now();
   try {
     const turn: RibAgentTurn = run({ ...req, abortSignal: controller.signal, timeoutMs });
     // Wrap so neither branch rejects: a timed-out turn's still-pending drain must
     // not surface as an unhandled rejection once the race has settled.
-    const settled = drainResult(turn).then(
+    const settled = drainResult(turn, capture).then(
       (result) => ({ kind: "result" as const, result }),
       (err) => ({ kind: "error" as const, err }),
     );
@@ -356,7 +373,22 @@ async function runScanTurn(
     if (controller.signal.aborted || result.status === "aborted") {
       return { status: "aborted", text: result.text ?? "" };
     }
-    if (result.status === "ok") return { status: "ok", text: result.text };
+    if (result.status === "ok") {
+      // Only on the settled-ok path is the drain complete, so this is the only place
+      // the counts are whole. An empty capture means the provider's chunks didn't
+      // carry what we key on (toolInput is optional in the contract, and casting pins
+      // members across providers) — omit the receipt rather than report "0 files read"
+      // or fall back to the model's own account of what it read.
+      const read: ScanReceipt | undefined =
+        capture.files.size > 0
+          ? {
+              files: [...capture.files].sort(),
+              searches: capture.searches,
+              ms: Date.now() - startedAt,
+            }
+          : undefined;
+      return { status: "ok", text: result.text, ...(read ? { read } : {}) };
+    }
     return {
       status: result.status,
       text: "",
@@ -371,16 +403,31 @@ async function runScanTurn(
 }
 
 // Drain the live stream to completion, then take the settled result (the source of
-// truth). A stream error is swallowed — it resurfaces via result.status.
-async function drainResult(turn: RibAgentTurn): Promise<RibAgentTurnResult> {
+// truth). A stream error is swallowed — it resurfaces via result.status. The stream is
+// also where the scan's receipt comes from: the chunks are the only record of what it
+// actually opened, so they're counted on the way past rather than discarded.
+async function drainResult(turn: RibAgentTurn, capture: ScanCapture): Promise<RibAgentTurnResult> {
   try {
-    for await (const _chunk of turn.stream) {
-      // result is the source of truth; the stream is drained, not consumed
+    for await (const chunk of turn.stream) {
+      if (chunk.type !== "tool_use") continue;
+      // Only a Read proves a file was opened — a Glob matching 200 paths read none of
+      // them, so everything else counts as a search.
+      if (chunk.toolName === "Read") {
+        const target = digestTarget(chunk.toolInput);
+        if (target) capture.files.add(target);
+      } else {
+        capture.searches++;
+      }
     }
   } catch {
     // a stream error surfaces via result.status below
   }
   return await turn.result;
+}
+
+interface ScanCapture {
+  files: Set<string>;
+  searches: number;
 }
 
 // Pull the JSON object out of a model reply that may wrap it in a code fence or a
@@ -457,6 +504,7 @@ export async function readProposal(dataHome: string): Promise<CastProposalRecord
       )
       .map((m, i) => normalizeStoredMember(m, i));
     if (members.length === 0) return undefined;
+    const read = normalizeStoredReceipt(parsed.read);
     return {
       projectId: typeof parsed.projectId === "string" ? parsed.projectId : "",
       projectName: parsed.projectName,
@@ -467,11 +515,28 @@ export async function readProposal(dataHome: string): Promise<CastProposalRecord
       notes: Array.isArray(parsed.notes)
         ? parsed.notes.filter((n): n is string => typeof n === "string")
         : [],
+      ...(read ? { read } : {}),
       createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : "",
     };
   } catch {
     return undefined;
   }
+}
+
+// A receipt with no files read is not a receipt — it reads as "the scan opened
+// nothing", which is a claim we can't make from an empty capture.
+function normalizeStoredReceipt(value: unknown): ScanReceipt | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const r = value as Partial<ScanReceipt>;
+  const files = Array.isArray(r.files)
+    ? r.files.filter((f): f is string => typeof f === "string" && f.length > 0)
+    : [];
+  if (files.length === 0) return undefined;
+  return {
+    files,
+    searches: typeof r.searches === "number" && r.searches >= 0 ? Math.trunc(r.searches) : 0,
+    ms: typeof r.ms === "number" && r.ms >= 0 ? Math.trunc(r.ms) : 0,
+  };
 }
 
 function normalizeStoredMember(m: CastProposalMember, index: number): CastProposalMember {

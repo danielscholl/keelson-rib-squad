@@ -136,8 +136,9 @@ navigating.
 | `author-archetype` | `{ slug }` | `run-workflow` `squad-genesis`, seeded with the archetype's brief |
 | `describe-own` | `{ brief }` | `run-workflow` `squad-genesis`, seeded with the operator's brief |
 | `cast-propose` | `{ mission? }` | `run-workflow` `squad-cast-scan` |
-| `approve-cast` | _(none)_ | data (`{ created, skipped, truncated }`) |
-| `discard-cast` | _(none)_ | data (`{ discarded: true }`) |
+| `cast-pick` | `{ slug, picked, castAt? }` | data (`{ slug, picked }`); refreshes the cast panel |
+| `approve-cast` | `{ castAt? }` | data (`{ created, skipped, truncated, dropped }`) |
+| `discard-cast` | `{ castAt? }` | data (`{ discarded: true }`) |
 | `set-model` | `{ slug, model?, provider? }` | data (`{ slug, model? }`) |
 | `retire` | `{ slug }` | data (`{ slug }`) |
 | `retire-all` | _(none)_ | data (`{ retired }`) |

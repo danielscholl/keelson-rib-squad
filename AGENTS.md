@@ -58,10 +58,11 @@ the domain logic from the modules under `src/`. It contributes:
 
 - **Views + a surface** — five snapshot keys (`rib:squad:{roster,cast,coordinator,
   runs,decisions}`) and one `projectScoped` **Squad** nav surface: the Roster in the
-  header, then three rows — the **Run loop** (promoted to its own row, `live` so it
-  pulses while a coordinator run streams round by round), Runs + Proposed squad, and
-  Decisions. Content panels are `hideWhenEmpty`. No hand-coded UI: every panel is a
-  board a producer publishes.
+  header, then four rows — the **Run loop** (promoted to its own row, `live` so it
+  pulses while a coordinator run streams round by round), **Proposed squad** (also its
+  own row: its board lays the bench beside the scan's receipt via `columns`, and a half
+  share collapses that adjacency), Runs, and Decisions. Content panels are
+  `hideWhenEmpty`. No hand-coded UI: every panel is a board a producer publishes.
 - **Workflows** (`contributeWorkflows`) — twelve, in two producer shapes. Four
   deterministic **bash collectors** (`squad-roster`, `-cast`, `-coordinator`,
   `-runs`) shell a `bin/collect-*.ts` script, read a file off the data home, and emit
@@ -104,7 +105,7 @@ the domain logic from the modules under `src/`. It contributes:
 - **Actions** (`onAction`) — a verb switch: `enter-member` (→ an `open-chat` client
   effect), `select-project`, the `run-workflow` verbs (`author-archetype` /
   `describe-own` / `cast-propose` / `coordinate` / `dispatch` / `assign-code` /
-  `rollback-run` / `record-decision`), the data verbs (`approve-cast` / `discard-cast`
+  `rollback-run` / `record-decision`), the data verbs (`cast-pick` / `approve-cast` / `discard-cast`
   / `set-model` / `retire` / `retire-all` / `reset-squad` / `stop-coordinator` /
   `steer-coordinator`), and `view-run` / `report-run` (which drive the imperatively
   registered drill-down + run-report snapshots). Any `canvas-html`-origin action is

@@ -2716,6 +2716,27 @@ const rib: Rib = {
           {
             columns: [
               {
+                key: CAST_KEY,
+                workflow: "squad-cast",
+                title: "Proposed squad",
+                // Its own full-width row, not a half share beside Runs: the board lays
+                // the bench (cards, columns: 3) beside the scan's receipt, and that
+                // adjacency IS the approve decision. At a half share the bench auto-fills
+                // two tracks and the rail squeezes toward the viewport breakpoint where
+                // `columns` collapses outright — losing the comparison in the default
+                // layout. hideWhenEmpty means the row costs nothing at rest.
+                // NO cadenceMs: the cast collector only changes on propose/approve/
+                // discard. squad_propose_cast refreshes it after a scan.
+                collapsible: true,
+                collapsed: false,
+                hideWhenEmpty: true,
+                glyph: { char: "✦", tone: "brand" },
+              },
+            ],
+          },
+          {
+            columns: [
+              {
                 key: SQUAD_RUNS_KEY,
                 workflow: "squad-runs",
                 title: "Runs",
@@ -2725,17 +2746,6 @@ const rib: Rib = {
                 collapsible: true,
                 hideWhenEmpty: true,
                 glyph: { char: "≡", tone: "neutral" },
-              },
-              {
-                key: CAST_KEY,
-                workflow: "squad-cast",
-                title: "Proposed squad",
-                // NO cadenceMs: the cast collector only changes on propose/approve/
-                // discard. squad_propose_cast refreshes it after a scan.
-                collapsible: true,
-                collapsed: false,
-                hideWhenEmpty: true,
-                glyph: { char: "✦", tone: "brand" },
               },
             ],
           },

@@ -1,5 +1,5 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
-import type { CastProposalRecord } from "../cast.ts";
+import { type CastProposalRecord, MAX_CAST_MEMBERS } from "../cast.ts";
 import { themeLabel } from "../casting/themes.ts";
 import { identityToneForSlot } from "../types.ts";
 import { charterDetail, charterDisplay } from "./coordinator.ts";
@@ -15,6 +15,8 @@ export const APPROVE_CAST_ACTION = "approve-cast";
 export const DISCARD_CAST_ACTION = "discard-cast";
 
 type Section = CanvasBoardView["sections"][number];
+// What a column may nest: the leaf sections only — `columns` never recurses.
+type LeafSection = Extract<Section, { kind: "columns" }>["columns"][number]["sections"][number];
 type Member = CastProposalRecord["members"][number];
 
 // Pure: a pending cast proposal -> a canvas `board`. No proposal renders a calm idle
@@ -26,7 +28,19 @@ export function buildCastBoard(proposal: CastProposalRecord | undefined): Canvas
   if (!proposal) return idleBoard();
 
   const picked = proposal.members.filter(isPicked);
-  const sections: Section[] = [benchSection(proposal)];
+  const sections: Section[] = [
+    briefSection(proposal),
+    statsSection(proposal, picked.length),
+    // The bench beside what the scan actually did: this adjacency IS the judgement.
+    // Who was proposed, next to the evidence for proposing them.
+    {
+      kind: "columns",
+      columns: [
+        { weight: 2.4, sections: [benchSection(proposal)] },
+        { weight: 1, sections: railSections(proposal) },
+      ],
+    },
+  ];
   if (proposal.notes.length > 0) {
     sections.push({
       kind: "rows",
@@ -51,6 +65,125 @@ export function buildCastBoard(proposal: CastProposalRecord | undefined): Canvas
   };
 }
 
+// What was asked for, and what the scan says it built — the two things you judge the
+// bench against, and both were written to disk with no reader until now. `boxed`
+// inverts the row: `text` becomes a fixed label column and `trailing` the value.
+function briefSection(proposal: CastProposalRecord): Section {
+  const items: { glyph?: CanvasTone; text: string; trailing?: string }[] = [
+    proposal.mission?.trim()
+      ? { glyph: "brand" as CanvasTone, text: "your ask", trailing: proposal.mission.trim() }
+      : {
+          // A team cast from nothing but the repo is a fact worth knowing BEFORE you
+          // approve it — the absence is the signal, so it gets a row, not silence.
+          glyph: "warn" as CanvasTone,
+          text: "your ask",
+          trailing: "none given — this team was cast from the repo alone",
+        },
+  ];
+  if (proposal.summary?.trim()) {
+    items.push({
+      glyph: "neutral" as CanvasTone,
+      text: "the thesis",
+      trailing: proposal.summary.trim(),
+    });
+  }
+  return { kind: "rows", boxed: true, items };
+}
+
+// A scan that opened almost nothing can still produce a confident-sounding team; the
+// count is what separates the two, so a thin read is toned rather than just printed.
+const THIN_SCAN_FILES = 10;
+
+// Exactly four at most: --cvb-stat-cols binds to items.length with no floor, so a
+// fifth squeezes the value column.
+function statsSection(proposal: CastProposalRecord, pickedCount: number): Section {
+  const canCode = proposal.members.filter(
+    (m) => isPicked(m) && (m.tools ?? []).includes("code"),
+  ).length;
+  const items: { label: string; value: string | number; sub?: string; tone?: CanvasTone }[] = [
+    {
+      label: "Picked",
+      value: `${pickedCount} of ${proposal.members.length}`,
+      tone: (pickedCount === 0 ? "warn" : "brand") as CanvasTone,
+    },
+    { label: "Bench", value: `${proposal.members.length} of ${MAX_CAST_MEMBERS}` },
+    { label: "Can code", value: canCode, sub: "of the picked seats" },
+  ];
+  const read = proposal.read;
+  if (read) {
+    items.push({
+      label: "Files read",
+      value: read.files.length,
+      sub: durationLabel(read.ms),
+      tone: (read.files.length < THIN_SCAN_FILES ? "warn" : "ok") as CanvasTone,
+    });
+  }
+  return { kind: "stats", items };
+}
+
+// The evidence rail. The scan's CLAIMS ride each card as its reason — the model wrote
+// those. This is the counterweight: what the harness itself counted off the turn's
+// tool_use chunks, the one thing here a confabulation can't produce. When the capture
+// came back empty the rail says so rather than showing a fabricated or zeroed receipt.
+function railSections(proposal: CastProposalRecord): LeafSection[] {
+  const read = proposal.read;
+  if (!read) {
+    return [
+      {
+        kind: "rows",
+        title: "Scan receipt",
+        items: [
+          {
+            glyph: "neutral" as CanvasTone,
+            text: "This provider didn't report what the scan opened, so there's no receipt to show. Judge the seats on their charters.",
+          },
+        ],
+      },
+    ];
+  }
+  const thin = read.files.length < THIN_SCAN_FILES;
+  const items: { glyph?: CanvasTone; text: string; trailing?: string; detail?: string }[] = [
+    {
+      glyph: (thin ? "warn" : "ok") as CanvasTone,
+      text: `${read.files.length} file${read.files.length === 1 ? "" : "s"} read`,
+      trailing: durationLabel(read.ms),
+      detail: fileListDetail(read.files),
+    },
+    {
+      glyph: "neutral" as CanvasTone,
+      text: `${read.searches} search${read.searches === 1 ? "" : "es"}`,
+      trailing: "glob / grep",
+    },
+  ];
+  if (thin) {
+    items.push({
+      glyph: "warn" as CanvasTone,
+      text: `Thin: the scan read ${read.files.length} file${
+        read.files.length === 1 ? "" : "s"
+      } in ${durationLabel(read.ms)} before proposing this team.`,
+    });
+  }
+  return [{ kind: "rows", title: "Scan receipt", items }];
+}
+
+// rows.detail is capped at 4000 by the contract, and a thorough scan of a large repo
+// would breach it — taking the WHOLE board down through expectView rather than
+// degrading. The healthy case must not be the dangerous one, so the list is capped and
+// says what it dropped.
+const FILE_LIST_CAP = 60;
+
+function fileListDetail(files: readonly string[]): string {
+  const shown = files.slice(0, FILE_LIST_CAP);
+  const rest = files.length - shown.length;
+  return rest > 0 ? `${shown.join("\n")}\n…and ${rest} more` : shown.join("\n");
+}
+
+function durationLabel(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 // Absent means picked: a proposal written before subset approve, or by a scan that
 // never sets the flag, is a full bench.
 function isPicked(member: Member): boolean {
@@ -59,7 +192,7 @@ function isPicked(member: Member): boolean {
 
 // The bench. `grid` + `columns: 3` holds three tracks whatever the count, so the
 // layout doesn't reflow as seats drop, and the cards keep a readable set size.
-function benchSection(proposal: CastProposalRecord): Section {
+function benchSection(proposal: CastProposalRecord): LeafSection {
   const anyPicked = proposal.members.some(isPicked);
   return {
     kind: "cards",
