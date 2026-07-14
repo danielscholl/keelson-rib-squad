@@ -252,6 +252,43 @@ describe("proposeCast", () => {
     expect(result.proposal.projectName).toBe("keelson");
   });
 
+  test("carries the scan's per-member rationale through, trimmed", async () => {
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurn(
+        Promise.resolve(
+          okResult(
+            rosterReply([
+              {
+                name: "Atlas",
+                role: "Engineer",
+                charter: "# Atlas",
+                rationale: "  src/search/ has 40 files and no owner.  ",
+              },
+              { name: "Vera", role: "Reviewer", charter: "# Vera" },
+            ]),
+          ),
+        ),
+      );
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.members[0]?.rationale).toBe("src/search/ has 40 files and no owner.");
+    // The field is optional: a scan that skips it still yields a usable proposal —
+    // the board falls back to the charter excerpt rather than dropping the seat.
+    expect(result.proposal.members[1]?.rationale).toBeUndefined();
+  });
+
+  test("asks the scan to justify each seat against real files", async () => {
+    let req: RibAgentTurnRequest | undefined;
+    const runAgentTurn = (r: RibAgentTurnRequest): RibAgentTurn => {
+      req = r;
+      return fakeTurn(Promise.resolve(okResult(rosterReply([]))));
+    };
+    await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(req?.prompt).toContain("rationale");
+    expect(req?.prompt).toContain("naming the real files or directories");
+  });
+
   test("dedupes/trims capability tags and tool allowlists", async () => {
     const runAgentTurn = (): RibAgentTurn =>
       fakeTurn(
@@ -394,6 +431,33 @@ describe("cast proposal store", () => {
     expect(back?.members[0]?.tools).toEqual(["code", "read"]);
     expect(back?.members[0]?.toolAllowlist).toEqual(["osdu_quality"]);
     expect(back?.members[0]?.identitySlot).toBe(0);
+  });
+
+  // readProposal is an allowlist, not a passthrough: normalizeStoredMember rebuilds
+  // each member field by field, so a field it forgets is dropped silently — and a
+  // collector that "degrades, never throws" guarantees the silence. These pin the
+  // subset-approve fields to the read path.
+  test("round-trips picked:false and the scan's rationale", async () => {
+    const r = record();
+    r.members[0] = { ...r.members[0]!, picked: false, rationale: "src/search/ has no owner." };
+    await writeProposal(home, r);
+    const back = await readProposal(home);
+    expect(back?.members[0]?.picked).toBe(false);
+    expect(back?.members[0]?.rationale).toBe("src/search/ has no owner.");
+  });
+
+  test("an absent picked flag reads as a picked seat — nothing to migrate", async () => {
+    await writeProposal(home, record());
+    const back = await readProposal(home);
+    // Every proposal written before subset approve is on disk in exactly this shape.
+    expect(back?.members[0]?.picked).toBeUndefined();
+    expect(back?.members[0]?.picked !== false).toBe(true);
+  });
+
+  test("backfills a slug the pick verb can address when the file lacks one", async () => {
+    await writeProposal(home, record());
+    const back = await readProposal(home);
+    expect(back?.members[0]?.slug).toBe("atlas");
   });
 
   test("normalizes missing and invalid identity slots to cast-order slots", async () => {

@@ -17,7 +17,12 @@ import type {
 } from "@keelson/shared";
 import { asNonEmptyString, DEFAULT_PROJECT_NAME, errText, expectView, z } from "@keelson/shared";
 import { listAgents, resolveAgent } from "./agents.ts";
-import { APPROVE_CAST_ACTION, CAST_PROPOSE_ACTION, DISCARD_CAST_ACTION } from "./boards/cast.ts";
+import {
+  APPROVE_CAST_ACTION,
+  CAST_PICK_ACTION,
+  CAST_PROPOSE_ACTION,
+  DISCARD_CAST_ACTION,
+} from "./boards/cast.ts";
 import {
   buildRunDetailBoard,
   COORDINATE_ACTION,
@@ -32,7 +37,13 @@ import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.
 import { ASSIGN_CODE_ACTION, RETIRE_ALL_ACTION, SELECT_PROJECT_ACTION } from "./boards/roster.ts";
 import { VIEW_RUN_ACTION } from "./boards/runs.ts";
 import type { CastProposalMember, CastProposalRecord } from "./cast.ts";
-import { clearProposal, proposeCast, readProposal, writeProposal } from "./cast.ts";
+import {
+  clearProposal,
+  proposeCast,
+  readProposal,
+  withProposalLock,
+  writeProposal,
+} from "./cast.ts";
 import { castingOptions } from "./casting/options.ts";
 import {
   assignThemedIdentity,
@@ -546,6 +557,7 @@ async function themedProposal(
       ...(id.themeLabel ? { themeLabel: id.themeLabel } : {}),
       ...(id.personality ? { personality: id.personality } : {}),
       ...(id.backstory ? { backstory: id.backstory } : {}),
+      ...(m.rationale ? { rationale: m.rationale } : {}),
       originalName: id.originalName,
       identitySlot: identitySlotForIndex(i),
     });
@@ -3106,10 +3118,12 @@ const rib: Rib = {
         return dismissGenesisAction();
       case CAST_PROPOSE_ACTION:
         return castProposeAction(action);
+      case CAST_PICK_ACTION:
+        return castPickAction(action);
       case APPROVE_CAST_ACTION:
-        return approveCastAction();
+        return approveCastAction(action);
       case DISCARD_CAST_ACTION:
-        return discardCastAction();
+        return discardCastAction(action);
       case "set-model":
         return setModelAction(action);
       case "retire":
@@ -3629,17 +3643,79 @@ async function refreshSquadPanels(): Promise<void> {
 
 // Read the persisted proposal as the source of truth so stale board buttons can't
 // approve a discarded proposal.
-async function approveCastAction(): Promise<RibActionResult> {
+// Pick or drop one proposed seat. The payload declares the DESIRED state rather than
+// a flip, so a double-click is idempotent and a board rendered before someone else's
+// toggle can't invert a seat it never saw. The whole read-modify-write runs under the
+// proposal lock; the collector re-renders from the file we just wrote.
+async function castPickAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const slug = asNonEmptyString(payload.slug);
+  if (!slug) return { ok: false, error: "cast-pick requires payload { slug }" };
+  if (typeof payload.picked !== "boolean") {
+    return { ok: false, error: "cast-pick requires payload { picked: boolean }" };
+  }
+  const picked = payload.picked;
+  const castAt = asNonEmptyString(payload.castAt);
+  try {
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    const scopedHome = scopeDataHome(home, scopeId);
+    return await withProposalLock(scopedHome, async () => {
+      const proposal = await readProposal(scopedHome);
+      if (!proposal) return { ok: false, error: "no proposal — cast a squad first" };
+      const stale = staleProposal(proposal, castAt);
+      if (stale) return stale;
+      // Never trust a slug off the wire: only a seat this proposal actually holds.
+      const member = proposal.members.find((m) => m.slug === slug);
+      if (!member) return { ok: false, error: `no proposed member '${slug}' in this cast` };
+      const next: CastProposalRecord = {
+        ...proposal,
+        members: proposal.members.map((m) =>
+          m.slug === slug ? { ...m, ...(picked ? {} : { picked: false }) } : m,
+        ),
+      };
+      if (picked) delete (next.members.find((m) => m.slug === slug) as CastProposalMember).picked;
+      await writeProposal(scopedHome, next);
+      await refreshWorkflow?.("squad-cast");
+      return { ok: true, data: { slug, picked } };
+    });
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
+// A proposal replaced since the board was rendered must not be acted on by a click
+// aimed at the old one — the seats behind it are different members entirely.
+function staleProposal(
+  proposal: CastProposalRecord,
+  castAt: string | undefined,
+): { ok: false; error: string } | undefined {
+  if (!castAt || !proposal.createdAt || castAt === proposal.createdAt) return undefined;
+  return {
+    ok: false,
+    error: "this proposal was replaced by a newer cast — refresh the panel and try again",
+  };
+}
+
+async function approveCastAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const castAt = asNonEmptyString(payload.castAt);
   try {
     const home = squadDataHome();
     const scopeId = selectedScopeId(await readSelectedProject(home));
     const scopedHome = scopeDataHome(home, scopeId);
     const proposal = await readProposal(scopedHome);
     if (!proposal) return { ok: false, error: "no proposal to approve — cast a squad first" };
+    const stale = staleProposal(proposal, castAt);
+    if (stale) return stale;
+    const seated = proposal.members.filter((m) => m.picked !== false);
+    if (seated.length === 0) {
+      return { ok: false, error: "every seat is dropped — pick at least one member to scaffold" };
+    }
     const at = new Date().toISOString();
     const records: MemberRecord[] = [];
-    for (let i = 0; i < proposal.members.length; i++) {
-      const m = proposal.members[i]!;
+    for (let i = 0; i < seated.length; i++) {
+      const m = seated[i]!;
       records.push({
         // A drifted or hand-edited proposal slug must not fail the whole approve —
         // slugify passes safe slugs through unchanged.
@@ -3664,6 +3740,14 @@ async function approveCastAction(): Promise<RibActionResult> {
       });
     }
     const outcome = await scaffoldRoster(scopeMembersDir(home, scopeId), records);
+    // A dropped seat is never created, so its casting-name reservation must go back —
+    // discard releases them, and before subset approve this path had nothing to
+    // release. Left reserved, the name is active in the registry with no member dir:
+    // it poisons takenCharacterNames/remainingCapacity, and retire-all/reset-squad
+    // iterate members from disk, so the ghost would outlive a full squad reset.
+    for (const m of proposal.members) {
+      if (m.picked === false && m.slug && m.themeId) await retireCastingName(scopedHome, m.slug);
+    }
     await clearProposal(scopedHome);
     // Seating a squad flips the coordinator/runs panels' member-gate (hideWhenEmpty),
     // so refresh every bound collector — not just roster/cast — or the Run-loop panel
@@ -3675,6 +3759,7 @@ async function approveCastAction(): Promise<RibActionResult> {
         created: outcome.created,
         skipped: outcome.skipped,
         truncated: outcome.truncated,
+        dropped: proposal.members.filter((m) => m.picked === false).length,
       },
     };
   } catch (e) {
@@ -3685,13 +3770,19 @@ async function approveCastAction(): Promise<RibActionResult> {
 // Discard-cast: drop the pending proposal, refresh the (now idle) cast panel, and
 // refresh the roster so its launchpad returns (it was withheld while the proposal
 // carried the moment).
-async function discardCastAction(): Promise<RibActionResult> {
+async function discardCastAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const castAt = asNonEmptyString(payload.castAt);
   try {
     const home = squadDataHome();
     const scopeId = selectedScopeId(await readSelectedProject(home));
     const scopedHome = scopeDataHome(home, scopeId);
     const proposal = await readProposal(scopedHome);
-    if (proposal) await retireProposalNames(scopedHome, proposal);
+    if (proposal) {
+      const stale = staleProposal(proposal, castAt);
+      if (stale) return stale;
+      await retireProposalNames(scopedHome, proposal);
+    }
     await clearProposal(scopedHome);
     await refreshWorkflow?.("squad-cast");
     await refreshWorkflow?.("squad-roster");
