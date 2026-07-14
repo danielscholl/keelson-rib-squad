@@ -34,17 +34,48 @@ const proposal = (over: Partial<CastProposalRecord> = {}): CastProposalRecord =>
   ...over,
 });
 
-function actionItems(board: ReturnType<typeof buildCastBoard>) {
-  return board.sections.flatMap((s) => (s.kind === "actions" ? s.items : []));
+type Board = ReturnType<typeof buildCastBoard>;
+type Leaf = Extract<
+  Board["sections"][number],
+  { kind: "columns" }
+>["columns"][number]["sections"][number];
+
+// The bench and the rail live inside a `columns` section, so flatten one level before
+// looking for anything — `columns` nests leaves only, so one level is the whole tree.
+function leaves(board: Board): Leaf[] {
+  return board.sections.flatMap((s) =>
+    s.kind === "columns" ? s.columns.flatMap((c) => c.sections) : [s],
+  );
 }
-function benchCards(board: ReturnType<typeof buildCastBoard>) {
-  const section = board.sections.find((s) => s.kind === "cards");
+function actionItems(board: Board) {
+  return leaves(board).flatMap((s) => (s.kind === "actions" ? s.items : []));
+}
+function benchCards(board: Board) {
+  const section = leaves(board).find((s) => s.kind === "cards");
   if (section?.kind !== "cards") throw new Error("no bench cards section");
   return section.items;
 }
-function charterRows(board: ReturnType<typeof buildCastBoard>) {
-  const section = board.sections.find((s) => s.kind === "rows" && s.title === "Charters in full");
-  if (section?.kind !== "rows") throw new Error("no charters rows section");
+function benchSection(board: Board) {
+  const section = leaves(board).find((s) => s.kind === "cards");
+  if (section?.kind !== "cards") throw new Error("no bench cards section");
+  return section;
+}
+function rowsTitled(board: Board, title: string) {
+  const section = leaves(board).find((s) => s.kind === "rows" && s.title === title);
+  if (section?.kind !== "rows") throw new Error(`no rows section titled ${title}`);
+  return section.items;
+}
+function charterRows(board: Board) {
+  return rowsTitled(board, "Charters in full");
+}
+function briefRows(board: Board) {
+  const section = leaves(board).find((s) => s.kind === "rows" && s.boxed === true);
+  if (section?.kind !== "rows") throw new Error("no brief rows section");
+  return section.items;
+}
+function statItems(board: Board) {
+  const section = leaves(board).find((s) => s.kind === "stats");
+  if (section?.kind !== "stats") throw new Error("no stats section");
   return section.items;
 }
 function approve(board: ReturnType<typeof buildCastBoard>) {
@@ -219,8 +250,7 @@ describe("buildCastBoard picking", () => {
     expect(a?.disabled).toBe(true);
     expect(a?.reason).toContain("Every seat is dropped");
     // The bench title inverts to say what to do about it.
-    const bench = board.sections.find((s) => s.kind === "cards");
-    expect(bench?.kind === "cards" && bench.title).toBe("Click a seat to pick it back");
+    expect(benchSection(board).title).toBe("Click a seat to pick it back");
   });
 
   test("approve and discard carry the proposal's createdAt so a stale click is rejectable", () => {
@@ -276,6 +306,112 @@ describe("buildCastBoard reasons", () => {
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(benchCards(board)[0]?.reason?.text).toBe("The scan returned no reason for this seat.");
+  });
+});
+
+describe("buildCastBoard brief + stats", () => {
+  test("the mission and the scan's thesis get a home — both were dead data", () => {
+    const board = buildCastBoard(proposal({ summary: "an engineer and a reviewer" }));
+    const rows = briefRows(board);
+    expect(rows.find((r) => r.text === "your ask")?.trailing).toBe("ship the search rib");
+    expect(rows.find((r) => r.text === "the thesis")?.trailing).toBe("an engineer and a reviewer");
+  });
+
+  test("no mission says so with a warn rather than rendering nothing", () => {
+    const p = proposal();
+    p.mission = undefined;
+    const board = buildCastBoard(p);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const ask = briefRows(board).find((r) => r.text === "your ask");
+    expect(ask?.glyph).toBe("warn");
+    expect(ask?.trailing).toContain("cast from the repo alone");
+  });
+
+  test("never more than four stats — a fifth squeezes the value column", () => {
+    const board = buildCastBoard(
+      proposal({ read: { files: ["a.ts", "b.ts"], searches: 3, ms: 41_000 } }),
+    );
+    expect(statItems(board).length).toBeLessThanOrEqual(4);
+  });
+
+  test("stats count the picked seats, the bench against capacity, and the coders", () => {
+    const p = proposal();
+    p.members[1]!.picked = false;
+    const items = statItems(buildCastBoard(p));
+    expect(items.find((i) => i.label === "Picked")?.value).toBe("1 of 2");
+    expect(items.find((i) => i.label === "Bench")?.value).toBe("2 of 6");
+    expect(items.find((i) => i.label === "Can code")?.value).toBe(1);
+  });
+
+  test("a dropped coder stops counting toward Can code", () => {
+    const p = proposal();
+    p.members[0]!.picked = false; // Atlas is the only code-capable member
+    expect(statItems(buildCastBoard(p)).find((i) => i.label === "Can code")?.value).toBe(0);
+  });
+});
+
+describe("buildCastBoard scan receipt", () => {
+  const withRead = (over: Partial<{ files: string[]; searches: number; ms: number }> = {}) =>
+    proposal({ read: { files: ["src/a.ts", "src/b.ts"], searches: 4, ms: 41_000, ...over } });
+
+  test("reports what the scan actually opened, with the file list on disclosure", () => {
+    const files = Array.from({ length: 31 }, (_, i) => `src/f${i}.ts`);
+    const board = buildCastBoard(withRead({ files, searches: 14, ms: 134_000 }));
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const rows = rowsTitled(board, "Scan receipt");
+    expect(rows[0]?.text).toBe("31 files read");
+    expect(rows[0]?.trailing).toBe("2m 14s");
+    expect(rows[0]?.detail).toContain("src/f0.ts");
+    expect(rows[1]?.text).toBe("14 searches");
+    expect(statItems(board).find((i) => i.label === "Files read")?.value).toBe(31);
+  });
+
+  test("a thin scan is toned and named, not just printed", () => {
+    const board = buildCastBoard(withRead({ files: ["src/a.ts"], searches: 1, ms: 41_000 }));
+    const rows = rowsTitled(board, "Scan receipt");
+    expect(rows[0]?.glyph).toBe("warn");
+    expect(rows.some((r) => r.text.startsWith("Thin:"))).toBe(true);
+    expect(statItems(board).find((i) => i.label === "Files read")?.tone).toBe("warn");
+  });
+
+  test("a thorough scan reads as ok and raises no thin warning", () => {
+    const files = Array.from({ length: 31 }, (_, i) => `src/f${i}.ts`);
+    const board = buildCastBoard(withRead({ files }));
+    expect(rowsTitled(board, "Scan receipt")[0]?.glyph).toBe("ok");
+    expect(rowsTitled(board, "Scan receipt").some((r) => r.text.startsWith("Thin:"))).toBe(false);
+    expect(statItems(board).find((i) => i.label === "Files read")?.tone).toBe("ok");
+  });
+
+  test("no capture says so — never a fabricated or zeroed receipt", () => {
+    const board = buildCastBoard(proposal());
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const rows = rowsTitled(board, "Scan receipt");
+    expect(rows[0]?.text).toContain("didn't report what the scan opened");
+    // A "0 files read" stat would be a claim the empty capture can't support.
+    expect(statItems(board).some((i) => i.label === "Files read")).toBe(false);
+  });
+
+  test("a huge file list is capped so the board degrades instead of failing to render", () => {
+    // rows.detail is max(4000): an uncapped list breaches it on a thorough scan of a
+    // big repo and takes the WHOLE board down through expectView.
+    const files = Array.from({ length: 400 }, (_, i) => `src/some/deep/path/module-${i}.ts`);
+    const board = buildCastBoard(withRead({ files }));
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const detail = rowsTitled(board, "Scan receipt")[0]?.detail ?? "";
+    expect(detail.length).toBeLessThanOrEqual(4000);
+    expect(detail).toContain("…and 340 more");
+    // The count still tells the truth even though the list is elided.
+    expect(statItems(board).find((i) => i.label === "Files read")?.value).toBe(400);
+  });
+
+  test("the bench sits beside the rail — the adjacency is the judgement", () => {
+    const board = buildCastBoard(withRead());
+    const cols = board.sections.find((s) => s.kind === "columns");
+    if (cols?.kind !== "columns") throw new Error("no columns section");
+    expect(cols.columns[0]?.sections[0]?.kind).toBe("cards");
+    expect(cols.columns[1]?.sections[0]?.kind).toBe("rows");
+    // The bench gets the weight; the rail is the counterweight, not the peer.
+    expect(cols.columns[0]?.weight).toBeGreaterThan(cols.columns[1]?.weight ?? 1);
   });
 });
 

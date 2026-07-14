@@ -77,13 +77,22 @@ then proposes a small team, typically three to five members and never more than
 six, each shaped like a genesis output: a person-like name, a short role, and a
 charter grounded in what it actually found in the repo, not invented.
 
-The result is staged as a **proposal**, not a roster. You review it on the
-Proposed squad panel and either:
+The result is staged as a **proposal**, not a roster — and the panel renders it
+as the bench it is about to become, beside the evidence for it: each seat's own
+reason for existing, and a receipt of what the scan actually opened, counted
+from the turn rather than reported by the model. Approving a cast is a staffing
+judgement, and those are what you judge it on.
 
-- **Approve & scaffold**, which casts every proposed member at once (skipping
-  any name that collides with an existing member, never overwriting one) and
-  clears the proposal, or
-- **Discard proposal**, which drops the proposal with nothing written.
+You review it on the Proposed squad panel and either:
+
+- **Pick the seats you want**, by clicking any card to drop or restore it. This
+  is a file write, not a re-scan.
+- **Approve & scaffold**, which casts the picked members (skipping any name that
+  collides with an existing member, never overwriting one), returns each dropped
+  seat's cast name to the pool, and clears the proposal, or
+- **Discard proposal**, which drops the whole proposal with nothing written.
+  Casting again is a fresh scan proposing a *different* team — which is why
+  disagreeing with one seat shouldn't cost you the other five.
 
 Casting is deliberately a cold-start move. Once a project has an active roster,
 the roster only offers "add a member" (another genesis run); re-casting a

@@ -31,6 +31,20 @@ function fakeTurn(result: Promise<RibAgentTurnResult>): RibAgentTurn {
   return { stream: oneChunkStream("x"), result };
 }
 
+// A turn whose stream carries the tool_use chunks the scan receipt is counted from.
+function fakeTurnWithChunks(chunks: MessageChunk[], result: Promise<RibAgentTurnResult>) {
+  async function* s(): AsyncGenerator<MessageChunk> {
+    for (const c of chunks) yield c;
+    yield { type: "done" };
+  }
+  return { stream: s(), result } as RibAgentTurn;
+}
+const readChunk = (path: string): MessageChunk => ({
+  type: "tool_use",
+  toolName: "Read",
+  toolInput: { file_path: path },
+});
+
 const PROJECT = { id: "p1", name: "keelson", rootPath: "/repo/keelson" };
 
 function rosterReply(members: unknown[], summary = "a tuned team"): string {
@@ -289,6 +303,62 @@ describe("proposeCast", () => {
     expect(req?.prompt).toContain("naming the real files or directories");
   });
 
+  // The receipt is the only thing on the cast board the model can't author. It is
+  // counted off the turn's own tool_use chunks, so these drive real chunk streams.
+  test("counts the files the scan actually read, deduped, plus its searches", async () => {
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurnWithChunks(
+        [
+          readChunk("/repo/keelson/src/index.ts"),
+          readChunk("/repo/keelson/src/cast.ts"),
+          // The same file twice is one file read.
+          readChunk("/repo/keelson/src/index.ts"),
+          { type: "tool_use", toolName: "Glob", toolInput: { pattern: "src/**/*.ts" } },
+          { type: "tool_use", toolName: "Grep", toolInput: { pattern: "registerTools" } },
+        ],
+        Promise.resolve(okResult(rosterReply([{ name: "A", role: "Engineer", charter: "# A" }]))),
+      );
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.read?.files).toEqual([
+      "/repo/keelson/src/cast.ts",
+      "/repo/keelson/src/index.ts",
+    ]);
+    // A Glob matching 200 paths read none of them — only a Read proves a file was opened.
+    expect(result.proposal.read?.searches).toBe(2);
+    expect(result.proposal.read?.ms).toBeGreaterThanOrEqual(0);
+  });
+
+  test("omits the receipt when the provider reports no readable tool input", async () => {
+    // toolInput is optional in the contract, and casting pins members across providers —
+    // an empty capture must render no receipt rather than "0 files read", and must never
+    // fall back to the model's own account of what it read.
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurnWithChunks(
+        [
+          { type: "tool_use", toolName: "Read" },
+          { type: "tool_use", toolName: "Grep", toolInput: { pattern: "x" } },
+        ],
+        Promise.resolve(okResult(rosterReply([{ name: "A", role: "Engineer", charter: "# A" }]))),
+      );
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.read).toBeUndefined();
+  });
+
+  test("a scan that read nothing at all carries no receipt", async () => {
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurn(
+        Promise.resolve(okResult(rosterReply([{ name: "A", role: "Engineer", charter: "# A" }]))),
+      );
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.read).toBeUndefined();
+  });
+
   test("dedupes/trims capability tags and tool allowlists", async () => {
     const runAgentTurn = (): RibAgentTurn =>
       fakeTurn(
@@ -458,6 +528,30 @@ describe("cast proposal store", () => {
     await writeProposal(home, record());
     const back = await readProposal(home);
     expect(back?.members[0]?.slug).toBe("atlas");
+  });
+
+  test("round-trips the scan receipt", async () => {
+    await writeProposal(home, {
+      ...record(),
+      read: { files: ["src/a.ts", "src/b.ts"], searches: 4, ms: 41_000 },
+    });
+    const back = await readProposal(home);
+    expect(back?.read).toEqual({ files: ["src/a.ts", "src/b.ts"], searches: 4, ms: 41_000 });
+  });
+
+  test("drops a receipt with no files — it isn't a receipt, it's a claim we can't make", async () => {
+    await writeProposal(home, {
+      ...record(),
+      read: { files: [], searches: 9, ms: 41_000 },
+    });
+    expect((await readProposal(home))?.read).toBeUndefined();
+  });
+
+  test("a proposal with no receipt reads back cleanly", async () => {
+    await writeProposal(home, record());
+    const back = await readProposal(home);
+    expect(back?.read).toBeUndefined();
+    expect(back?.members).toHaveLength(1);
   });
 
   test("normalizes missing and invalid identity slots to cast-order slots", async () => {
