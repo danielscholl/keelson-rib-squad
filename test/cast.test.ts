@@ -396,7 +396,7 @@ describe("cast proposal store", () => {
     expect(back?.members[0]?.identitySlot).toBe(0);
   });
 
-  test("normalizes missing and invalid identity slots to cast-order slots within 0-4", async () => {
+  test("normalizes missing and invalid identity slots to cast-order slots", async () => {
     await writeProposal(home, {
       ...record(),
       members: [
@@ -409,7 +409,9 @@ describe("cast proposal store", () => {
       ],
     });
     const back = await readProposal(home);
-    expect(back?.members.map((m) => m.identitySlot)).toEqual([3, 1, 2, 3, 4, 4]);
+    // F is the 6th seat against five hues: it takes the out-of-ramp sentinel and
+    // renders neutral rather than repeating E's id-olive.
+    expect(back?.members.map((m) => m.identitySlot)).toEqual([3, 1, 2, 3, 4, 5]);
   });
 
   test("read returns undefined when there is no proposal", async () => {

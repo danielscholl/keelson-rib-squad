@@ -42,17 +42,26 @@ export function identityTonesByMember(members: readonly Member[]): Map<string, C
   return map;
 }
 
+// Cast order -> slot, saturating on IDENTITY_SLOT_COUNT — the out-of-ramp sentinel
+// identityToneForSlot folds to neutral (the same sentinel roster.ts's nextFreeSlot
+// returns when all five hues are taken). It must not clamp onto COUNT - 1: a cast
+// runs to MAX_CAST_MEMBERS (6) against five hues, so clamping seats the 5th and 6th
+// members in one shared id-olive.
 export function identitySlotForIndex(index: number): number {
   const slot = Math.trunc(index);
   if (!Number.isFinite(slot)) return 0;
-  return Math.min(Math.max(0, slot), IDENTITY_SLOT_COUNT - 1);
+  return Math.min(Math.max(0, slot), IDENTITY_SLOT_COUNT);
 }
 
+// The sentinel is a legal stored slot, so the domain is 0..IDENTITY_SLOT_COUNT
+// inclusive — bounding it below the sentinel would send a stored 5 to the fallback,
+// and member-store's readMembers passes no fallback index, reloading a 6th member
+// as slot 0. A slot outside the domain is drift: repair it from cast order.
 export function normalizeIdentitySlot(value: unknown, fallbackIndex = 0): number {
   return typeof value === "number" &&
     Number.isInteger(value) &&
     value >= 0 &&
-    value < IDENTITY_SLOT_COUNT
+    value <= IDENTITY_SLOT_COUNT
     ? value
     : identitySlotForIndex(fallbackIndex);
 }
