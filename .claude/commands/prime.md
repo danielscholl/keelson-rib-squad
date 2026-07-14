@@ -26,8 +26,8 @@ allowed-tools: Bash, Read, Glob, Grep
       the pattern, list the rest.</rule>
     <rule>DO NOT launch subagents — this is a single-pass orientation.</rule>
     <rule>CLAUDE.md / AGENTS.md are already project context; build on them, don't
-      re-read. NB: AGENTS.md still calls this a "Phase-0 thin slice" — it is stale
-      (see the drift phase). The code is the truth.</rule>
+      re-read. They track the current architecture, but the code is still the truth
+      — if they disagree, believe the code and report it (see the drift phase).</rule>
   </constraints>
 
   <phase number="1" name="orient">
@@ -86,8 +86,10 @@ allowed-tools: Bash, Read, Glob, Grep
       <command>grep -nE 'name: "squad_' src/index.ts</command>
       <extract>The shape: a Zod inputSchema, `state_changing`, resolveRunScope (an
         explicit `project` arg or the selected scope), then a driver-free disk op or a
-        seam call, emitting a bounded tool_result. The count re-derived by the grep is
-        the truth — the docs undercount (see the drift phase).</extract>
+        seam call, emitting a bounded tool_result. The three tools that touch a real
+        remote or working tree (squad_open_pr, squad_resolve_review, squad_rollback)
+        also set `requires_confirmation`. The count re-derived by the grep is the
+        truth — trust it over any prose number (see the drift phase).</extract>
     </step>
   </phase>
 
@@ -110,10 +112,12 @@ allowed-tools: Bash, Read, Glob, Grep
       <command>grep -nE 'export (interface|const|type) (Coordinator|RunCoordinator|Verification|RUN_STATUS|LEDGER_STATUS|MAX_)' src/coordinator.ts | head</command>
       <extract>The round: recall (governed memory, once) → assess (one manager turn
         judging progress) → pick a method → execute one step → reflect (a repeat-outcome
-        stall forces a re-plan). Terminal statuses: done, gave-up, max-rounds,
-        verification-failed, change-quality-failed (aborted/error are NOT archived). A
-        "done" claim is not trusted for a code-changing run until an independent review
-        and the project's own verify commands come back clean.</extract>
+        stall forces a re-plan). The CoordinatorTerminalStatus union: done, gave-up,
+        max-rounds, max-tokens, verification-failed, change-quality-failed, aborted.
+        archiveRun fires for EVERY terminal status (aborted included); only "error" —
+        which is not in the union — escapes archival. A "done" claim is not trusted for
+        a code-changing run until an independent review and the project's own verify
+        commands come back clean.</extract>
       <extract>The three methods a step can take (method agency): dispatch.ts (text-only
         fan-out), code.ts + turn-runner.ts (a confined coding turn, write-railed to the
         project root), and workflow-authoring.ts (author a reusable DAG). orchestrator.ts
@@ -193,15 +197,20 @@ allowed-tools: Bash, Read, Glob, Grep
   <phase number="8" name="report-drift">
     <action>This rib moves fast and the docs lag. If anything you read contradicts this
       command file, AGENTS.md, or the docs/ reference pages, SAY SO in a closing line —
-      name the file and the specific claim. Known drift to confirm, not trust:</action>
+      name the file and the specific claim. The greps in phase 5 re-derive the real
+      counts; trust them over any prose number, in the docs or in this file.</action>
     <points>
-      <point>AGENTS.md calls this a "Phase-0 thin slice" (roster + genesis only). The
-        coordinator loop, auto-casting, runs history, decisions ledger, and rollback are
-        all built. It is well past Phase 0.</point>
-      <point>docs reference/tools-and-commands.md says "Nine tools"; registerTools returns
-        ~17. reference/workflows.md says 11 workflows; the code defines 12
-        (squad-rollback-run is undocumented). The greps in phase 5 re-derive the real
-        counts — trust them over any prose number.</point>
+      <point>As of 2026-07-14 the counts in AGENTS.md and the docs/ reference pages
+        (17 tools, 12 workflows) match the code. Re-derive anyway — that is the point of
+        the phase-5 greps, and a stale number here is itself drift worth reporting.</point>
+      <point>Known-incomplete: reference/tools-and-commands.md's "Board action verbs"
+        table lists 14 of the 21 verbs in the onAction switch (dismiss-genesis,
+        stop-coordinate, steer-coordinate, rollback-run, reset-squad, view-run, and
+        squad-report are missing).</point>
+      <point>Read the verb STRINGS off src/boards/*.ts, never off the constant names in
+        the switch — three disagree: STOP_COORDINATOR_ACTION is "stop-coordinate",
+        STEER_COORDINATOR_ACTION is "steer-coordinate", and REPORT_RUN_ACTION is
+        "squad-report".</point>
     </points>
   </phase>
 
