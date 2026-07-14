@@ -88,10 +88,12 @@ seam each one needs:
 - **Snapshot seam** (it republishes a canvas): `squad_report`.
 
 The projects seam resolves a repository for any tool taking a `project`
-argument. An explicit but unknown project errors rather than silently falling
-back to the default scope; with no explicit argument the tools read the
-operator's current selection instead, so the projects seam is only strictly
-required on the explicit path.
+argument, and an explicit but unknown project errors rather than silently
+falling back to the default scope. How hard a tool depends on the seam varies:
+`squad_code` and `squad_open_pr` check for it up front and fail closed without
+it, because they cannot confine a turn or pick a remote with no repository. The
+rest only need it to resolve an explicit `project`, reading the operator's
+current selection otherwise.
 
 ## Governance floor
 

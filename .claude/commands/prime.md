@@ -113,9 +113,10 @@ allowed-tools: Bash, Read, Glob, Grep
       <extract>The round: recall (governed memory, once) → assess (one manager turn
         judging progress) → pick a method → execute one step → reflect (a repeat-outcome
         stall forces a re-plan). The CoordinatorTerminalStatus union: done, gave-up,
-        max-rounds, max-tokens, verification-failed, change-quality-failed, aborted
-        (aborted/error are NOT archived). A "done" claim is not trusted for a
-        code-changing run until an independent review and the project's own verify
+        max-rounds, max-tokens, verification-failed, change-quality-failed, aborted.
+        archiveRun fires for EVERY terminal status (aborted included); only "error" —
+        which is not in the union — escapes archival. A "done" claim is not trusted for
+        a code-changing run until an independent review and the project's own verify
         commands come back clean.</extract>
       <extract>The three methods a step can take (method agency): dispatch.ts (text-only
         fan-out), code.ts + turn-runner.ts (a confined coding turn, write-railed to the

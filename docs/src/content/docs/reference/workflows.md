@@ -9,9 +9,10 @@ Squad contributes 12 workflows to the catalog, all defined in code in the rib's
 `contributeWorkflows` hook, so there are no YAML files to edit. Five are
 no-turn/deterministic: four bash collectors that read the data home and publish a
 board, plus one constant bash node paired with a declarative memory writeback.
-Six are single prompt turns that call exactly one tool; the remaining workflow
-(`squad-decisions`) combines a memory recall with a prompt render to publish the
-Decisions board.
+Six are single prompt turns, each scoped by `allowed_tools` to the seams it
+needs: five call exactly one tool, and `squad-genesis` calls two. The remaining
+workflow (`squad-decisions`) combines a memory recall with a prompt render to
+publish the Decisions board.
 
 Each workflow ships a description in the `Use when / Triggers / Does / NOT
 for` shape, so the catalog and the surface render it scannably and a reader
@@ -62,14 +63,20 @@ cadence and refreshes on propose/approve/discard actions; see
 
 ## The prompt-turn workflows
 
-Six workflows are a single `prompt` node that calls exactly one tool, all
-launched from a surface action rather than run ad hoc. Each sets
-`fail_on_tool_error: true`: a workflow prompt node has every rib tool off by
-default, so each of these opts in to its one write seam by name via
+Six workflows are a single `prompt` node, all launched from a surface action
+rather than run ad hoc. Each sets `fail_on_tool_error: true`: a workflow prompt
+node has every rib tool off by default, so each opts in by name via
 `allowed_tools`, and a failed tool call fails the whole run instead of
 reporting success with nothing done. None binds a snapshot key: each either
 writes files that another workflow's collector reflects on its next run, or
 calls a tool that refreshes its own panel directly.
+
+Five of the six opt into exactly one tool. `squad-genesis` is the exception,
+allowing two: `squad_casting_options` for read-only casting context, then
+`squad_emit_member` to persist the member. That is why `squad_casting_options`
+is written fail-soft and never reports an error — it shares the node's
+`fail_on_tool_error: true` with the write seam, and a hiccup fetching casting
+context must not fail the whole genesis run.
 
 | Workflow | Use when | Triggers | Does | NOT for |
 |---|---|---|---|---|
@@ -81,10 +88,15 @@ calls a tool that refreshes its own panel directly.
 | `squad-rollback-run` | You want to preview a rollback for an aborted or failed coordinator run. | A Run loop or Runs card's "Rollback" action. | Calls `squad_rollback` **without** `confirm: true`, so the operator sees the full created/modified/deleted manifest before anything mutates. | Stopping a live run (`squad_stop`), or rolling back a done or still-live run. |
 
 `squad-rollback-run` is the preview half of the two-phase rollback contract:
-the workflow deliberately omits `confirm: true`, so launching it can only ever
-compute and display a manifest. Performing the rollback is a separate,
-operator-confirmed `squad_rollback` call; the workflow cannot mutate a
-repository no matter how its prompt turn behaves.
+its prompt turn is instructed to call `squad_rollback` **without** `confirm:
+true`, so the intended path only ever computes and displays a manifest.
+Performing the rollback is a separate, operator-confirmed call.
+
+The prompt instruction is the intent, not the enforcement: `squad_rollback`'s
+schema accepts `confirm`, so a misbehaving turn could still request the
+mutating path. What actually stops it is the tool's `requires_confirmation`,
+which puts the operator in front of any real rewind regardless of how the turn
+behaves.
 
 `squad-genesis` writes a member's files under the data home; `squad-roster`
 reflects the new member the next time its collector runs, not because
