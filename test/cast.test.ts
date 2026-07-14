@@ -39,10 +39,20 @@ function fakeTurnWithChunks(chunks: MessageChunk[], result: Promise<RibAgentTurn
   }
   return { stream: s(), result } as RibAgentTurn;
 }
+// Claude's SDK names its built-ins Read/Glob/Grep and keys the path on file_path.
 const readChunk = (path: string): MessageChunk => ({
   type: "tool_use",
   toolName: "Read",
   toolInput: { file_path: path },
+});
+// Copilot — the only provider registered on a stock harness, and its DEFAULT — names
+// the same built-ins read_file/view/cat and keys the path on path/filePath. A receipt
+// keyed on one vendor's spelling counts nothing on the other, which is how this
+// shipped inert: every fixture here spoke Claude.
+const copilotReadChunk = (path: string, toolName = "read_file"): MessageChunk => ({
+  type: "tool_use",
+  toolName,
+  toolInput: { path },
 });
 
 const PROJECT = { id: "p1", name: "keelson", rootPath: "/repo/keelson" };
@@ -328,6 +338,59 @@ describe("proposeCast", () => {
     // A Glob matching 200 paths read none of them — only a Read proves a file was opened.
     expect(result.proposal.read?.searches).toBe(2);
     expect(result.proposal.read?.ms).toBeGreaterThanOrEqual(0);
+  });
+
+  test("counts a copilot scan's reads — its built-ins are not named 'Read'", async () => {
+    // The regression that shipped: matching the literal name "Read" counted zero
+    // reads on copilot, so the receipt was omitted on every scan a stock harness runs.
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurnWithChunks(
+        [
+          copilotReadChunk("src/index.ts"),
+          copilotReadChunk("src/cast.ts", "view"),
+          copilotReadChunk("README.md", "cat"),
+          copilotReadChunk("src/index.ts"), // same file twice is one file
+          { type: "tool_use", toolName: "grep", toolInput: { pattern: "registerTools" } },
+          { type: "tool_use", toolName: "glob", toolInput: { pattern: "src/**/*.ts" } },
+        ],
+        Promise.resolve(okResult(rosterReply([{ name: "A", role: "Engineer", charter: "# A" }]))),
+      );
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.read?.files).toEqual(["README.md", "src/cast.ts", "src/index.ts"]);
+    expect(result.proposal.read?.searches).toBe(2);
+  });
+
+  test("counts a copilot read keyed on filePath rather than path", async () => {
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurnWithChunks(
+        [{ type: "tool_use", toolName: "read_file", toolInput: { filePath: "src/a.ts" } }],
+        Promise.resolve(okResult(rosterReply([{ name: "A", role: "Engineer", charter: "# A" }]))),
+      );
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.read?.files).toEqual(["src/a.ts"]);
+  });
+
+  test("an edit or shell chunk is neither a file read nor a search", async () => {
+    // The scan rail is read-only, but the receipt must not miscount if that changes:
+    // only a read proves a file was opened, only a search is a search.
+    const runAgentTurn = (): RibAgentTurn =>
+      fakeTurnWithChunks(
+        [
+          copilotReadChunk("src/a.ts"),
+          { type: "tool_use", toolName: "bash", toolInput: { command: "ls" } },
+          { type: "tool_use", toolName: "apply_patch", toolInput: { path: "src/b.ts" } },
+        ],
+        Promise.resolve(okResult(rosterReply([{ name: "A", role: "Engineer", charter: "# A" }]))),
+      );
+    const result = await proposeCast({ runAgentTurn, project: PROJECT });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.read?.files).toEqual(["src/a.ts"]);
+    expect(result.proposal.read?.searches).toBe(0);
   });
 
   test("omits the receipt when the provider reports no readable tool input", async () => {

@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { RibAgentTurn, RibAgentTurnResult, RibContext } from "@keelson/shared";
-import { errText, z } from "@keelson/shared";
+import { errText, toolPresentation, z } from "@keelson/shared";
 import { type CastingOptionsView, castingOptions } from "./casting/options.ts";
 import {
   type LlmCastProposal,
@@ -11,7 +11,6 @@ import {
 } from "./casting/registry.ts";
 import { slugify } from "./genesis.ts";
 import { assignableProviders, validateProviderPin } from "./provider-pins.ts";
-import { digestTarget } from "./turn-runner.ts";
 import { normalizeIdentitySlot, normalizeToolAllowlist } from "./types.ts";
 
 // Auto-cast: inspect a project and propose the team best suited to it. This is the
@@ -410,12 +409,16 @@ async function drainResult(turn: RibAgentTurn, capture: ScanCapture): Promise<Ri
   try {
     for await (const chunk of turn.stream) {
       if (chunk.type !== "tool_use") continue;
-      // Only a Read proves a file was opened — a Glob matching 200 paths read none of
-      // them, so everything else counts as a search.
-      if (chunk.toolName === "Read") {
-        const target = digestTarget(chunk.toolInput);
-        if (target) capture.files.add(target);
-      } else {
+      // Classify through the shared contract, never by tool name: each provider names
+      // its own built-ins ("Read" on claude, read_file/view/cat on copilot), so
+      // matching a literal name counts one vendor's reads and silently misses every
+      // other's. toolPresentation owns that vocabulary and the per-kind arg spelling.
+      const tool = toolPresentation(chunk.toolName, chunk.toolInput);
+      // Only a read proves a file was opened — a glob matching 200 paths read none of
+      // them, so a search is counted as a search.
+      if (tool.kind === "read") {
+        if (tool.primary) capture.files.add(tool.primary);
+      } else if (tool.kind === "search") {
         capture.searches++;
       }
     }

@@ -189,7 +189,7 @@ function foldToolChunk(chunk: MessageChunk, trace: TraceState): boolean {
 // being edited, a command being run, a query being searched.
 const TARGET_KEYS = ["file_path", "path", "command", "cmd", "query", "pattern", "url", "name"];
 
-export function digestTarget(input?: Record<string, unknown>): string | undefined {
+function digestTarget(input?: Record<string, unknown>): string | undefined {
   if (!input) return undefined;
   for (const key of TARGET_KEYS) {
     const v = input[key];
