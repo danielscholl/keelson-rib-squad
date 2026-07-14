@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.26.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.25.0...v0.26.0) (2026-07-14)
+
+
+### Added
+
+* **cast:** approve a subset of a proposed squad ([#231](https://github.com/danielscholl/keelson-rib-squad/issues/231)) ([3a31cda](https://github.com/danielscholl/keelson-rib-squad/commit/3a31cda7b40665e680d5911f43806b0fc5d1f2ab))
+* **cast:** show the scan's evidence beside the proposed bench ([#232](https://github.com/danielscholl/keelson-rib-squad/issues/232)) ([936c730](https://github.com/danielscholl/keelson-rib-squad/commit/936c730e59b4c57087d14c12121e52528fceb311))
+
+
+### Fixed
+
+* **types:** stop a 6th cast member from duplicating id-olive ([#230](https://github.com/danielscholl/keelson-rib-squad/issues/230)) ([0dfc7ba](https://github.com/danielscholl/keelson-rib-squad/commit/0dfc7bafa7c3589fe7d1af463449f21488b95a3e))
+
+
+### Documentation
+
+* add /prime command and refresh AGENTS.md to current architecture ([#227](https://github.com/danielscholl/keelson-rib-squad/issues/227)) ([3528b0f](https://github.com/danielscholl/keelson-rib-squad/commit/3528b0f607c9e0a53dc72a1eb050c0ab05c06170))
+* update reference for squad tools and rollback workflow ([#229](https://github.com/danielscholl/keelson-rib-squad/issues/229)) ([db209e8](https://github.com/danielscholl/keelson-rib-squad/commit/db209e893cd6efa8f0e8f24aee9b630a9979c04f))
+
 ## [0.25.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.24.0...v0.25.0) (2026-07-12)
 
 
