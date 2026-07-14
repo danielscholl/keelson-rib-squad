@@ -572,6 +572,183 @@ describe("approve-cast / discard-cast actions", () => {
   });
 });
 
+describe("cast-pick action", () => {
+  // Drive a real proposal through the scan tool so the members carry the themed
+  // slugs and name reservations the pick/approve paths key on.
+  async function proposed() {
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await proposeViaTool(tools);
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+    if (!proposal) throw new Error("no proposal");
+    return proposal;
+  }
+  const pick = (slug: string, picked: boolean, castAt?: string) =>
+    rib.onAction?.(
+      { type: "cast-pick", payload: { slug, picked, ...(castAt ? { castAt } : {}) } },
+      {} as RibContext,
+    );
+
+  test("dropping a seat persists picked:false and refreshes only the cast panel", async () => {
+    const proposal = await proposed();
+    const slug = proposal.members[0]!.slug!;
+    refreshed.length = 0;
+    const res = await pick(slug, false, proposal.createdAt);
+    expect(res?.ok).toBe(true);
+    const back = await readProposal(scopeDataHome(home, "p1"));
+    expect(back?.members.find((m) => m.slug === slug)?.picked).toBe(false);
+    expect(back?.members.find((m) => m.slug !== slug)?.picked).toBeUndefined();
+    expect(refreshed).toEqual(["squad-cast"]);
+  });
+
+  test("picking a seat back clears the flag rather than persisting picked:true", async () => {
+    const proposal = await proposed();
+    const slug = proposal.members[0]!.slug!;
+    await pick(slug, false, proposal.createdAt);
+    await pick(slug, true, proposal.createdAt);
+    const back = await readProposal(scopeDataHome(home, "p1"));
+    // Absent === picked, so a re-picked seat reads identically to an untouched one.
+    expect(back?.members.find((m) => m.slug === slug)?.picked).toBeUndefined();
+  });
+
+  test("declaring the desired state makes a repeated click idempotent", async () => {
+    const proposal = await proposed();
+    const slug = proposal.members[0]!.slug!;
+    await pick(slug, false, proposal.createdAt);
+    await pick(slug, false, proposal.createdAt);
+    const back = await readProposal(scopeDataHome(home, "p1"));
+    expect(back?.members.find((m) => m.slug === slug)?.picked).toBe(false);
+  });
+
+  test("concurrent picks on different seats don't lose an update", async () => {
+    const proposal = await proposed();
+    const [a, b] = [proposal.members[0]!.slug!, proposal.members[1]!.slug!];
+    // Both reads would see the same pre-state without the proposal lock; the later
+    // write would then clobber the earlier seat's toggle.
+    await Promise.all([pick(a, false, proposal.createdAt), pick(b, false, proposal.createdAt)]);
+    const back = await readProposal(scopeDataHome(home, "p1"));
+    expect(back?.members.map((m) => m.picked)).toEqual([false, false]);
+  });
+
+  test("rejects a slug the proposal doesn't hold", async () => {
+    const proposal = await proposed();
+    const res = await pick("not-a-member", false, proposal.createdAt);
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("no proposed member");
+  });
+
+  test("rejects a click aimed at a replaced proposal", async () => {
+    const proposal = await proposed();
+    const res = await pick(proposal.members[0]!.slug!, false, "2020-01-01T00:00:00.000Z");
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("replaced by a newer cast");
+    expect((await readProposal(scopeDataHome(home, "p1")))?.members[0]?.picked).toBeUndefined();
+  });
+
+  test("requires a boolean picked — an absent one is not a silent drop", async () => {
+    await proposed();
+    const res = await rib.onAction?.(
+      { type: "cast-pick", payload: { slug: "atlas" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("picked: boolean");
+  });
+});
+
+describe("subset approve", () => {
+  async function proposed() {
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await proposeViaTool(tools);
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+    if (!proposal) throw new Error("no proposal");
+    return proposal;
+  }
+
+  test("scaffolds only the picked seats", async () => {
+    const proposal = await proposed();
+    const dropped = proposal.members[1]!;
+    await rib.onAction?.(
+      { type: "cast-pick", payload: { slug: dropped.slug, picked: false } },
+      {} as RibContext,
+    );
+    const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
+    expect(res?.ok).toBe(true);
+    if (res?.ok) {
+      const data = res.data as { created: string[]; dropped: number };
+      expect(data.created).toHaveLength(1);
+      expect(data.dropped).toBe(1);
+    }
+    const members = await readMembers(scopeMembersDir(home, "p1"));
+    expect(members).toHaveLength(1);
+    expect(members[0]?.slug).toBe(proposal.members[0]!.slug);
+  });
+
+  test("a dropped seat's casting name goes back to the registry, not leaked", async () => {
+    const proposal = await proposed();
+    const dropped = proposal.members[1]!;
+    await rib.onAction?.(
+      { type: "cast-pick", payload: { slug: dropped.slug, picked: false } },
+      {} as RibContext,
+    );
+    await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
+    // Approve creates nothing for a dropped seat, so leaving its reservation active
+    // would strand the name: active in the registry with no member dir, invisible to
+    // retire-all/reset-squad (which iterate members from disk).
+    const reg = await loadRegistry(scopeDataHome(home, "p1"));
+    expect(reg.members[dropped.slug!]?.status).not.toBe("active");
+    // The seated member keeps its reservation — it became a real member.
+    expect(reg.members[proposal.members[0]!.slug!]?.status).toBe("active");
+  });
+
+  test("refuses to scaffold when every seat is dropped", async () => {
+    const proposal = await proposed();
+    for (const m of proposal.members) {
+      await rib.onAction?.(
+        { type: "cast-pick", payload: { slug: m.slug, picked: false } },
+        {} as RibContext,
+      );
+    }
+    const res = await rib.onAction?.({ type: "approve-cast" }, {} as RibContext);
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("every seat is dropped");
+    // The proposal survives a refused approve — the seats are still there to pick back.
+    expect(await readProposal(scopeDataHome(home, "p1"))).toBeDefined();
+  });
+
+  test("approve rejects a click aimed at a replaced proposal", async () => {
+    await proposed();
+    const res = await rib.onAction?.(
+      { type: "approve-cast", payload: { castAt: "2020-01-01T00:00:00.000Z" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(false);
+    if (!res?.ok) expect(res?.error).toContain("replaced by a newer cast");
+    expect(await readMembers(scopeMembersDir(home, "p1"))).toHaveLength(0);
+  });
+
+  test("discard rejects a click aimed at a replaced proposal", async () => {
+    await proposed();
+    const res = await rib.onAction?.(
+      { type: "discard-cast", payload: { castAt: "2020-01-01T00:00:00.000Z" } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(false);
+    expect(await readProposal(scopeDataHome(home, "p1"))).toBeDefined();
+  });
+
+  test("a matching castAt is accepted", async () => {
+    const proposal = await proposed();
+    const res = await rib.onAction?.(
+      { type: "approve-cast", payload: { castAt: proposal.createdAt } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(true);
+    expect(await readMembers(scopeMembersDir(home, "p1"))).toHaveLength(2);
+  });
+});
+
 describe("assign-code action", () => {
   const now = "2026-07-01T00:00:00.000Z";
 

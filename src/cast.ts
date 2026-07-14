@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { RibAgentTurn, RibAgentTurnResult, RibContext } from "@keelson/shared";
 import { errText, z } from "@keelson/shared";
@@ -9,6 +9,7 @@ import {
   loadRegistry,
   resolveThemingConfig,
 } from "./casting/registry.ts";
+import { slugify } from "./genesis.ts";
 import { assignableProviders, validateProviderPin } from "./provider-pins.ts";
 import { normalizeIdentitySlot, normalizeToolAllowlist } from "./types.ts";
 
@@ -44,6 +45,11 @@ const castMemberSchema = z.object({
   toolAllowlist: z.array(z.string()).optional(),
   model: z.string().optional(),
   provider: z.string().optional(),
+  // Why this seat is on the bench, in the scan's own words. Optional per this
+  // schema's lenient-on-the-optionals policy: a missing rationale is a
+  // prompt-adherence miss, not a malformed proposal, and the board falls back to
+  // the charter's mission excerpt rather than dropping the seat.
+  rationale: z.string().max(600).optional(),
   // The casting decision for this member, from the SAME scan turn — informed by
   // the casting-context block scanPrompt renders. Consumed by themedProposal
   // (index.ts) right after the scan returns; never itself persisted.
@@ -70,6 +76,12 @@ export interface CastProposalMember {
   backstory?: string;
   originalName?: string;
   identitySlot?: number;
+  // Whether approve will seat this member. Absent means picked: a proposal written
+  // before subset-approve, or by a scan that never sets it, reads as a full bench —
+  // so there is nothing to migrate.
+  picked?: boolean;
+  // The scan's one-line justification for this seat, rendered as the card's reason.
+  rationale?: string;
   // Transient: the scan turn's casting decision, read by themedProposal and
   // replaced by themeId/themeLabel/personality/backstory before the proposal is
   // written to disk — never round-trips through writeProposal/readProposal.
@@ -182,15 +194,16 @@ function scanPrompt(
       : `\n- castAs (optional): a themed cast for this member — set castAs.themeId to reuse an ensemble (the active one, another catalog id, or one this squad already invented) with a characterName from ITS listed characters, or castAs.newThemeLabel to invent a fresh ensemble (never both) with any characterName. Every member's characterName must be distinct from every other member's in this same proposal, and from the already-taken names above. Always include personality and backstory in your own words. Spoiler/tone guard: prefer a character's earliest, most neutral identity (not a later-earned title or a twist/reveal name); do not cast a character whose reputation clashes with the role. Omit castAs for a member you'd rather leave with a plain name.`;
   const jsonExample =
     providers.length > 0
-      ? `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"provider":"claude","model":"claude-opus-4-8","castAs":{"themeId":"...","characterName":"...","personality":"...","backstory":"..."}}],"summary":"one line describing the team"}`
-      : `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"castAs":{"themeId":"...","characterName":"...","personality":"...","backstory":"..."}}],"summary":"one line describing the team"}`;
+      ? `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"rationale":"...","provider":"claude","model":"claude-opus-4-8","castAs":{"themeId":"...","characterName":"...","personality":"...","backstory":"..."}}],"summary":"one line describing the team"}`
+      : `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"rationale":"...","castAs":{"themeId":"...","characterName":"...","personality":"...","backstory":"..."}}],"summary":"one line describing the team"}`;
   return `Inspect the project at the current working directory ("${projectName}"). Use the read-only tools (Read, Glob, Grep) to learn what it actually is: its languages and frameworks, how the code is laid out, its docs, tests, and CI. Read enough to staff it well — do not modify anything.
 ${missionBlock}${castingBlock}
 Propose the SMALL team (typically 3-5 members, never more than ${maxMembers}) best suited to THIS project and mission. For each member decide:
 - name: a short proper handle (a person-like name, NOT a job title) — this is the plain fallback used verbatim if casting is off or your castAs is rejected, so make it sensible on its own
 - role: a 1-4 word role title (e.g. "Backend Engineer", "Reviewer", "Tech Lead")
 - charter: a Markdown identity doc with these sections in order — "# <name>", "## Role", "## Mission", "## Voice" — grounded in what you actually found in the repo (name the real frameworks/dirs you saw). Be honest: do not invent tools, credentials, or capabilities the member will not have.
-- tools: capability tags that decide how this member can later be routed. Use ONLY these tags: "code" (may modify the repo) and "read" (may read the repo). An implementer/engineer gets ["code","read"]; a reviewer, lead, planner, or PM gets ["read"] or [] (text-only). Reserve "code" for true implementers — most members are text-only or read-only.${assignBlock}${castInstructions}
+- tools: capability tags that decide how this member can later be routed. Use ONLY these tags: "code" (may modify the repo) and "read" (may read the repo). An implementer/engineer gets ["code","read"]; a reviewer, lead, planner, or PM gets ["read"] or [] (text-only). Reserve "code" for true implementers — most members are text-only or read-only.
+- rationale: ONE sentence naming the real files or directories you read that make this seat necessary. Cite what you actually saw, not what a project like this usually needs. The operator decides seat by seat whether to keep this member, and this is what they decide on.${assignBlock}${castInstructions}
 
 Return EXACTLY ONE JSON object as your entire reply — no prose, no code fence:
 ${jsonExample}`;
@@ -287,6 +300,7 @@ function normalizeMember(
       ...(toolAllowlist ? { toolAllowlist } : {}),
       ...(pin.provider ? { provider: pin.provider } : {}),
       ...(pin.provider && pin.model ? { model: pin.model } : {}),
+      ...(m.rationale?.trim() ? { rationale: m.rationale.trim() } : {}),
       ...(m.castAs ? { castAs: m.castAs } : {}),
     },
     ...(note ? { note } : {}),
@@ -392,9 +406,31 @@ function extractJson(text: string): unknown {
 
 const CAST_PROPOSAL_FILE = "cast-proposal.json";
 
+// Serialize the proposal's read-modify-write spans per data home, mirroring the
+// casting registry's lock. Picking a seat is read→toggle→write, and it is the one
+// squad verb an operator fires in rapid succession (trimming a bench is several
+// clicks): two overlapping picks both read the pre-state, and the later write drops
+// the earlier toggle — the card stays ringed for a seat no longer picked.
+const proposalLocks = new Map<string, Promise<unknown>>();
+
+export function withProposalLock<T>(dataHome: string, fn: () => Promise<T>): Promise<T> {
+  const prev = proposalLocks.get(dataHome) ?? Promise.resolve();
+  const run = prev.then(fn, fn); // run fn after the prior holder settles, either way
+  proposalLocks.set(
+    dataHome,
+    run.catch(() => {}), // the next waiter chains on completion, never on rejection
+  );
+  return run;
+}
+
 export async function writeProposal(dataHome: string, proposal: CastProposalRecord): Promise<void> {
   await mkdir(dataHome, { recursive: true });
-  await writeFile(join(dataHome, CAST_PROPOSAL_FILE), `${JSON.stringify(proposal, null, 2)}\n`);
+  const path = join(dataHome, CAST_PROPOSAL_FILE);
+  // Temp+rename like the member store: a crash mid-write would otherwise leave a torn
+  // file, which readProposal degrades to "no proposal" — silently losing the bench.
+  const tmp = `${path}.${process.pid}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(proposal, null, 2)}\n`);
+  await rename(tmp, path);
 }
 
 // Read the pending proposal back, or undefined when there is none / it is
@@ -441,7 +477,10 @@ export async function readProposal(dataHome: string): Promise<CastProposalRecord
 function normalizeStoredMember(m: CastProposalMember, index: number): CastProposalMember {
   const toolAllowlist = normalizeToolAllowlist(m.toolAllowlist);
   return {
-    ...(typeof m.slug === "string" && m.slug ? { slug: m.slug } : {}),
+    // Backfilled, not passed through: every proposal themedProposal writes carries a
+    // slug, but a hand-edited file without one would render cards the pick verb can't
+    // address (it keys on slug).
+    slug: typeof m.slug === "string" && m.slug.trim() ? m.slug.trim() : slugify(m.name),
     name: m.name,
     role: typeof m.role === "string" && m.role ? m.role : "",
     charter: m.charter,
@@ -460,6 +499,10 @@ function normalizeStoredMember(m: CastProposalMember, index: number): CastPropos
     ...(typeof m.originalName === "string" && m.originalName
       ? { originalName: m.originalName }
       : {}),
+    // Only an explicit false drops a seat: an absent flag is a full bench, which is
+    // what every pre-subset-approve proposal on disk carries.
+    ...(m.picked === false ? { picked: false } : {}),
+    ...(typeof m.rationale === "string" && m.rationale ? { rationale: m.rationale } : {}),
     identitySlot: normalizeIdentitySlot(m.identitySlot, index),
   };
 }
