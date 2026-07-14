@@ -483,7 +483,7 @@ describe("buildCoordinatorBoard active layout", () => {
     );
     const bareRail = bare.sections.find((s) => s.kind === "grid");
     if (bareRail?.kind !== "grid") throw new Error("no round rail");
-    expect(bareRail.cells[0]?.badge.tone).toBe("neutral");
+    expect(bareRail.cells[0]?.badge?.tone).toBe("neutral");
   });
 
   test("a ledger row expands to the full entry: instruction, text, and tool trace in detail", () => {
