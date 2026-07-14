@@ -1,15 +1,15 @@
 ---
 title: Workflows
-description: All 11 workflows the Squad rib contributes to the catalog, what triggers each one, and which board it publishes.
+description: All 12 workflows the Squad rib contributes to the catalog, what triggers each one, and which board it publishes.
 sidebar:
   order: 4
 ---
 
-Squad contributes 11 workflows to the catalog, all defined in code in the rib's
+Squad contributes 12 workflows to the catalog, all defined in code in the rib's
 `contributeWorkflows` hook, so there are no YAML files to edit. Five are
 no-turn/deterministic: four bash collectors that read the data home and publish a
 board, plus one constant bash node paired with a declarative memory writeback.
-Five are single prompt turns that call exactly one tool; the remaining workflow
+Six are single prompt turns that call exactly one tool; the remaining workflow
 (`squad-decisions`) combines a memory recall with a prompt render to publish the
 Decisions board.
 
@@ -17,7 +17,7 @@ Each workflow ships a description in the `Use when / Triggers / Does / NOT
 for` shape, so the catalog and the surface render it scannably and a reader
 can tell at a glance what a workflow is for and what it is not.
 
-## The 11
+## The 12
 
 | Workflow | Kind | Snapshot key | Publishes a board |
 |---|---|---|---|
@@ -30,6 +30,7 @@ can tell at a glance what a workflow is for and what it is not.
 | `squad-coordinate-run` | prompt turn | none | no |
 | `squad-dispatch-run` | prompt turn | none | no |
 | `squad-code-run` | prompt turn | none | no |
+| `squad-rollback-run` | prompt turn | none | no |
 | `squad-decide` | bash + memory writeback | none | no |
 | `squad-decisions` | memory recall + prompt turn | `rib:squad:decisions` | yes |
 
@@ -61,7 +62,7 @@ cadence and refreshes on propose/approve/discard actions; see
 
 ## The prompt-turn workflows
 
-Five workflows are a single `prompt` node that calls exactly one tool, all
+Six workflows are a single `prompt` node that calls exactly one tool, all
 launched from a surface action rather than run ad hoc. Each sets
 `fail_on_tool_error: true`: a workflow prompt node has every rib tool off by
 default, so each of these opts in to its one write seam by name via
@@ -77,6 +78,13 @@ calls a tool that refreshes its own panel directly.
 | `squad-coordinate-run` | You want to hand the squad a task and watch it run the plan, delegate, observe loop. | The Run loop panel's "Coordinate on a task" action. | One agent turn calls `squad_coordinate` (rounds capped low, at 6, because this is a bounded surface-launched run) against the selected project; progress streams into the Run loop panel as it goes. | A single one-off question (`squad-dispatch-run`) or one direct code edit (`squad-code-run`). |
 | `squad-dispatch-run` | You want to ask every squad member one question at once. | The Run loop panel's "Ask the team" action. | One agent turn calls `squad_dispatch` to fan the question out to the whole active roster and synthesize the replies. | A multi-step run (`squad-coordinate-run`) or editing the repo (`squad-code-run`). |
 | `squad-code-run` | You want to assign a confined coding task to one code-capable member. | A roster card's "Assign a code task" action. | One agent turn calls `squad_code` so the named member edits the selected project directly (Read/Glob/Grep/Edit/Write/Bash, confined to the project root, no merge or force-push). | Text-only reasoning (`squad-dispatch-run`) or a whole multi-step run (`squad-coordinate-run`). |
+| `squad-rollback-run` | You want to preview a rollback for an aborted or failed coordinator run. | A Run loop or Runs card's "Rollback" action. | Calls `squad_rollback` **without** `confirm: true`, so the operator sees the full created/modified/deleted manifest before anything mutates. | Stopping a live run (`squad_stop`), or rolling back a done or still-live run. |
+
+`squad-rollback-run` is the preview half of the two-phase rollback contract:
+the workflow deliberately omits `confirm: true`, so launching it can only ever
+compute and display a manifest. Performing the rollback is a separate,
+operator-confirmed `squad_rollback` call; the workflow cannot mutate a
+repository no matter how its prompt turn behaves.
 
 `squad-genesis` writes a member's files under the data home; `squad-roster`
 reflects the new member the next time its collector runs, not because
@@ -120,14 +128,14 @@ focus instead.
 `expectView(DECISIONS_KEY, "board")`; `squad-decide` binds no key, since it
 writes a ledger row rather than a board.
 
-## A twelfth path that is not a bundled workflow
+## A thirteenth path that is not a bundled workflow
 
 The coordinator loop can also delegate a step to a member with an
 instruction to author a reusable Keelson workflow DAG, when the manager's
 directive sets `mode: "workflow"`. That authored DAG is validated
 structurally and persisted as a file under the data home for the operator to
-inspect and run; it is not one of the 11 workflows above, it is an artifact
-the coordinator produces, and every one of the 11 above ships with the rib
+inspect and run; it is not one of the 12 workflows above, it is an artifact
+the coordinator produces, and every one of the 12 above ships with the rib
 rather than being generated at run time. See
 [The coordinator loop](../../concepts/the-coordinator-loop/) for how that
 authoring option fits into a round.
