@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { canvasViewSchema } from "@keelson/shared";
 import { buildRosterBoard } from "../../src/boards/roster.ts";
 import type { CastProposalRecord } from "../../src/cast.ts";
+import { foldThemedCharter } from "../../src/casting/registry.ts";
 import type { PendingGenesis } from "../../src/pending-genesis.ts";
 import { GENESIS_STARTERS } from "../../src/starters.ts";
 import type { Member } from "../../src/types.ts";
@@ -14,6 +15,27 @@ const member = (over: Partial<Member> = {}): Member => ({
   status: "active",
   ...over,
 });
+
+const PERSONALITY = "Pragmatic, precise, and protective of clear operator feedback.";
+const MISSION = "Keep the release train green.";
+
+// A member as the cast actually writes one: the themed preamble folded above the
+// charter's own ## sections. Built through foldThemedCharter itself so the fixture can't
+// drift from the fold the board has to survive.
+const castMember = (over: Partial<Member> = {}): Member =>
+  member({
+    slug: "rowan",
+    name: "Rowan",
+    themeId: "usual-suspects",
+    personality: PERSONALITY,
+    charter: foldThemedCharter(`# Rowan\n\n## Role\n\nLead.\n\n## Mission\n\n${MISSION}`, {
+      name: "Rowan",
+      personality: PERSONALITY,
+      backstory: "Rowan builds dependable command-line tools and guards their seams.",
+      themeLabel: "The Usual Suspects",
+    }),
+    ...over,
+  });
 
 const proposal = (count = 5): CastProposalRecord => ({
   projectId: "p1",
@@ -201,44 +223,61 @@ describe("buildRosterBoard populated", () => {
     expect(cards(buildRosterBoard([member({ role: "" })]))[0]?.pill?.label).toBe("Member");
   });
 
-  test("fields: a truncated charter ((no charter) fallback) and model only when set", () => {
-    const withModel = cards(buildRosterBoard([member({ model: "claude-x" })]))[0];
-    expect(withModel?.fields?.find((f) => f.label === "charter")?.value).toBe("You are the Lead.");
-    expect(withModel?.fields?.find((f) => f.label === "model")?.value).toBe("claude-x");
-    const noModel = cards(buildRosterBoard([member({ model: undefined })]))[0];
-    expect(noModel?.fields?.some((f) => f.label === "model")).toBe(false);
-    const noCharter = cards(buildRosterBoard([member({ charter: "   " })]))[0];
-    expect(noCharter?.fields?.find((f) => f.label === "charter")?.value).toBe("(no charter)");
+  test("fields: the capability, marked only when the seat can write; no charter or model field", () => {
+    const coder = cards(buildRosterBoard([member({ tools: ["code", "read"] })]))[0];
+    expect(coder?.fields?.some((f) => f.label === "charter")).toBe(false);
+    expect(coder?.fields?.some((f) => f.label === "model")).toBe(false);
+    // `code` is what the governance floor bounds — the only capability toned.
+    expect(coder?.fields?.at(-1)).toEqual({ value: "✎ code, read", tone: "caution" });
+    const textOnly = cards(buildRosterBoard([member({ model: "claude-x" })]))[0];
+    expect(textOnly?.fields?.at(-1)).toEqual({ value: "text-only" });
+    // The pin is the model action's label now, not a dead field.
+    expect(textOnly?.actions?.find((a) => a.type === "set-model")?.label).toBe("Model — claude-x");
   });
 
-  test("the charter excerpt strips markdown and drops only the leading self-name heading", () => {
-    const card = cards(
-      buildRosterBoard([
-        member({
-          name: "McManus",
-          charter: "# McManus\n\n## Mission\n\n**Ship** the `rib`.\n\n# Keep this heading",
-        }),
-      ]),
-    )[0];
-    const excerpt = card?.fields?.find((f) => f.label === "charter")?.value;
-    expect(excerpt).toBe("Mission Ship the rib. Keep this heading");
-    expect(String(excerpt ?? "").startsWith("McManus")).toBe(false);
+  test("the purpose is the mission, not the personality preamble the fold prepends", () => {
+    const card = cards(buildRosterBoard([castMember()]))[0];
+    // The defect this pass exists to kill: a 120-char window over the FLATTENED charter
+    // opened on `**Personality.**` and quoted the line the card renders again below it.
+    expect(card?.reason?.text).toBe(MISSION);
+    expect(card?.reason?.text).not.toContain("Personality");
+    expect(card?.reason?.text).not.toBe(card?.footnote);
+    expect(card?.reason?.label).toBeUndefined();
   });
 
-  test("each card leads with a non-destructive Enter, then Set model, then a destructive Retire", () => {
+  test("a charter that says nothing falls back rather than emitting an empty reason", () => {
+    // reason.text is min(1): an empty excerpt would fail the whole board through expectView.
+    const card = cards(buildRosterBoard([member({ charter: "   " })]))[0];
+    expect(card?.reason?.text).toBe("This member's charter doesn't say what it's for.");
+    expect(canvasViewSchema.safeParse(buildRosterBoard([member({ charter: "   " })])).success).toBe(
+      true,
+    );
+  });
+
+  test("the cards lay out as the bench's own three-track grid", () => {
+    const section = buildRosterBoard([member()]).sections.find((s) => s.kind === "cards");
+    expect(section).toMatchObject({ grid: true, columns: 3 });
+  });
+
+  test("each card leads with a non-destructive Enter, then the model picker, then a destructive Retire", () => {
     const board = buildRosterBoard([member({ slug: "lead", name: "Lead" })]);
     const actions = cards(board)[0]?.actions ?? [];
     const enter = actions.find((a) => a.type === "enter-member");
+    // The card title carries the name; the verb doesn't repeat it.
     expect(enter).toMatchObject({
       type: "enter-member",
-      label: "Enter Lead",
+      label: "Enter",
       payload: { slug: "lead" },
     });
     expect(enter?.destructive ?? false).toBe(false);
     expect(actions[0]?.type).toBe("enter-member");
 
+    // A lone modelPicker field is the host's solo-picker fast path — and pairing the
+    // provider structurally is what keeps setMemberModel's "a pinned model needs its
+    // provider" unreachable from the board.
     const setModel = actions.find((a) => a.type === "set-model");
-    expect(setModel?.fields?.map((f) => f.name)).toEqual(["model", "provider"]);
+    expect(setModel?.fields?.map((f) => f.name)).toEqual(["model"]);
+    expect(setModel?.fields?.[0]?.modelPicker?.providerField).toBe("provider");
 
     const retire = actions.find((a) => a.type === "retire");
     expect(retire).toMatchObject({ type: "retire", destructive: true, payload: { slug: "lead" } });
@@ -252,29 +291,50 @@ describe("buildRosterBoard populated", () => {
     expect(JSON.stringify(buildRosterBoard([member({ slug: "lead" })]))).toContain("lead");
   });
 
-  test("a cast member shows its ensemble and a personality sub-line", () => {
+  test("a cast member's personality is the footnote, stripped of markdown", () => {
     const card = cards(
-      buildRosterBoard([
-        member({
-          slug: "mcmanus",
-          name: "McManus",
-          themeId: "usual-suspects",
-          personality: "**Bold** and `direct`; ships fast.",
-        }),
-      ]),
+      buildRosterBoard([castMember({ personality: "**Bold** and `direct`; ships fast." })]),
     )[0];
-    expect(card?.title).toBe("McManus");
-    expect(card?.fields?.find((f) => f.label === "cast")?.value).toBe("The Usual Suspects");
-    expect(card?.reason?.label).toBe("personality");
-    expect(card?.reason?.text).toContain("Bold and direct");
-    expect(card?.reason?.text).not.toContain("**");
-    expect(card?.reason?.text).not.toContain("`");
+    expect(card?.title).toBe("Rowan");
+    expect(card?.footnote).toContain("Bold and direct");
+    expect(card?.footnote).not.toContain("**");
+    expect(card?.footnote).not.toContain("`");
   });
 
-  test("an un-cast member shows no cast field and no personality line", () => {
-    const card = cards(buildRosterBoard([member()]))[0];
-    expect(card?.fields?.some((f) => f.label === "cast")).toBe(false);
-    expect(card?.reason).toBeUndefined();
+  test("an un-cast member has no personality footnote", () => {
+    expect(cards(buildRosterBoard([member()]))[0]?.footnote).toBeUndefined();
+  });
+});
+
+describe("buildRosterBoard ensemble hoist", () => {
+  const chip = (members: Member[]) => buildRosterBoard(members).header?.chip;
+  const castField = (members: Member[]) =>
+    cards(buildRosterBoard(members))[0]?.fields?.find((f) => f.label === "cast")?.value;
+
+  test("a uniform roster says its ensemble once in the head, not on all five cards", () => {
+    const roster = [castMember({ slug: "a" }), castMember({ slug: "b", name: "Bo" })];
+    expect(chip(roster)).toBe("The Usual Suspects");
+    expect(castField(roster)).toBeUndefined();
+  });
+
+  test("a roster spanning two ensembles hoists nothing and keeps the cards' cast field", () => {
+    // themeSelectionOrder rolls to the next ensemble once the active one runs dry, so a
+    // roster legitimately spans two — the chip would be a lie.
+    const roster = [castMember({ slug: "a" }), castMember({ slug: "b", themeId: "flux" })];
+    expect(chip(roster)).toBeUndefined();
+    expect(castField(roster)).toBe("The Usual Suspects");
+  });
+
+  test("one hand-authored member among a cast roster un-hoists it", () => {
+    const roster = [castMember({ slug: "a" }), member({ slug: "atlas", name: "Atlas" })];
+    expect(chip(roster)).toBeUndefined();
+  });
+
+  test("an all-uncast roster hoists nothing and shows no cast field", () => {
+    // The all-undefined case folds through the same guard: its one label IS undefined.
+    const roster = [member({ slug: "a" }), member({ slug: "b", name: "Bo" })];
+    expect(chip(roster)).toBeUndefined();
+    expect(castField(roster)).toBeUndefined();
   });
 });
 
@@ -343,23 +403,27 @@ describe("buildRosterBoard live runs elsewhere", () => {
 });
 
 describe("buildRosterBoard persistent verbs", () => {
-  test("a populated roster shows a single Add-a-member + retire-all — Cast and archetypes are cold-start only", () => {
+  test("a populated roster's foot is one Hire chip — Cast and archetypes are cold-start only", () => {
     const board = buildRosterBoard([member()]);
     const titles = board.sections
       .filter((s) => s.kind === "actions")
       .map((s) => (s.kind === "actions" ? s.title : undefined));
-    expect(titles).toContain("Add a member");
     // Cast + the archetype quick-picks are cold-start scaffolding, not steady state.
     expect(titles).not.toContain("Cast a squad from this repo");
     expect(titles).not.toContain("or seat one member yourself");
     const items = actionItems(board);
     expect(items.some((i) => i.type === "cast-propose")).toBe(false);
     expect(items.filter((i) => i.type === "author-archetype")).toHaveLength(0);
-    // The retire-all verb is present (now a title-less, quiet actions section).
-    expect(items.some((i) => i.type === "retire-all")).toBe(true);
-    // Adding a member is still reachable — one describe-your-own genesis launch.
-    const add = items.find((i) => i.type === "describe-own");
-    expect(add?.fields?.[0]?.name).toBe("brief");
+    // Hiring is still reachable — one describe-your-own genesis launch, as a title-less
+    // wrap chip: the label is the title, and `wrap` keeps the button compact at rest.
+    const hire = items.find((i) => i.type === "describe-own");
+    expect(hire?.label).toBe("Hire a member…");
+    expect(hire?.fields?.[0]?.name).toBe("brief");
+    const foot = board.sections.find(
+      (s) => s.kind === "actions" && s.items.some((i) => i.type === "describe-own"),
+    );
+    expect(foot).toMatchObject({ wrap: true });
+    expect(foot?.kind === "actions" ? foot.title : "unset").toBeUndefined();
     expect(board.sections.some((s) => s.kind === "cards")).toBe(true);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
@@ -373,19 +437,15 @@ describe("buildRosterBoard persistent verbs", () => {
     expect(items.some((i) => i.type === "describe-own")).toBe(true);
   });
 
-  test("the retire-all verb appears only when there are members, quiet and with a count in the confirm", () => {
+  test("the teardown verb has left the board — it lives in the region head's ⋯", () => {
+    // Asserted on the surface descriptor in rib.test.ts. The board spends its foot on the
+    // one verb that GROWS the roster.
     const hasRetireAll = (b: ReturnType<typeof buildRosterBoard>) =>
-      b.sections.find((s) => s.kind === "actions" && s.items.some((i) => i.type === "retire-all"));
-    expect(hasRetireAll(buildRosterBoard([]))).toBeUndefined();
-    const board = buildRosterBoard([member({ slug: "a" }), member({ slug: "b", name: "Bo" })]);
-    const manage = hasRetireAll(board);
-    expect(manage?.kind).toBe("actions");
-    // Quiet: no "Manage" section title anymore.
-    expect(manage?.kind === "actions" ? manage.title : "unset").toBeUndefined();
-    const retireAll = manage?.kind === "actions" ? manage.items[0] : undefined;
-    expect(retireAll?.type).toBe("retire-all");
-    expect(retireAll?.destructive).toBe(true);
-    expect(retireAll?.confirm?.body).toContain("2 members");
+      b.sections.some((s) => s.kind === "actions" && s.items.some((i) => i.type === "retire-all"));
+    expect(hasRetireAll(buildRosterBoard([]))).toBe(false);
+    expect(hasRetireAll(buildRosterBoard([member({ slug: "a" }), member({ slug: "b" })]))).toBe(
+      false,
+    );
   });
 
   test("a code-capable member's card carries an Assign-a-code-task action; a text-only member does not", () => {

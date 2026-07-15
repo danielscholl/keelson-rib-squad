@@ -80,6 +80,16 @@ describe("rib-squad", () => {
     expect(surface?.layout.header?.collapsible).toBe(true);
   });
 
+  it("carries squad teardown as the roster head's one ⋯ verb, destructive and confirmed", () => {
+    const head = rib.surfaces?.[0]?.layout.header?.headActions;
+    expect(head).toHaveLength(1);
+    expect(head?.[0]).toMatchObject({ type: "retire-all", destructive: true });
+    expect(head?.[0]?.confirm?.confirmLabel).toBe("Retire all");
+    // A head verb is menu-only by contract — a field would dispatch silently absent, so
+    // the confirm is the whole guard.
+    expect(head?.[0]?.fields).toBeUndefined();
+  });
+
   it("declares no static actions — every control is a workflow or a board action", () => {
     expect(Object.hasOwn(rib, "actions")).toBe(false);
   });

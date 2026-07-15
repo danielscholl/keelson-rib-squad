@@ -88,6 +88,7 @@ import {
 import {
   appendLog,
   type MemberRecord,
+  readMember,
   readMembers,
   retireMember,
   scaffoldMember,
@@ -2701,6 +2702,25 @@ const rib: Rib = {
           // region opts in — without this the panel has no toggle and never folds.
           collapsible: true,
           glyph: { char: "◆", tone: "brand" },
+          // Squad teardown, off the board: a head verb renders in the head bar's ⋯ even
+          // while the panel is folded, and the board's own foot is for the one verb that
+          // GROWS the roster. Static by contract, so the confirm can't count the scope —
+          // and it is offered on an empty one, where retireAllAction fails closed.
+          headActions: [
+            {
+              type: RETIRE_ALL_ACTION,
+              label: "Retire the whole squad…",
+              glyph: "✕",
+              tone: "warn",
+              destructive: true,
+              confirm: {
+                title: "Retire the whole squad",
+                body: "Retire every member in this scope? This permanently deletes every member and its charter.",
+                confirmLabel: "Retire all",
+                cancelLabel: "Cancel",
+              },
+            },
+          ],
         },
         rows: [
           {
@@ -3913,12 +3933,24 @@ async function setModelAction(action: RibAction): Promise<RibActionResult> {
   if (!slug) return { ok: false, error: "set-model requires payload { slug }" };
   const model = asNonEmptyString(payload.model);
   const provider = asNonEmptyString(payload.provider);
+  // validateProviderPin's no-provider path is the CLEAR — it drops the model without a
+  // note — so a half-pin has to be rejected before it, not by it. The same rule (and
+  // message) setMemberModel enforces, and cast-model states.
+  if (model && !provider) {
+    return { ok: false, error: "a pinned model needs its provider — set provider alongside model" };
+  }
   try {
     const home = squadDataHome();
     const scopeId = selectedScopeId(await readSelectedProject(home));
-    await setMemberModel(scopeMembersDir(home, scopeId), slug, { model, provider });
+    const membersRoot = scopeMembersDir(home, scopeId);
+    const member = await readMember(membersRoot, slug);
+    if (!member) return { ok: false, error: `no member '${slug}' in this scope` };
+    const { pin, note } = validateProviderPin(member.name, { provider, model }, getProviders?.());
+    // A rejection on an operator's explicit retune must fail, not read as a clear.
+    if (note) return { ok: false, error: note };
+    await setMemberModel(membersRoot, slug, pin);
     await refreshWorkflow?.("squad-roster");
-    return { ok: true, data: { slug, ...(model ? { model } : {}) } };
+    return { ok: true, data: { slug, ...(pin.model ? { model: pin.model } : {}) } };
   } catch (e) {
     return { ok: false, error: errText(e) };
   }

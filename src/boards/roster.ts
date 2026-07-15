@@ -1,12 +1,17 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { CastProposalRecord } from "../cast.ts";
-import { themeLabel } from "../casting/themes.ts";
 import type { LiveRunElsewhere } from "../live-runs.ts";
 import type { PendingGenesis } from "../pending-genesis.ts";
 import { GENESIS_STARTERS } from "../starters.ts";
 import { IDENTITY_SLOT_COUNT, identityToneForSlot, type Member } from "../types.ts";
-import { CAST_PROPOSE_ACTION } from "./cast.ts";
-import { charterDisplay, stripMd } from "./coordinator.ts";
+import {
+  CAST_PROPOSE_ACTION,
+  capabilityField,
+  castLabel,
+  charterExcerpt,
+  modelLabel,
+} from "./cast.ts";
+import { stripMd } from "./coordinator.ts";
 
 type Section = CanvasBoardView["sections"][number];
 
@@ -31,11 +36,12 @@ function memberCanCode(member: Member): boolean {
 
 // Pure: a roster of members -> a canvas `board`. Cold start (empty scope) shows the
 // launchpad — Cast a whole team from the repo, or author the first member (archetype
-// quick-starts + describe). A populated roster shows the member cards, a single "Add
-// a member" (describe-your-own), and the retire-all verb: adding a member is always
-// reachable, but Cast and the archetype quick-picks are cold-start scaffolding — re-
-// casting a live squad is confusing, and once a scope has members you almost always
-// want a specific member (switch the project chip to an empty scope to cast again).
+// quick-starts + describe). A populated roster shows the member cards over a single
+// Hire verb: hiring is always reachable, but Cast and the archetype quick-picks are
+// cold-start scaffolding — re-casting a live squad is confusing, and once a scope has
+// members you almost always want a specific member (switch the project chip to an empty
+// scope to cast again). Squad teardown is NOT here: retire-all is a head verb on the
+// surface region, so it can't be gated on anything this function knows.
 // Identity rides the host head as a roster peek (with the collapse hint) once seated;
 // project selection lives in the host's surface chip (projectScoped), not a board
 // section. Validated against canvasViewSchema in tests.
@@ -43,7 +49,7 @@ function memberCanCode(member: Member): boolean {
 // The moment-carrier rule: exactly one thing owns the operator's next move. A genesis
 // in flight → the boot card. A proposal awaiting review → the Proposed-squad panel
 // (the roster offers no authoring verbs, so a second cast can't start mid-review).
-// Neither → the launchpad (cold start) or the steady-state add/manage verbs.
+// Neither → the launchpad (cold start) or the steady-state Hire verb.
 export function buildRosterBoard(
   members: readonly Member[],
   pending?: PendingGenesis | null,
@@ -52,6 +58,7 @@ export function buildRosterBoard(
   liveRunsElsewhere: readonly LiveRunElsewhere[] = [],
 ): CanvasBoardView {
   const sections: Section[] = [];
+  const hoisted = hoistedEnsemble(members);
 
   if (liveRunsElsewhere.length > 0) sections.push(liveRunsStrip(liveRunsElsewhere));
 
@@ -66,16 +73,22 @@ export function buildRosterBoard(
     }
   } else {
     // A genesis in flight takes the next free seat as a boot card; the seated cards
-    // compose around it. While a genesis is pending the steady-state Add-a-member +
-    // retire-all verbs are withheld — the boot card carries the moment.
+    // compose around it. While a genesis is pending the steady-state Hire verb is
+    // withheld — the boot card carries the moment.
     const bootItems = pending ? [bootCard(pending, nextFreeSlot(members), now)] : [];
-    sections.push({ kind: "cards", items: [...members.map(cardFor), ...bootItems] });
+    sections.push({
+      kind: "cards",
+      // The bench's own shape: three tracks whatever the count, so the cards keep a
+      // readable set size instead of stretching to fill the row.
+      grid: true,
+      columns: 3,
+      items: [...members.map((m) => cardFor(m, !hoisted)), ...bootItems],
+    });
     if (!pending) {
       if (proposal) {
         sections.push(awaitingSection(proposal.members.length));
       } else {
-        sections.push(addMemberSection());
-        sections.push(manageSection(members.length));
+        sections.push(hireSection());
       }
     }
   }
@@ -88,6 +101,9 @@ export function buildRosterBoard(
         label: `${members.length} ${members.length === 1 ? "member" : "members"}`,
         tone: "brand" as CanvasTone,
       },
+      // The ensemble is the roster's subject only when every seat wears it — so it is
+      // said once here instead of on all five cards.
+      ...(hoisted ? { chip: hoisted } : {}),
       // Once members are seated, feed the host head its roster peek (an identity dot
       // per member, names on hover) and the collapse hint so the panel folds to its
       // head strip — the host collapses once, a manual toggle wins after. Cold start
@@ -106,34 +122,31 @@ export function buildRosterBoard(
   };
 }
 
-// One member -> one card: the member's persisted identity tone as the dot, the role in a single pill, the
-// ensemble (when cast) + charter (and model when set) as fields, a personality
-// sub-line on the reason row, and its verbs — Enter (the primary, inline), an
-// "Assign a code task…" for code-capable members, Set model, and Retire (destructive
-// overflow with a confirm). The slug rides every action payload + the dot hash.
-function cardFor(member: Member) {
-  const fields: { label: string; value: string }[] = [];
-  if (member.themeId) {
-    fields.push({
-      label: "cast",
-      value: member.themeLabel ?? themeLabel(member.themeId) ?? member.themeId,
-    });
-  }
-  fields.push({ label: "charter", value: rosterCharterExcerpt(member) });
-  if (member.model) fields.push({ label: "model", value: member.model });
+// One member -> one card, in the bench's anatomy so an approved seat reads as the member
+// it became rather than as a different object: the persisted identity tone as the dot,
+// the role in a single pill, its capability above the reason's rule and its PURPOSE
+// below, the character's personality as the footnote, and its verbs — Enter, an
+// "Assign a code task…" for code-capable members, the model picker, and Retire
+// (destructive overflow with a confirm). The slug rides every action payload + the dot
+// hash. The ensemble rides the card only when the header didn't hoist it.
+function cardFor(member: Member, showCast: boolean) {
+  const fields: { label?: string; value: string; tone?: CanvasTone }[] = [];
+  const cast = showCast ? castLabel(member) : undefined;
+  if (cast) fields.push({ label: "cast", value: cast });
+  fields.push(capabilityField(member));
   return {
     title: member.name.trim() || "(unnamed)",
     dot: identityToneForSlot(member.identitySlot),
     pill: { label: member.role.trim() || "Member" },
     fields,
-    // The character's personality as a sub-line, only when the member was cast.
-    ...(member.personality
-      ? { reason: { label: "personality", text: truncate(stripMd(member.personality), 160) } }
-      : {}),
+    reason: { text: purposeFor(member) },
+    // The character's voice, only when the member was cast. The one line that
+    // distinguishes a cast roster from a list of job titles.
+    ...(member.personality ? { footnote: truncate(stripMd(member.personality), 160) } : {}),
     actions: [
       {
         type: "enter-member",
-        label: `Enter ${member.name}`,
+        label: "Enter",
         glyph: "→",
         payload: { slug: member.slug },
       },
@@ -158,21 +171,26 @@ function cardFor(member: Member) {
             },
           ]
         : []),
+      // A lone modelPicker field is the host's solo-picker fast path: the button opens
+      // the catalog popover and a pick dispatches straight through, no form. It also
+      // makes the pin structural — setMemberModel rejects a model with no provider, and
+      // two free-text boxes invited exactly that. The pin reads off the label, the
+      // at-rest indicator now the card carries no model field.
       {
         type: "set-model",
-        label: "Set model…",
+        label: `Model — ${modelLabel(member)}`,
         glyph: "⚙",
         payload: { slug: member.slug },
         fields: [
           {
             name: "model",
             label: "Model",
-            placeholder: member.model ?? "e.g. claude-opus-4.8 (blank to clear)",
-          },
-          {
-            name: "provider",
-            label: "Provider",
-            placeholder: member.provider ?? "optional, e.g. anthropic",
+            placeholder: "default (inherit)",
+            modelPicker: {
+              providerField: "provider",
+              ...(member.provider ? { providerDefault: member.provider } : {}),
+            },
+            ...(member.model ? { defaultValue: member.model } : {}),
           },
         ],
       },
@@ -397,17 +415,21 @@ function authorSection(): Section {
   };
 }
 
-// The steady-state create verb: one "describe the member you want" action for a
-// squad that already exists. The archetype quick-starts and Cast live on the
-// cold-start launchpad only — a populated squad grows one deliberate member at a time.
-function addMemberSection(): Section {
+// The steady-state create verb, and the only one the board keeps: the one verb that
+// GROWS the roster, against a teardown that lives in the region head's ⋯. It stays here
+// rather than joining it because head verbs are menu-only by contract and this one's
+// whole payload is the brief. `wrap` keeps the button compact at rest — a fields-carrying
+// action only stretches once its form is open — so the foot costs one chip, not a bar.
+// The archetype quick-starts and Cast live on the cold-start launchpad only: a populated
+// squad grows one deliberate member at a time.
+function hireSection(): Section {
   return {
     kind: "actions",
-    title: "Add a member",
+    wrap: true,
     items: [
       {
         type: "describe-own",
-        label: "Describe & author",
+        label: "Hire a member…",
         glyph: "✎",
         fields: [
           {
@@ -417,29 +439,6 @@ function addMemberSection(): Section {
             multiline: true,
           },
         ],
-      },
-    ],
-  };
-}
-
-// Squad-level teardown: retire every member in the selected scope. The confirm names
-// the count so the operator sees the blast radius before the roster is cleared.
-function manageSection(count: number): Section {
-  return {
-    kind: "actions",
-    items: [
-      {
-        type: RETIRE_ALL_ACTION,
-        label: "Retire the whole squad…",
-        glyph: "✕",
-        tone: "warn" as CanvasTone,
-        destructive: true,
-        confirm: {
-          title: "Retire the whole squad",
-          body: `Retire all ${count} member${count === 1 ? "" : "s"} in this scope? This permanently deletes every member and its charter.`,
-          confirmLabel: "Retire all",
-          cancelLabel: "Cancel",
-        },
       },
     ],
   };
@@ -471,6 +470,22 @@ function truncate(text: string, max = 120): string {
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
 
-function rosterCharterExcerpt(member: Member): string {
-  return truncate(charterDisplay(member.name, member.charter));
+// The ensemble label every seat shares, or undefined. Keyed on castLabel — exactly the
+// string a card would render — because a roster can span two ensembles (themeSelectionOrder
+// rolls to the next when the active one runs dry) and can gain a hand-authored member
+// wearing none. An all-uncast roster folds to undefined through the same guard: its one
+// label IS undefined.
+function hoistedEnsemble(members: readonly Member[]): string | undefined {
+  const labels = new Set(members.map(castLabel));
+  return labels.size === 1 ? [...labels][0] : undefined;
+}
+
+// What the member is FOR. reason.text is min(1), so an empty excerpt would take the whole
+// board down through expectView rather than degrading — the fallback is the line, not a
+// missing key.
+function purposeFor(member: Member): string {
+  return (
+    charterExcerpt(member.name, member.charter) ||
+    "This member's charter doesn't say what it's for."
+  );
 }
