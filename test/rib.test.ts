@@ -488,25 +488,8 @@ describe("rib-squad", () => {
     }
   });
 
-  it("assign-code fails closed for an unknown member before launching a billed run", async () => {
-    // Preflight: a stale card button naming a member absent from the selected scope
-    // must not kick off a doomed squad-code-run.
-    const res = await rib.onAction?.(
-      { type: "assign-code", payload: { slug: "nonexistent-member-xyz", task: "do it" } },
-      bareCtx,
-    );
-    expect(res?.ok).toBe(false);
-    if (!res?.ok) expect(res?.error).toContain("unknown member");
-  });
-
-  it("coordinate/dispatch/assign-code fail closed without their input fields", async () => {
+  it("coordinate/dispatch fail closed without their input fields", async () => {
     expect((await rib.onAction?.({ type: "coordinate", payload: {} }, bareCtx))?.ok).toBe(false);
     expect((await rib.onAction?.({ type: "dispatch", payload: {} }, bareCtx))?.ok).toBe(false);
-    expect(
-      (await rib.onAction?.({ type: "assign-code", payload: { slug: "mc" } }, bareCtx))?.ok,
-    ).toBe(false);
-    expect(
-      (await rib.onAction?.({ type: "assign-code", payload: { task: "x" } }, bareCtx))?.ok,
-    ).toBe(false);
   });
 });

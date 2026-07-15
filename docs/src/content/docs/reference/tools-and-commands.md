@@ -144,14 +144,17 @@ navigating.
 | `retire-all` | _(none)_ | data (`{ retired }`); dispatched from the Roster panel head's `⋯`, not a board section |
 | `coordinate` | `{ task }` | `run-workflow` `squad-coordinate-run`, `stay: true` |
 | `dispatch` | `{ task }` | `run-workflow` `squad-dispatch-run` |
-| `assign-code` | `{ slug, task }` | `run-workflow` `squad-code-run` |
 | `record-decision` | `{ summary, content }` | `run-workflow` `squad-decide` |
 
 `coordinate` sets `stay: true`, which keeps the operator on the Squad surface
 (rather than switching to the Workflows tab) so they can watch the Run loop
-panel stream round by round. `assign-code` preflights that the named member
-exists, is active, and is code-capable before launching the run, so a stale
-card button cannot kick off a run that is guaranteed to fail.
+panel stream round by round.
+
+A roster card carries no code verb. To hand one member a confined coding task,
+enter the member and ask, call the `squad_code` tool, or run the
+`squad-code-run` workflow with `{ member, ARGUMENTS }`; each reaches the same
+confined turn, and `squad_code` itself rejects a member that is unknown,
+inactive, or not code-capable.
 
 Squad has no HTML-canvas surface, so any action arriving with a sandboxed
 canvas-iframe origin is rejected outright: there is nothing legitimate that

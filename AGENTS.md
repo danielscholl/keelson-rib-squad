@@ -102,14 +102,20 @@ the domain logic from the modules under `src/`. It contributes:
   self-merge or force-push outright, and fails a workflow-surface run on a BLOCK review
   verdict. This is what lets `squad_code` and the coordinator open real PRs without the
   squad ever being the thing that merges its own change.
-- **Actions** (`onAction`) — a verb switch: `enter-member` (→ an `open-chat` client
+- **Actions** (`onAction`) — a verb switch of 23, listed here by their action STRINGS
+  (three constants disagree with theirs — `STOP_COORDINATOR_ACTION` is
+  `"stop-coordinate"`, `STEER_COORDINATOR_ACTION` is `"steer-coordinate"`, and
+  `REPORT_RUN_ACTION` is `"squad-report"`): `enter-member` (→ an `open-chat` client
   effect), `select-project`, the `run-workflow` verbs (`author-archetype` /
-  `describe-own` / `cast-propose` / `coordinate` / `dispatch` / `assign-code` /
-  `rollback-run` / `record-decision`), the data verbs (`cast-pick` / `approve-cast` / `discard-cast`
-  / `set-model` / `retire` / `retire-all` / `reset-squad` / `stop-coordinator` /
-  `steer-coordinator`), and `view-run` / `report-run` (which drive the imperatively
-  registered drill-down + run-report snapshots). Any `canvas-html`-origin action is
-  rejected outright — the run-report canvas is read-only and ships no frame actions.
+  `describe-own` / `cast-propose` / `coordinate` / `dispatch` / `rollback-run` /
+  `record-decision`), the data verbs (`cast-pick` / `cast-model` / `approve-cast` /
+  `discard-cast` / `set-model` / `retire` / `retire-all` / `reset-squad` /
+  `dismiss-genesis` / `stop-coordinate` / `steer-coordinate`), and `view-run` /
+  `squad-report` / `view-charter` (which drive the imperatively registered drill-down,
+  run-report, and charter snapshots). A roster card carries no code verb: entering the
+  member, `squad_code`, and the `squad-code-run` workflow are the paths to a confined
+  coding turn. Any `canvas-html`-origin action is rejected outright — the run-report
+  canvas is read-only and ships no frame actions.
 - **Agents** — every member is enterable as a keelson agent (`listAgents` /
   `resolveAgent`), both building the SAME seed as the roster Enter action
   (`buildSeedFor`) so the two entry points can't drift.

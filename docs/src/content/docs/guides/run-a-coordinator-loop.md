@@ -15,9 +15,10 @@ see [The coordinator loop](../../concepts/the-coordinator-loop/).
 The coordinator is not the only way to put a task to the squad. A single question
 fanned out to the whole roster runs through the Run loop panel's **Ask the team**
 action (the `squad_dispatch` tool); a single confined edit assigned to one
-code-capable member runs through a roster card's **Assign a code task** action
-(`squad_code`). Both are one-shot: no plan, no re-plan, no done gate. Reach for the
-coordinator when the task needs more than one step decided as it goes.
+code-capable member runs through the `squad_code` tool, which you reach by entering
+that member (**Enter** on its roster card) or through the `squad-code-run` workflow.
+Both are one-shot: no plan, no re-plan, no done gate. Reach for the coordinator when
+the task needs more than one step decided as it goes.
 
 ## Point it at a project
 
