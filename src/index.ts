@@ -88,6 +88,7 @@ import {
 import {
   appendLog,
   type MemberRecord,
+  readMember,
   readMembers,
   retireMember,
   scaffoldMember,
@@ -178,6 +179,23 @@ let registerOp: RibContext["registerOp"];
 // The run-detail drill-down: an imperatively-registered snapshot whose composer reads
 // the board the last View action selected. Cleared (and unregistered) in dispose.
 let snapshots: SnapshotManager | undefined;
+
+// The provider catalog, or the closest honest answer to it. The distinction the callers
+// depend on is undefined vs []: undefined means "no catalog to check against" and
+// validateProviderPin admits the pin (an older harness without the seam), while [] means
+// "the catalog says nothing is registered" and every pin is rejected. A THROWING seam is
+// the second case, not the first — it can't vouch for a pin, so it must not be read as
+// permission to write one. Callers pass the result rather than calling getProviders() in
+// an argument: eager evaluation would let a throwing seam take down paths that never
+// needed the catalog, like clearing a pin.
+function safeProviders(): ReturnType<NonNullable<RibContext["getProviders"]>> | undefined {
+  if (!getProviders) return undefined;
+  try {
+    return getProviders();
+  } catch {
+    return [];
+  }
+}
 let unregisterRunDetail: (() => void) | undefined;
 let runDetailBoard: CanvasBoardView | undefined;
 // The charter drill-down: same lifecycle, reading the seat the last Charter action picked.
@@ -644,18 +662,10 @@ function makeEmitMemberTool(
           return;
         }
         const { scopeId } = resolution;
-        let providers: ReturnType<NonNullable<RibContext["getProviders"]>> | undefined;
-        if (getProviders) {
-          try {
-            providers = getProviders();
-          } catch {
-            providers = [];
-          }
-        }
         const validated = validateProviderPin(
           name,
           { provider: rawProvider, model: rawModel },
-          providers,
+          safeProviders(),
         );
         const dedupedTools = tools
           ? [...new Set(tools.map((t) => t.trim()).filter((t) => t.length > 0))]
@@ -2585,12 +2595,7 @@ async function proposeCastForSelection(
     return { ok: false, error };
   }
   // A provider-listing hiccup must not block casting — degrade to unpinned members.
-  let providers: ReturnType<NonNullable<RibContext["getProviders"]>> | undefined;
-  try {
-    if (getProviders) providers = getProviders();
-  } catch {
-    providers = [];
-  }
+  const providers = safeProviders();
   // Resolved before the scan runs (not after) so the scan turn can be handed the
   // squad's casting context and cast the whole team in this one pass.
   const scopeId = selectedScopeId(selection);
@@ -2701,6 +2706,25 @@ const rib: Rib = {
           // region opts in — without this the panel has no toggle and never folds.
           collapsible: true,
           glyph: { char: "◆", tone: "brand" },
+          // Squad teardown, off the board: a head verb renders in the head bar's ⋯ even
+          // while the panel is folded, and the board's own foot is for the one verb that
+          // GROWS the roster. Static by contract, so the confirm can't count the scope —
+          // and it is offered on an empty one, where retireAllAction fails closed.
+          headActions: [
+            {
+              type: RETIRE_ALL_ACTION,
+              label: "Retire the whole squad…",
+              glyph: "✕",
+              tone: "warn",
+              destructive: true,
+              confirm: {
+                title: "Retire the whole squad",
+                body: "Retire every member in this scope? This permanently deletes every member and its charter.",
+                confirmLabel: "Retire all",
+                cancelLabel: "Cancel",
+              },
+            },
+          ],
         },
         rows: [
           {
@@ -3740,11 +3764,15 @@ async function castModelAction(action: RibAction): Promise<RibActionResult> {
       // Never trust a slug off the wire: only a seat this proposal actually holds.
       const member = proposal.members.find((m) => m.slug === slug);
       if (!member) return { ok: false, error: `no proposed member '${slug}' in this cast` };
-      const { pin, note } = validateProviderPin(member.name, { provider, model }, getProviders?.());
-      // validateProviderPin never throws: a REJECTED pin comes back empty WITH a note,
-      // and its only note-less empty pin is "the caller passed no provider" — the clear.
+      const { pin, rejected } = validateProviderPin(
+        member.name,
+        { provider, model },
+        safeProviders(),
+      );
+      // validateProviderPin never throws: a REJECTED pin comes back empty WITH a reason,
+      // and its only reason-less empty pin is "the caller passed no provider" — the clear.
       // A rejection on an operator's explicit retune must fail, not read as a clear.
-      if (note) return { ok: false, error: note };
+      if (rejected) return { ok: false, error: `invalid ${rejected.what}: ${rejected.why}` };
       const next: CastProposalRecord = {
         ...proposal,
         members: proposal.members.map((m) => (m.slug === slug ? { ...withoutPin(m), ...pin } : m)),
@@ -3913,12 +3941,30 @@ async function setModelAction(action: RibAction): Promise<RibActionResult> {
   if (!slug) return { ok: false, error: "set-model requires payload { slug }" };
   const model = asNonEmptyString(payload.model);
   const provider = asNonEmptyString(payload.provider);
+  // validateProviderPin's no-provider path is the CLEAR — it drops the model without a
+  // note — so a half-pin has to be rejected before it, not by it. The same rule (and
+  // message) setMemberModel enforces, and cast-model states.
+  if (model && !provider) {
+    return { ok: false, error: "a pinned model needs its provider — set provider alongside model" };
+  }
   try {
     const home = squadDataHome();
     const scopeId = selectedScopeId(await readSelectedProject(home));
-    await setMemberModel(scopeMembersDir(home, scopeId), slug, { model, provider });
+    const membersRoot = scopeMembersDir(home, scopeId);
+    const member = await readMember(membersRoot, slug);
+    if (!member) return { ok: false, error: `no member '${slug}' in this scope` };
+    const { pin, rejected } = validateProviderPin(
+      member.name,
+      { provider, model },
+      safeProviders(),
+    );
+    // A rejection on an operator's explicit retune must fail, not read as a clear. The
+    // note's "dropped …" phrasing is for the callers that normalize and carry on; this
+    // one writes nothing, so it says so in its own words.
+    if (rejected) return { ok: false, error: `invalid ${rejected.what}: ${rejected.why}` };
+    await setMemberModel(membersRoot, slug, pin);
     await refreshWorkflow?.("squad-roster");
-    return { ok: true, data: { slug, ...(model ? { model } : {}) } };
+    return { ok: true, data: { slug, ...(pin.model ? { model: pin.model } : {}) } };
   } catch (e) {
     return { ok: false, error: errText(e) };
   }

@@ -196,7 +196,10 @@ function cardFor(member: Member, castAt: string, showCast: boolean) {
 // `code` is the seat's permission to modify the repository — the one thing on this card
 // the governance floor exists to bound, so it is the only capability marked, and the
 // read-only case carries no tone at all. Exported: the charter board repeats this line.
-export function capabilityField(member: Member): { value: string; tone?: CanvasTone } {
+export function capabilityField(member: { tools?: readonly string[] }): {
+  value: string;
+  tone?: CanvasTone;
+} {
   const tools = member.tools ?? [];
   if (tools.includes("code"))
     return { value: `✎ ${tools.join(", ")}`, tone: "caution" as CanvasTone };
@@ -238,7 +241,7 @@ function cardActions(member: Member, castAt: string) {
 // validateProviderPin admits a provider with no model (that vendor's own default), and
 // this label is the only place that pin is visible now — "default" alone would read as
 // the harness default and hide it.
-function modelLabel(member: Member): string {
+export function modelLabel(member: { model?: string; provider?: string }): string {
   if (member.model) return member.model;
   return member.provider ? `${member.provider} default` : "default";
 }
@@ -252,10 +255,11 @@ function reasonFor(member: Member): string {
   return member.rationale?.trim() || "This seat's charter doesn't say what it's for.";
 }
 
-// The member's ensemble label, mirroring the roster card's fallback: the persisted
-// themeLabel, else the catalog label for its themeId, else the raw id; undefined when
-// the member was left uncast (a plain-name proposal).
-function castLabel(member: Member): string | undefined {
+// The member's ensemble label: the persisted themeLabel, else the catalog label for its
+// themeId, else the raw id; undefined when the member was left uncast (a plain-name
+// proposal). Shared with the roster, which keys its own hoist guard on exactly the
+// string its cards would render.
+export function castLabel(member: { themeLabel?: string; themeId?: string }): string | undefined {
   if (member.themeLabel) return member.themeLabel;
   if (member.themeId) return themeLabel(member.themeId) ?? member.themeId;
   return undefined;
@@ -331,7 +335,11 @@ function idleBoard(): CanvasBoardView {
 // non-heading line when there's no Mission section. Candidate lines get the same
 // charterDisplay cleanup as the detail body, so a provenance-only or self-name
 // line never becomes the excerpt.
-function charterExcerpt(name: string, charter: string, max = 200): string {
+//
+// Splitting on "\n" BEFORE any cleanup is what makes the mission reachable: stripMd
+// flattens a whole document to one line, so an excerpt that cleans first can never
+// locate a heading in what's left. Shared with the roster for that reason.
+export function charterExcerpt(name: string, charter: string, max = 200): string {
   const lines = charter.split("\n").map((l) => l.trim());
   const missionIdx = lines.findIndex((l) => /^##\s+mission\b/i.test(l));
   const scoped = missionIdx >= 0 ? lines.slice(missionIdx + 1) : [];

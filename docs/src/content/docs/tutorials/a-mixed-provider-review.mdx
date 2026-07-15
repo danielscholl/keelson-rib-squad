@@ -52,18 +52,25 @@ reviewer. Swap in whichever two slugs you actually have.
 
 ## Pin them to two different vendors
 
-On the roster, open **"Set model…"** on atlas's card. Set `provider` to `claude` and
-leave `model` blank, so atlas runs on Claude's own default model rather than one you
-have to keep current by hand. Do the same on vera's card with `provider` set to
-`copilot`.
+On the roster, open **Model — default** on atlas's card. The button opens the model
+catalog, and picking a Claude model dispatches straight through — there is no form to
+fill. Do the same on vera's card with a Copilot model.
 
-One rule worth keeping in mind while you do this: a provider is a complete pin on its
-own, but a model is only meaningful alongside its provider, so if you want an exact
-model rather than whichever one a vendor resolves as its default, set both fields
-together. Squad does not check a pin against what is actually signed in when you set
-it; that only gets resolved once a turn tries to run on it, which is the harness's
-concern, not the roster's. [Mix providers](../../guides/mix-providers/) has the full
-mechanics, including the separate pin a coordinator run's manager can carry.
+The picker sets the provider and the model together, as a pair, because that is the only
+shape the roster persists: a model without its provider is rejected rather than
+half-written. The **default (inherit)** row at the top of the catalog clears the pin
+entirely, dropping the member back to the harness default. A provider-only pin — "run on
+whatever Claude resolves as its own default" — is a real state Squad stores, and the card
+renders it as `claude default`, but it is not one the picker authors: a repository scan
+assigns it when it is not certain of a model id, and `squad_emit_member` can set one
+directly.
+
+Squad checks a pin against the providers actually registered when you set it, and rejects
+an unregistered one rather than writing a pin that silently falls back at turn time. It
+does not check that the vendor is signed in; that resolves only once a turn tries to run
+on it, which is the harness's concern, not the roster's.
+[Mix providers](../../guides/mix-providers/) has the full mechanics, including the
+separate pin a coordinator run's manager can carry.
 
 ## Give the implementer something real to build
 

@@ -24,9 +24,9 @@ domain-free, and the rib ships **zero React** into the trusted SPA.
   Each member is a directory under the data home with a `charter.md`, `memory.md`,
   `rules.md`, and `log.md`.
 - **Roster** — a deterministic canvas board (the `squad-roster` workflow) with one
-  card per member: a hashed identity dot, the role pill, the charter, and the
-  Enter / Set model / Retire controls. Zero members renders a cold-start launchpad
-  with role archetypes.
+  card per member: a hashed identity dot, the role pill, what the member can do and
+  what it is for, and the Enter / Model / Retire controls. Zero members renders a
+  cold-start launchpad with role archetypes.
 - **The standing coordinator** — hand the squad a task and it plans, delegates one
   step at a time to the best-suited member, verifies its own claims of progress
   against real check/typecheck/test output, and replans until the goal is met or it
@@ -74,7 +74,7 @@ keelson restart
 
 Open `http://127.0.0.1:7878` → the **Squad** surface, then:
 
-- **Add a member** — `keelson workflow run squad-genesis --inputs brief="a terse
+- **Hire a member** — `keelson workflow run squad-genesis --inputs brief="a terse
   SRE who reasons about blast radius"` (or use a role archetype on the cold-start
   board). It authors a member you'll see on the Roster.
 - **Talk to a member** — click **Enter** on a roster card to open it as a seeded

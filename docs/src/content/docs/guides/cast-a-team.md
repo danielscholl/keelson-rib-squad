@@ -59,10 +59,12 @@ member's chat prompt is composed from them, see
 [Cast and roster](../../concepts/cast-and-roster/).
 
 Once a scope has at least one member, the cold-start archetypes and the "Cast
-a squad" scan (below) both drop away: only "Add a member" (describe your own)
+a squad" scan (below) both drop away: only "Hire a member" (describe your own)
 stays reachable. Re-casting an already-populated squad is confusing enough
 that it is not offered; switching to an empty project is the way back to a
-fresh cast.
+fresh cast. Squad teardown is not on the board at all — "Retire the whole
+squad" lives in the Roster panel's `⋯` menu, in the panel head beside the
+member count, and stays reachable while the panel is collapsed.
 
 ## Auto-cast a team from a repository scan
 

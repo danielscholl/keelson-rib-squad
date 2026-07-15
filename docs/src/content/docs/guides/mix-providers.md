@@ -122,8 +122,10 @@ whatever is available, and pinning the provider alone (no model) when the
 model id is not certain. Review the **Proposed squad** board before you
 approve it: it shows each proposed member's pinned model where one was
 assigned, so you can see the mix before any member is scaffolded, and adjust
-individual pins afterward with **Set model…** if the proposal's choices are
-not the split you want.
+individual pins afterward from the roster card's **Model — …** picker if the
+proposal's choices are not the split you want. The picker sets a provider and
+model together; a provider-only pin of the kind the scan assigns is rendered
+(`claude default`) but not authored there.
 
 ## Pin the manager of a coordinator run
 
