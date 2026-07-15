@@ -95,26 +95,39 @@ the member exists.
 
 The scan publishes to the Proposed squad board, which shows the bench the way
 the roster will show it once seated: one card per proposed member wearing the
-identity colour it will keep for life, its role, the tools it would carry (or
-"text-only" if none), any provider pin, and — under `why cast:` — the scan's
-own one-line reason for the seat, naming the files that make it necessary.
-Nothing is written to the roster yet.
+identity colour it will keep for life, its role, and what the seat is *for* —
+the mission line off its own charter. Above that line sits the one thing worth
+marking: a seat that can `code` carries write access to your repository, so its
+capability is called out where a read-only seat's is left plain. Nothing is
+written to the roster yet.
 
-Above the bench sit your mission and the scan's thesis for the team. Beside it
-is the **scan receipt**: how many files the scan actually opened, how many
+The board opens with the scan's **claim** — the ensemble it cast from, how many
+seats it wants, its thesis for the team, and your brief if you gave one. Under
+it sits the **provenance**: how many files the scan actually opened, how many
 searches it ran, and how long it took, counted from the turn itself rather than
 from the model's account of it. A team proposed off six files in forty seconds
 and one proposed off thirty-one files in two minutes are different claims, and
-the receipt is what tells them apart. If your provider doesn't report what the
-scan opened, the rail says so rather than showing a receipt it can't stand
-behind.
+that line is what tells them apart — it reads as a plain line rather than a card
+precisely because it is the one thing here a confabulation can't produce. Expand
+it for the file list. If your provider doesn't report what the scan opened, it
+says so rather than showing a receipt it can't stand behind.
 
 ### Pick the seats you want
 
 **Click a card to drop that seat**; click it again to pick it back. A dropped
-seat keeps its charter and its reason — you need both to decide whether to pick
+seat keeps its charter and its purpose — you need both to decide whether to pick
 it back — but loses its ring and its colour, and stops counting toward the
 Approve button. Dropping a seat costs a file write; it does not re-run the scan.
+
+Each card carries two more verbs, both acting on the proposal rather than the
+roster:
+
+- **▤** opens that seat's charter in full, as its own panel: the identity the
+  scan wrote, section by section, with its argument for the seat beside it. This
+  is the read that decides whether a seat is worth keeping.
+- **Model** retunes the seat before it is scaffolded, picking from the harness's
+  live catalog. The button names the current pin at rest. A model is
+  vendor-specific, so it is stored with its provider or not at all.
 
 - **Approve & scaffold** authors the picked members as real chat agents and
   clears the proposal. The button names the count it will seat. An existing

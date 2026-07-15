@@ -7,6 +7,8 @@ import type {
   RibAgentTurn,
   RibAgentTurnRequest,
   RibContext,
+  SnapshotFrame,
+  SnapshotManager,
   ToolContext,
   ToolDefinition,
 } from "@keelson/shared";
@@ -15,6 +17,7 @@ import { readProposal, writeProposal } from "../src/cast.ts";
 import { loadRegistry, saveRegistry } from "../src/casting/registry.ts";
 import { type CoordinatorLedger, loadLedger, saveLedger } from "../src/coordinator.ts";
 import rib from "../src/index.ts";
+import { CHARTER_KEY } from "../src/keys.ts";
 import { listMemberRecords, readMembers, scaffoldMember } from "../src/member-store.ts";
 import { membersDir, scopeDataHome, scopeMembersDir, setSquadDataHome } from "../src/paths.ts";
 import { readPendingGenesis, writePendingGenesis } from "../src/pending-genesis.ts";
@@ -67,6 +70,43 @@ const ROSTER_REPLY = JSON.stringify({
 let home: string;
 let lastReq: RibAgentTurnRequest | undefined;
 let refreshed: string[];
+let snapshots: SnapshotManager | undefined;
+
+// An in-memory SnapshotManager — enough to drive the imperatively-registered charter
+// drill-down and observe the frame the real manager would broadcast.
+function makeSnapshots(): SnapshotManager {
+  const composers = new Map<string, () => unknown | Promise<unknown>>();
+  const latest = new Map<string, SnapshotFrame>();
+  return {
+    register(key, compose) {
+      if (composers.has(key)) throw new Error(`duplicate key ${key}`);
+      composers.set(key, compose);
+      return () => {
+        composers.delete(key);
+      };
+    },
+    async recompose(key) {
+      const compose = composers.get(key);
+      if (!compose) return undefined;
+      const frame: SnapshotFrame = {
+        type: "snapshot_update",
+        key,
+        version: (latest.get(key)?.version ?? 0) + 1,
+        composedAt: new Date().toISOString(),
+        data: await compose(),
+      };
+      latest.set(key, frame);
+      return frame as never;
+    },
+    latest(key) {
+      return latest.get(key) as never;
+    },
+    keys() {
+      return [...composers.keys()];
+    },
+    async dispose() {},
+  };
+}
 
 function project(id: string, name: string, rootPath: string) {
   return { id, name, rootPath, createdAt: "2026-06-27T00:00:00.000Z" };
@@ -89,7 +129,9 @@ function bootRib(
   projects: ReturnType<typeof project>[],
   reply = ROSTER_REPLY,
   providers?: { id: string; displayName: string }[],
+  withSnapshots = true,
 ): readonly ToolDefinition[] {
+  snapshots = withSnapshots ? makeSnapshots() : undefined;
   const ctx = {
     getExec: () => ({
       runJSON: async () => ({ ok: true as const, data: undefined }),
@@ -105,6 +147,7 @@ function bootRib(
       refreshed.push(name);
     },
     ...(providers !== undefined ? { getProviders: () => providers } : {}),
+    ...(snapshots ? { getSnapshotManager: () => snapshots } : {}),
   } as unknown as RibContext;
   return rib.registerTools?.(ctx) ?? [];
 }
@@ -151,6 +194,7 @@ beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "squad-cast-action-"));
   lastReq = undefined;
   refreshed = [];
+  snapshots = undefined;
 });
 afterEach(async () => {
   rib.dispose?.();
@@ -893,5 +937,235 @@ describe("reset-squad action", () => {
     expect(await readMembers(scopeMembersDir(home, "default"))).toHaveLength(2);
     expect(await loadLedger(home)).toBeDefined();
     expect(await listRuns(home)).toHaveLength(1);
+  });
+});
+
+describe("cast-model action", () => {
+  // Drive a real proposal through the scan tool so the seats carry the themed slugs
+  // the retune keys on.
+  async function proposed(providers?: { id: string; displayName: string }[]) {
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")], ROSTER_REPLY, providers);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await proposeViaTool(tools);
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+    if (!proposal) throw new Error("no proposal");
+    return proposal;
+  }
+  const setModel = (payload: Record<string, unknown>) =>
+    rib.onAction?.({ type: "cast-model", payload }, {} as RibContext);
+  const seatOf = async (slug: string) =>
+    (await readProposal(scopeDataHome(home, "p1")))?.members.find((m) => m.slug === slug);
+
+  test("a catalog pick persists the model WITH its provider and refreshes the cast panel", async () => {
+    const proposal = await proposed([{ id: "openai", displayName: "OpenAI" }]);
+    const slug = proposal.members[0]!.slug!;
+    refreshed.length = 0;
+    const res = await setModel({
+      slug,
+      model: "gpt-5.5",
+      provider: "openai",
+      castAt: proposal.createdAt,
+    });
+    expect(res?.ok).toBe(true);
+    const seat = await seatOf(slug);
+    expect(seat?.model).toBe("gpt-5.5");
+    expect(seat?.provider).toBe("openai");
+    expect(refreshed).toEqual(["squad-cast"]);
+  });
+
+  test("the pin survives the round-trip — readProposal drops a provider-less model", async () => {
+    // This is the whole reason the pair is written together: a model stored without
+    // its provider silently evaporates on the collector's very next read.
+    const proposal = await proposed([{ id: "openai", displayName: "OpenAI" }]);
+    const slug = proposal.members[0]!.slug!;
+    await setModel({ slug, model: "gpt-5.5", provider: "openai", castAt: proposal.createdAt });
+    expect((await seatOf(slug))?.model).toBe("gpt-5.5");
+  });
+
+  test("the picker's clear row removes both keys rather than leaving half a pin", async () => {
+    const proposal = await proposed([{ id: "openai", displayName: "OpenAI" }]);
+    const slug = proposal.members[0]!.slug!;
+    await setModel({ slug, model: "gpt-5.5", provider: "openai", castAt: proposal.createdAt });
+    // ModelFieldPicker's clear dispatches pick("", ""), which reaches us as empty strings.
+    const res = await setModel({ slug, model: "", provider: "", castAt: proposal.createdAt });
+    expect(res?.ok).toBe(true);
+    const seat = await seatOf(slug);
+    expect(seat?.model).toBeUndefined();
+    expect(seat?.provider).toBeUndefined();
+  });
+
+  test("a model with no provider is rejected, not read as a clear", async () => {
+    // validateProviderPin returns an empty pin and NO note for this, making it
+    // indistinguishable from the clear above — so the guard has to run before it.
+    const proposal = await proposed([{ id: "openai", displayName: "OpenAI" }]);
+    const slug = proposal.members[0]!.slug!;
+    await setModel({ slug, model: "gpt-5.5", provider: "openai", castAt: proposal.createdAt });
+    const res = await setModel({ slug, model: "o3", castAt: proposal.createdAt });
+    expect(res?.ok).toBe(false);
+    expect(res?.ok === false && res.error).toContain("needs its provider");
+    // The prior pin is untouched: a rejected retune must not wipe it.
+    expect((await seatOf(slug))?.model).toBe("gpt-5.5");
+  });
+
+  test("an unregistered provider fails closed rather than dropping the pin silently", async () => {
+    const proposal = await proposed([{ id: "openai", displayName: "OpenAI" }]);
+    const slug = proposal.members[0]!.slug!;
+    const res = await setModel({
+      slug,
+      model: "x",
+      provider: "bogus",
+      castAt: proposal.createdAt,
+    });
+    expect(res?.ok).toBe(false);
+    expect(res?.ok === false && res.error).toContain("not registered");
+    expect((await seatOf(slug))?.provider).toBeUndefined();
+  });
+
+  test("a reserved provider is refused even when the harness lists no providers", async () => {
+    // The workflow/stub denylist is static — it holds without a getProviders seam.
+    const proposal = await proposed();
+    const slug = proposal.members[0]!.slug!;
+    const res = await setModel({
+      slug,
+      model: "x",
+      provider: "workflow",
+      castAt: proposal.createdAt,
+    });
+    expect(res?.ok).toBe(false);
+    expect(res?.ok === false && res.error).toContain("not assignable");
+  });
+
+  test("no providers seam trusts the pin rather than refusing every retune", async () => {
+    const proposal = await proposed();
+    const slug = proposal.members[0]!.slug!;
+    const res = await setModel({
+      slug,
+      model: "gpt-5.5",
+      provider: "openai",
+      castAt: proposal.createdAt,
+    });
+    expect(res?.ok).toBe(true);
+    expect((await seatOf(slug))?.model).toBe("gpt-5.5");
+  });
+
+  test("concurrent retune and pick on different seats don't lose an update", async () => {
+    const proposal = await proposed([{ id: "openai", displayName: "OpenAI" }]);
+    const [a, b] = [proposal.members[0]!.slug!, proposal.members[1]!.slug!];
+    await Promise.all([
+      setModel({ slug: a, model: "gpt-5.5", provider: "openai", castAt: proposal.createdAt }),
+      rib.onAction?.(
+        { type: "cast-pick", payload: { slug: b, picked: false, castAt: proposal.createdAt } },
+        {} as RibContext,
+      ),
+    ]);
+    const back = await readProposal(scopeDataHome(home, "p1"));
+    expect(back?.members.find((m) => m.slug === a)?.model).toBe("gpt-5.5");
+    expect(back?.members.find((m) => m.slug === b)?.picked).toBe(false);
+  });
+
+  test("rejects a stale castAt, an unknown slug, and a missing slug", async () => {
+    const proposal = await proposed([{ id: "openai", displayName: "OpenAI" }]);
+    const slug = proposal.members[0]!.slug!;
+    const stale = await setModel({
+      slug,
+      model: "gpt-5.5",
+      provider: "openai",
+      castAt: "2020-01-01T00:00:00.000Z",
+    });
+    expect(stale?.ok === false && stale.error).toContain("replaced by a newer cast");
+    const unknown = await setModel({
+      slug: "nobody",
+      model: "gpt-5.5",
+      provider: "openai",
+      castAt: proposal.createdAt,
+    });
+    expect(unknown?.ok === false && unknown.error).toContain("no proposed member");
+    const bare = await setModel({ model: "gpt-5.5", provider: "openai" });
+    expect(bare?.ok === false && bare.error).toContain("requires payload { slug }");
+  });
+
+  test("approve scaffolds the retuned pin into the member record", async () => {
+    // The end-to-end the pair semantics exist for: retune -> read -> approve -> disk.
+    const proposal = await proposed([{ id: "openai", displayName: "OpenAI" }]);
+    const slug = proposal.members[0]!.slug!;
+    await setModel({ slug, model: "gpt-5.5", provider: "openai", castAt: proposal.createdAt });
+    const res = await rib.onAction?.(
+      { type: "approve-cast", payload: { castAt: proposal.createdAt } },
+      {} as RibContext,
+    );
+    expect(res?.ok).toBe(true);
+    const seated = (await readMembers(scopeMembersDir(home, "p1"))).find((m) => m.slug === slug);
+    expect(seated?.model).toBe("gpt-5.5");
+    expect(seated?.provider).toBe("openai");
+  });
+});
+
+describe("view-charter action", () => {
+  async function proposed() {
+    const tools = bootRib([project("p1", "keelson", "/repo/keelson")]);
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await proposeViaTool(tools);
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+    if (!proposal) throw new Error("no proposal");
+    return proposal;
+  }
+  const view = (payload: Record<string, unknown>) =>
+    rib.onAction?.({ type: "view-charter", payload }, {} as RibContext);
+
+  test("publishes the seat's charter and hands back an open-canvas effect", async () => {
+    const proposal = await proposed();
+    const seat = proposal.members[0]!;
+    const res = await view({ slug: seat.slug, castAt: proposal.createdAt });
+    expect(res?.ok).toBe(true);
+    expect(res?.ok === true && res.data).toEqual({
+      effect: "open-canvas",
+      key: CHARTER_KEY,
+      title: seat.name,
+    });
+    const frame = snapshots?.latest(CHARTER_KEY);
+    expect(JSON.stringify(frame?.data)).toContain(seat.name);
+  });
+
+  test("the published board follows the seat the click named", async () => {
+    const proposal = await proposed();
+    const [a, b] = [proposal.members[0]!, proposal.members[1]!];
+    await view({ slug: a.slug, castAt: proposal.createdAt });
+    await view({ slug: b.slug, castAt: proposal.createdAt });
+    const data = snapshots?.latest(CHARTER_KEY)?.data as { sections: unknown[] };
+    expect(JSON.stringify(data)).toContain(b.name);
+    expect(JSON.stringify(data)).not.toContain(a.name);
+  });
+
+  test("fails closed with no snapshot seam rather than throwing", async () => {
+    const tools = bootRib(
+      [project("p1", "keelson", "/repo/keelson")],
+      ROSTER_REPLY,
+      undefined,
+      false,
+    );
+    await selectProject("p1", "keelson", "/repo/keelson");
+    await proposeViaTool(tools);
+    const proposal = await readProposal(scopeDataHome(home, "p1"));
+    const res = await view({ slug: proposal?.members[0]?.slug, castAt: proposal?.createdAt });
+    expect(res?.ok).toBe(false);
+    expect(res?.ok === false && res.error).toContain("no snapshot seam");
+  });
+
+  test("rejects a stale castAt — the same slug is a different member behind a new cast", async () => {
+    const proposal = await proposed();
+    const res = await view({
+      slug: proposal.members[0]!.slug,
+      castAt: "2020-01-01T00:00:00.000Z",
+    });
+    expect(res?.ok).toBe(false);
+    expect(res?.ok === false && res.error).toContain("replaced by a newer cast");
+  });
+
+  test("rejects an unknown slug and a missing slug", async () => {
+    const proposal = await proposed();
+    const unknown = await view({ slug: "nobody", castAt: proposal.createdAt });
+    expect(unknown?.ok === false && unknown.error).toContain("no proposed member");
+    const bare = await view({});
+    expect(bare?.ok === false && bare.error).toContain("requires payload { slug }");
   });
 });
