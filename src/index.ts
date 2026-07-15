@@ -179,6 +179,23 @@ let registerOp: RibContext["registerOp"];
 // The run-detail drill-down: an imperatively-registered snapshot whose composer reads
 // the board the last View action selected. Cleared (and unregistered) in dispose.
 let snapshots: SnapshotManager | undefined;
+
+// The provider catalog, or the closest honest answer to it. The distinction the callers
+// depend on is undefined vs []: undefined means "no catalog to check against" and
+// validateProviderPin admits the pin (an older harness without the seam), while [] means
+// "the catalog says nothing is registered" and every pin is rejected. A THROWING seam is
+// the second case, not the first — it can't vouch for a pin, so it must not be read as
+// permission to write one. Callers pass the result rather than calling getProviders() in
+// an argument: eager evaluation would let a throwing seam take down paths that never
+// needed the catalog, like clearing a pin.
+function safeProviders(): ReturnType<NonNullable<RibContext["getProviders"]>> | undefined {
+  if (!getProviders) return undefined;
+  try {
+    return getProviders();
+  } catch {
+    return [];
+  }
+}
 let unregisterRunDetail: (() => void) | undefined;
 let runDetailBoard: CanvasBoardView | undefined;
 // The charter drill-down: same lifecycle, reading the seat the last Charter action picked.
@@ -645,18 +662,10 @@ function makeEmitMemberTool(
           return;
         }
         const { scopeId } = resolution;
-        let providers: ReturnType<NonNullable<RibContext["getProviders"]>> | undefined;
-        if (getProviders) {
-          try {
-            providers = getProviders();
-          } catch {
-            providers = [];
-          }
-        }
         const validated = validateProviderPin(
           name,
           { provider: rawProvider, model: rawModel },
-          providers,
+          safeProviders(),
         );
         const dedupedTools = tools
           ? [...new Set(tools.map((t) => t.trim()).filter((t) => t.length > 0))]
@@ -2586,12 +2595,7 @@ async function proposeCastForSelection(
     return { ok: false, error };
   }
   // A provider-listing hiccup must not block casting — degrade to unpinned members.
-  let providers: ReturnType<NonNullable<RibContext["getProviders"]>> | undefined;
-  try {
-    if (getProviders) providers = getProviders();
-  } catch {
-    providers = [];
-  }
+  const providers = safeProviders();
   // Resolved before the scan runs (not after) so the scan turn can be handed the
   // squad's casting context and cast the whole team in this one pass.
   const scopeId = selectedScopeId(selection);
@@ -3760,7 +3764,7 @@ async function castModelAction(action: RibAction): Promise<RibActionResult> {
       // Never trust a slug off the wire: only a seat this proposal actually holds.
       const member = proposal.members.find((m) => m.slug === slug);
       if (!member) return { ok: false, error: `no proposed member '${slug}' in this cast` };
-      const { pin, note } = validateProviderPin(member.name, { provider, model }, getProviders?.());
+      const { pin, note } = validateProviderPin(member.name, { provider, model }, safeProviders());
       // validateProviderPin never throws: a REJECTED pin comes back empty WITH a note,
       // and its only note-less empty pin is "the caller passed no provider" — the clear.
       // A rejection on an operator's explicit retune must fail, not read as a clear.
@@ -3945,7 +3949,7 @@ async function setModelAction(action: RibAction): Promise<RibActionResult> {
     const membersRoot = scopeMembersDir(home, scopeId);
     const member = await readMember(membersRoot, slug);
     if (!member) return { ok: false, error: `no member '${slug}' in this scope` };
-    const { pin, note } = validateProviderPin(member.name, { provider, model }, getProviders?.());
+    const { pin, note } = validateProviderPin(member.name, { provider, model }, safeProviders());
     // A rejection on an operator's explicit retune must fail, not read as a clear.
     if (note) return { ok: false, error: note };
     await setMemberModel(membersRoot, slug, pin);
