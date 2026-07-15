@@ -793,54 +793,6 @@ describe("subset approve", () => {
   });
 });
 
-describe("assign-code action", () => {
-  const now = "2026-07-01T00:00:00.000Z";
-
-  test("launches squad-code-run for an active, code-capable member in the selected scope", async () => {
-    bootRib([project("p1", "keelson", "/repo/keelson")]);
-    // No project selected → the flat default scope; scaffold a code-capable member there.
-    await scaffoldMember(scopeMembersDir(home, "default"), {
-      slug: "coder",
-      name: "Coder",
-      role: "Engineer",
-      charter: "# Coder",
-      status: "active",
-      createdAt: now,
-      tools: ["code"],
-    });
-    const res = await rib.onAction?.(
-      { type: "assign-code", payload: { slug: "coder", task: "add a --json flag" } },
-      {} as RibContext,
-    );
-    expect(res?.ok).toBe(true);
-    if (res?.ok) {
-      expect(res.data).toEqual({
-        effect: "run-workflow",
-        workflow: "squad-code-run",
-        args: { member: "coder", ARGUMENTS: "add a --json flag" },
-      });
-    }
-  });
-
-  test("rejects a member that lacks the code capability, before launching", async () => {
-    bootRib([project("p1", "keelson", "/repo/keelson")]);
-    await scaffoldMember(scopeMembersDir(home, "default"), {
-      slug: "talker",
-      name: "Talker",
-      role: "Reviewer",
-      charter: "# Talker",
-      status: "active",
-      createdAt: now,
-    });
-    const res = await rib.onAction?.(
-      { type: "assign-code", payload: { slug: "talker", task: "x" } },
-      {} as RibContext,
-    );
-    expect(res?.ok).toBe(false);
-    if (!res?.ok) expect(res?.error).toContain('lacks the "code" capability');
-  });
-});
-
 describe("retire action", () => {
   test("frees the cast name even when the member dir is already gone (no phantom leak)", async () => {
     bootRib([project("p1", "keelson", "/repo/keelson")]);

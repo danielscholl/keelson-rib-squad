@@ -32,7 +32,7 @@ so you can hand it a real edit, and one member that does not need to, since a
 dispatched turn never gets write access regardless of what a member is tagged with.
 
 If you cast your team from a repository scan in the first tutorial, check the roster
-now: a card offering **"Assign a code task…"** carries the `code` tag, and that
+now: a card whose capability line is marked **✎ `code`** carries the tag, and that
 member is your implementer. Any other active member can be your reviewer.
 
 If nobody on your roster carries `code`, authoring one from a brief will not fix it.
@@ -87,11 +87,13 @@ shape:
 this a fair coding task: atlas has to find the seam in your build before it can
 change it. On your own repository, substitute any change of the same size.)
 
-Use **"Assign a code task…"** on atlas's card and describe it. That launches
-`squad-code-run`, which calls `squad_code` once against atlas, confined to your
-selected project's root. atlas gets real `Read`, `Glob`, `Grep`, `Edit`, `Write`, and
-`Bash` for that one turn, edits the files the task needs, and, per its own task
-framing, runs whatever build or test command tells it the change actually works.
+Click **Enter** on atlas's card to open it as a seeded chat, and describe the task.
+atlas reaches the `squad_code` tool itself, confined to your selected project's
+root. (The same turn is available as the `squad-code-run` workflow, if you would
+rather launch it from the Workflows tab and read the result as a run.) atlas gets
+real `Read`, `Glob`, `Grep`, `Edit`, `Write`, and `Bash` for that one turn, edits the
+files the task needs, and, per its own task framing, runs whatever build or test
+command tells it the change actually works.
 
 The turn is deliberately quiet about integration: it is told to make the change and
 verify it locally rather than push or open anything itself, though the only thing

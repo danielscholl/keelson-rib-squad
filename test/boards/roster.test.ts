@@ -458,15 +458,10 @@ describe("buildRosterBoard persistent verbs", () => {
     );
   });
 
-  test("a code-capable member's card carries an Assign-a-code-task action; a text-only member does not", () => {
+  test("a code capability does not add a card verb — entering the member is the path to a code task", () => {
     const coder = cards(buildRosterBoard([member({ slug: "mc", tools: ["code"] })]))[0];
-    const assign = coder?.actions?.find((a) => a.type === "assign-code");
-    expect(assign).toBeDefined();
-    expect(assign?.payload).toEqual({ slug: "mc" });
-    expect(assign?.fields?.[0]?.name).toBe("task");
-    expect(assign?.fields?.[0]?.multiline).toBe(true);
     const textOnly = cards(buildRosterBoard([member({ slug: "verbal" })]))[0];
-    expect(textOnly?.actions?.some((a) => a.type === "assign-code")).toBe(false);
+    expect(coder?.actions?.map((a) => a.type)).toEqual(textOnly?.actions?.map((a) => a.type));
   });
 });
 

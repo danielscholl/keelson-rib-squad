@@ -37,7 +37,7 @@ import {
   STOP_COORDINATOR_ACTION,
 } from "./boards/coordinator.ts";
 import { buildDecisionsBoard, RECORD_DECISION_ACTION } from "./boards/decisions.ts";
-import { ASSIGN_CODE_ACTION, RETIRE_ALL_ACTION, SELECT_PROJECT_ACTION } from "./boards/roster.ts";
+import { RETIRE_ALL_ACTION, SELECT_PROJECT_ACTION } from "./boards/roster.ts";
 import { VIEW_RUN_ACTION } from "./boards/runs.ts";
 import type { CastProposalMember, CastProposalRecord } from "./cast.ts";
 import {
@@ -2963,11 +2963,13 @@ const rib: Rib = {
       },
     },
     {
-      // Surface-launched: one code-capable member edits the selected project's repo.
+      // One code-capable member edits the selected project's repo. Launched from the
+      // Workflows surface or the CLI with { member, ARGUMENTS } — the roster card
+      // carries no code verb, since entering the member reaches squad_code directly.
       definition: {
         name: "squad-code-run",
         description:
-          'Use when: assign a confined coding task to one code-capable member. Triggers: a roster card\'s "Assign a code task" action. Does: one agent turn calls squad_code so the named member edits the selected project directly (Read/Edit/Write/Bash, confined to the repo, no merge/force-push). NOT for: text-only reasoning (squad-dispatch-run) or a whole multi-step run (squad-coordinate-run).',
+          'Use when: assign a confined coding task to one code-capable member. Triggers: "have <member> implement <task>", /workflow run squad-code-run. Does: one agent turn calls squad_code so the named member edits the selected project directly (Read/Edit/Write/Bash, confined to the repo, no merge/force-push). NOT for: text-only reasoning (squad-dispatch-run) or a whole multi-step run (squad-coordinate-run).',
         nodes: [
           {
             id: "code",
@@ -3192,8 +3194,6 @@ const rib: Rib = {
         return rollbackRunAction(action);
       case RESET_SQUAD_ACTION:
         return resetSquadAction();
-      case ASSIGN_CODE_ACTION:
-        return assignCodeAction(action);
       case RECORD_DECISION_ACTION:
         return recordDecisionAction(action);
       case VIEW_RUN_ACTION:
@@ -3551,48 +3551,6 @@ function rollbackRunAction(action: RibAction): RibActionResult {
       effect: "run-workflow",
       workflow: "squad-rollback-run",
       args: project ? { run, project } : { run },
-    },
-  };
-}
-
-// Assign a code task: one code-capable member edits the selected project. The card
-// carries the member slug; squad_code resolves the repo from the selection. Focuses
-// Workflows — the code summary is the run's output.
-async function assignCodeAction(action: RibAction): Promise<RibActionResult> {
-  const payload = (action.payload ?? {}) as Record<string, unknown>;
-  const slug = asNonEmptyString(payload.slug);
-  const task = asNonEmptyString(payload.task);
-  if (!slug) return { ok: false, error: "assign-code requires payload { slug }" };
-  if (!task) {
-    return {
-      ok: false,
-      error: "Describe the code task first — what should this member implement?",
-    };
-  }
-  // Preflight the member in the selected scope BEFORE launching a billed run — a stale
-  // card button (or a direct dispatch) would otherwise kick off a squad-code-run that
-  // is guaranteed to fail. These checks mirror squad_code's own so the two can't drift.
-  try {
-    const home = squadDataHome();
-    const scopeId = selectedScopeId(await readSelectedProject(home));
-    const member = (await readMembers(scopeMembersDir(home, scopeId))).find((m) => m.slug === slug);
-    if (!member) return { ok: false, error: `unknown member "${slug}"` };
-    if (member.status !== "active") return { ok: false, error: `member "${slug}" is not active` };
-    if (!memberCanCode(member)) {
-      return {
-        ok: false,
-        error: `member "${slug}" lacks the "code" capability — only code-tagged members may modify the repo`,
-      };
-    }
-  } catch (e) {
-    return { ok: false, error: errText(e) };
-  }
-  return {
-    ok: true,
-    data: {
-      effect: "run-workflow",
-      workflow: "squad-code-run",
-      args: { member: slug, ARGUMENTS: task.slice(0, MAX_TASK_CHARS) },
     },
   };
 }

@@ -23,16 +23,6 @@ export const SELECT_PROJECT_ACTION = "select-project";
 // no squad object; a squad IS its scoped roster, so removing it retires each member.
 // Shared with onAction so the type can't drift from its handler.
 export const RETIRE_ALL_ACTION = "retire-all";
-// Assign a confined coding task to one code-capable member straight from its card —
-// launches the squad-code-run workflow with the member's slug. Shared with onAction.
-export const ASSIGN_CODE_ACTION = "assign-code";
-
-// Mirrors code.ts CODE_CAPABILITY, kept local so the out-of-process roster collector
-// need not import the agent-turn machinery just to gate one card action.
-const CODE_CAPABILITY = "code";
-function memberCanCode(member: Member): boolean {
-  return (member.tools ?? []).includes(CODE_CAPABILITY);
-}
 
 // Pure: a roster of members -> a canvas `board`. Cold start (empty scope) shows the
 // launchpad — Cast a whole team from the repo, or author the first member (archetype
@@ -125,10 +115,9 @@ export function buildRosterBoard(
 // One member -> one card, in the bench's anatomy so an approved seat reads as the member
 // it became rather than as a different object: the persisted identity tone as the dot,
 // the role in a single pill, its capability above the reason's rule and its PURPOSE
-// below, the character's personality as the footnote, and its verbs — Enter, an
-// "Assign a code task…" for code-capable members, the model picker, and Retire
-// (destructive overflow with a confirm). The slug rides every action payload + the dot
-// hash. The ensemble rides the card only when the header didn't hoist it.
+// below, the character's personality as the footnote, and its verbs — Enter, the model
+// picker, and Retire (destructive overflow with a confirm). The slug rides every action
+// payload + the dot hash. The ensemble rides the card only when the header didn't hoist it.
 function cardFor(member: Member, showCast: boolean) {
   const fields: { label?: string; value: string; tone?: CanvasTone }[] = [];
   const cast = showCast ? castLabel(member) : undefined;
@@ -153,27 +142,6 @@ function cardFor(member: Member, showCast: boolean) {
         glyph: "→",
         payload: { slug: member.slug },
       },
-      // Direct code assignment for members who carry the "code" capability — the
-      // one-click path to squad_code from the roster (gated so text-only members
-      // don't offer a write verb they can't run).
-      ...(memberCanCode(member)
-        ? [
-            {
-              type: ASSIGN_CODE_ACTION,
-              label: "Assign a code task…",
-              glyph: "⌗",
-              payload: { slug: member.slug },
-              fields: [
-                {
-                  name: "task",
-                  label: "Code task",
-                  placeholder: `What should ${member.name.trim() || "this member"} implement? e.g. "add a --json flag to the status command"`,
-                  multiline: true,
-                },
-              ],
-            },
-          ]
-        : []),
       // A lone modelPicker field is the host's solo-picker fast path: the button opens
       // the catalog popover and a pick dispatches straight through, no form. It also
       // makes the pin structural — setMemberModel rejects a model with no provider, and
