@@ -304,6 +304,16 @@ describe("buildRosterBoard populated", () => {
   test("an un-cast member has no personality footnote", () => {
     expect(cards(buildRosterBoard([member()]))[0]?.footnote).toBeUndefined();
   });
+
+  test("a personality that renders to nothing yields no footnote, not a stand-in line", () => {
+    // stripMd can empty a personality that was only markup, and the footnote is the
+    // character's voice — there is no honest placeholder for it.
+    for (const personality of ["   ", "**", "``"]) {
+      expect(cards(buildRosterBoard([castMember({ personality })]))[0]?.footnote).toBeUndefined();
+    }
+    // But markup that isn't a paired wrapper is text, and survives as the voice.
+    expect(cards(buildRosterBoard([castMember({ personality: "*_*" })]))[0]?.footnote).toBe("*_*");
+  });
 });
 
 describe("buildRosterBoard ensemble hoist", () => {
@@ -560,6 +570,12 @@ describe("buildRosterBoard authoring boot card", () => {
     expect(card?.pill).toEqual({ label: "failed", tone: "warn" });
     expect(card?.fields?.[0]?.value).toContain("repo-scan turn error: boom");
     expect(card?.actions?.[0]?.type).toBe("dismiss-genesis");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+  });
+
+  test("a blank error still says what happened rather than rendering an empty line", () => {
+    const board = buildRosterBoard([], pending({ kind: "cast", error: "   " }), startMs + 5_000);
+    expect(boot(board)?.fields?.[0]?.value).toBe("casting failed without a message.");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 });

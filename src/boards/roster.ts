@@ -134,6 +134,9 @@ function cardFor(member: Member, showCast: boolean) {
   const cast = showCast ? castLabel(member) : undefined;
   if (cast) fields.push({ label: "cast", value: cast });
   fields.push(capabilityField(member));
+  // stripMd can empty a personality that was only markup, so the footnote is decided on
+  // what would actually render, not on whether the field is set.
+  const voice = truncate(stripMd(member.personality ?? ""), 160);
   return {
     title: member.name.trim() || "(unnamed)",
     dot: identityToneForSlot(member.identitySlot),
@@ -142,7 +145,7 @@ function cardFor(member: Member, showCast: boolean) {
     reason: { text: purposeFor(member) },
     // The character's voice, only when the member was cast. The one line that
     // distinguishes a cast roster from a list of job titles.
-    ...(member.personality ? { footnote: truncate(stripMd(member.personality), 160) } : {}),
+    ...(voice ? { footnote: voice } : {}),
     actions: [
       {
         type: "enter-member",
@@ -234,7 +237,7 @@ function bootCard(pending: PendingGenesis, slot: number, now: number) {
       title: "Casting",
       dot: "warn" as CanvasTone,
       pill: { label: "failed", tone: "warn" as CanvasTone },
-      fields: [{ value: truncate(pending.error, 200) }],
+      fields: [{ value: truncate(pending.error, 200) || "casting failed without a message." }],
       actions: [
         { type: "dismiss-genesis", label: "Dismiss", glyph: "✕", tone: "warn" as CanvasTone },
       ],
@@ -464,9 +467,11 @@ function journeySection(): Section {
   };
 }
 
+// Clamp only — no fallback. The one caller that wanted "(no charter)" was the charter
+// field this pass deleted; the survivors each have their own honest empty case, and a
+// charter-specific stand-in would be a lie on any of them.
 function truncate(text: string, max = 120): string {
   const trimmed = text.trim();
-  if (trimmed.length === 0) return "(no charter)";
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
 
