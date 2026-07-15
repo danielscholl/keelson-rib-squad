@@ -19,10 +19,13 @@ import { asNonEmptyString, DEFAULT_PROJECT_NAME, errText, expectView, z } from "
 import { listAgents, resolveAgent } from "./agents.ts";
 import {
   APPROVE_CAST_ACTION,
+  CAST_MODEL_ACTION,
   CAST_PICK_ACTION,
   CAST_PROPOSE_ACTION,
   DISCARD_CAST_ACTION,
+  VIEW_CHARTER_ACTION,
 } from "./boards/cast.ts";
+import { buildCharterBoard } from "./boards/charter.ts";
 import {
   buildRunDetailBoard,
   COORDINATE_ACTION,
@@ -73,6 +76,7 @@ import { formatUsageTail } from "./format.ts";
 import { slugify } from "./genesis.ts";
 import {
   CAST_KEY,
+  CHARTER_KEY,
   COORDINATOR_KEY,
   DECISIONS_KEY,
   REPORT_KEY,
@@ -176,6 +180,9 @@ let registerOp: RibContext["registerOp"];
 let snapshots: SnapshotManager | undefined;
 let unregisterRunDetail: (() => void) | undefined;
 let runDetailBoard: CanvasBoardView | undefined;
+// The charter drill-down: same lifecycle, reading the seat the last Charter action picked.
+let unregisterCharter: (() => void) | undefined;
+let charterBoard: CanvasBoardView | undefined;
 // The run report: an imperatively-registered `html` snapshot whose composer reads
 // the page the last Report action / squad_report call built. Same lifecycle as
 // run-detail — registered in registerTools, cleared and unregistered in dispose.
@@ -2662,6 +2669,7 @@ const rib: Rib = {
     { key: SQUAD_RUNS_KEY, canvasKind: "view", title: "Runs" },
     { key: RUN_DETAIL_KEY, canvasKind: "view", title: "Run" },
     { key: REPORT_KEY, canvasKind: "html", title: "Run report" },
+    { key: CHARTER_KEY, canvasKind: "view", title: "Charter" },
   ],
 
   // The Squad nav tab. The roster sits in the header (the members you author); each
@@ -2719,12 +2727,11 @@ const rib: Rib = {
                 key: CAST_KEY,
                 workflow: "squad-cast",
                 title: "Proposed squad",
-                // Its own full-width row, not a half share beside Runs: the board lays
-                // the bench (cards, columns: 3) beside the scan's receipt, and that
-                // adjacency IS the approve decision. At a half share the bench auto-fills
-                // two tracks and the rail squeezes toward the viewport breakpoint where
-                // `columns` collapses outright — losing the comparison in the default
-                // layout. hideWhenEmpty means the row costs nothing at rest.
+                // Its own full-width row, not a half share beside Runs: the bench IS the
+                // approve decision, and its three tracks (cards, columns: 3) each carry a
+                // seat's purpose plus two verbs. At a half share the tracks fall under
+                // their 240px floor and the bench reflows to one column — turning the
+                // decision into a scroll. hideWhenEmpty means the row costs nothing at rest.
                 // NO cadenceMs: the cast collector only changes on propose/approve/
                 // discard. squad_propose_cast refreshes it after a scan.
                 collapsible: true,
@@ -3069,6 +3076,11 @@ const rib: Rib = {
     unregisterReport = snapshots?.register(REPORT_KEY, () => reportHtml ?? EMPTY_REPORT_HTML, {
       validate: expectReportHtml,
     });
+    unregisterCharter?.();
+    unregisterCharter = snapshots?.register(
+      CHARTER_KEY,
+      () => charterBoard ?? buildCharterBoard(undefined, ""),
+    );
     // Seed the picker's project list so it has options on first render.
     snapshotProjects();
     return [
@@ -3130,6 +3142,10 @@ const rib: Rib = {
         return castProposeAction(action);
       case CAST_PICK_ACTION:
         return castPickAction(action);
+      case CAST_MODEL_ACTION:
+        return castModelAction(action);
+      case VIEW_CHARTER_ACTION:
+        return viewCharterAction(action);
       case APPROVE_CAST_ACTION:
         return approveCastAction(action);
       case DISCARD_CAST_ACTION:
@@ -3200,8 +3216,11 @@ const rib: Rib = {
     unregisterRunDetail = undefined;
     unregisterReport?.();
     unregisterReport = undefined;
+    unregisterCharter?.();
+    unregisterCharter = undefined;
     snapshots = undefined;
     runDetailBoard = undefined;
+    charterBoard = undefined;
     reportHtml = undefined;
     activeCoordinateRuns.clear();
     pendingSteers.clear();
@@ -3691,6 +3710,92 @@ async function castPickAction(action: RibAction): Promise<RibActionResult> {
     });
   } catch (e) {
     return { ok: false, error: errText(e) };
+  }
+}
+
+// Retune a proposed seat's model before it is scaffolded. Same read-modify-write under
+// the proposal lock as cast-pick; the collector re-renders from the file we just wrote.
+async function castModelAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const slug = asNonEmptyString(payload.slug);
+  if (!slug) return { ok: false, error: "cast-model requires payload { slug }" };
+  const model = asNonEmptyString(payload.model);
+  const provider = asNonEmptyString(payload.provider);
+  // readProposal drops a model whose provider is absent, so such a pin would evaporate
+  // on the next collector run. Reject rather than persist something that vanishes —
+  // the same rule (and message) setMemberModel enforces for a seated member.
+  if (model && !provider) {
+    return { ok: false, error: "a pinned model needs its provider — set provider alongside model" };
+  }
+  const castAt = asNonEmptyString(payload.castAt);
+  try {
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home));
+    const scopedHome = scopeDataHome(home, scopeId);
+    return await withProposalLock(scopedHome, async () => {
+      const proposal = await readProposal(scopedHome);
+      if (!proposal) return { ok: false, error: "no proposal — cast a squad first" };
+      const stale = staleProposal(proposal, castAt);
+      if (stale) return stale;
+      // Never trust a slug off the wire: only a seat this proposal actually holds.
+      const member = proposal.members.find((m) => m.slug === slug);
+      if (!member) return { ok: false, error: `no proposed member '${slug}' in this cast` };
+      const { pin, note } = validateProviderPin(member.name, { provider, model }, getProviders?.());
+      // validateProviderPin never throws: a REJECTED pin comes back empty WITH a note,
+      // and its only note-less empty pin is "the caller passed no provider" — the clear.
+      // A rejection on an operator's explicit retune must fail, not read as a clear.
+      if (note) return { ok: false, error: note };
+      const next: CastProposalRecord = {
+        ...proposal,
+        members: proposal.members.map((m) => (m.slug === slug ? { ...withoutPin(m), ...pin } : m)),
+      };
+      await writeProposal(scopedHome, next);
+      await refreshWorkflow?.("squad-cast");
+      return { ok: true, data: { slug, ...(pin.model ? { model: pin.model } : {}) } };
+    });
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
+// Spread can't remove a key: the pin is replaced whole so a clear can't leave half of
+// the old one behind.
+function withoutPin(member: CastProposalMember): CastProposalMember {
+  const next = { ...member };
+  delete next.provider;
+  delete next.model;
+  return next;
+}
+
+// View one proposed seat's charter: read the seat off the persisted proposal, publish
+// its board under the charter key, and hand the SPA an open-canvas effect pointing at
+// it — the run drill-down's shape. A read, so it takes no proposal lock; it still
+// checks castAt, because a replaced proposal resolves the same slug to another member.
+async function viewCharterAction(action: RibAction): Promise<RibActionResult> {
+  const payload = (action.payload ?? {}) as Record<string, unknown>;
+  const slug = asNonEmptyString(payload.slug);
+  if (!slug) return { ok: false, error: "view-charter requires payload { slug }" };
+  if (!snapshots) {
+    return { ok: false, error: "charter drill-down unavailable: no snapshot seam on this harness" };
+  }
+  const castAt = asNonEmptyString(payload.castAt);
+  try {
+    const home = squadDataHome();
+    const scopeId = selectedScopeId(await readSelectedProject(home).catch(() => undefined));
+    const proposal = await readProposal(scopeDataHome(home, scopeId));
+    if (!proposal) return { ok: false, error: "no proposal — cast a squad first" };
+    const stale = staleProposal(proposal, castAt);
+    if (stale) return stale;
+    const member = proposal.members.find((m) => m.slug === slug);
+    if (!member) return { ok: false, error: `no proposed member '${slug}' in this cast` };
+    charterBoard = buildCharterBoard(member, proposal.projectName);
+    await snapshots.recompose(CHARTER_KEY);
+    return {
+      ok: true,
+      data: { effect: "open-canvas", key: CHARTER_KEY, title: member.name.trim() || "Charter" },
+    };
+  } catch (e) {
+    return { ok: false, error: `view-charter failed: ${errText(e)}` };
   }
 }
 

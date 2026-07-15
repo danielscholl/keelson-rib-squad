@@ -28,3 +28,8 @@ export const RUN_DETAIL_KEY = "rib:squad:run-detail";
 // ledger. Registered imperatively like run-detail: the Report action / squad_report
 // tool build the page, republish this key, and return an open-canvas effect.
 export const REPORT_KEY = "rib:squad:report";
+// The single-charter drill-down board. Registered imperatively like run-detail: the
+// Proposed-squad card's Charter action publishes one proposed seat's charter here and
+// returns an open-canvas effect pointing at it. A bench card carries the seat's purpose
+// only — cards have no `detail`, and a charter is what you read to decide on the seat.
+export const CHARTER_KEY = "rib:squad:charter";

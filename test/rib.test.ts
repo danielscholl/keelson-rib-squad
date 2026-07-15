@@ -3,6 +3,7 @@ import type { RibContext } from "@keelson/shared";
 import rib from "../src/index.ts";
 import {
   CAST_KEY,
+  CHARTER_KEY,
   COORDINATOR_KEY,
   DECISIONS_KEY,
   ROSTER_KEY,
@@ -53,6 +54,20 @@ describe("rib-squad", () => {
   it("declares the roster view bound to the canvas renderer", () => {
     const view = rib.views?.find((v) => v.key === ROSTER_KEY);
     expect(view?.canvasKind).toBe("view");
+  });
+
+  it("declares the charter drill-down as a view with no surface region of its own", () => {
+    expect(rib.views?.find((v) => v.key === CHARTER_KEY)?.canvasKind).toBe("view");
+    // Like the run drill-down: opened by an action's open-canvas effect, never a panel.
+    const regions = JSON.stringify(rib.surfaces?.[0]?.layout);
+    expect(regions).not.toContain(CHARTER_KEY);
+  });
+
+  it("view-charter fails closed with no snapshot seam rather than throwing", async () => {
+    rib.registerTools?.(bareCtx);
+    const res = await rib.onAction?.({ type: "view-charter", payload: { slug: "x" } }, bareCtx);
+    expect(res?.ok).toBe(false);
+    expect(res?.ok === false && res.error).toContain("no snapshot seam");
   });
 
   it("declares the Squad surface with the roster in the header", () => {
