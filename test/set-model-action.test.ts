@@ -102,6 +102,27 @@ describe("set-model action", () => {
     expect(await pinOf()).toEqual({ model: undefined, provider: undefined });
   });
 
+  test("a rejection says nothing was written — 'dropped' is the normalizing callers' verb", async () => {
+    bootRib(() => [{ id: "openai", displayName: "OpenAI" }]);
+    await seatMember({ model: "gpt-5.5", provider: "openai" });
+    const res = await setModel({ slug: "atlas", model: "x", provider: "typo" });
+    expect(res?.ok === false && res.error).toBe(
+      'invalid provider/model "typo" / "x": provider is not registered for squad members',
+    );
+    // The existing pin is untouched: nothing was dropped, so nothing may claim to be.
+    expect(await pinOf()).toEqual({ model: "gpt-5.5", provider: "openai" });
+  });
+
+  test("a reserved provider id is rejected without a catalog to check against", async () => {
+    bootRib();
+    await seatMember();
+    const res = await setModel({ slug: "atlas", provider: "stub" });
+    expect(res?.ok).toBe(false);
+    expect(res?.ok === false && res.error).toBe(
+      'invalid provider "stub": provider is not assignable to squad members',
+    );
+  });
+
   test("a throwing provider seam rejects a pin it cannot vouch for", async () => {
     bootRib(() => {
       throw new Error("catalog exploded");

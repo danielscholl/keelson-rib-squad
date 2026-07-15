@@ -3764,11 +3764,15 @@ async function castModelAction(action: RibAction): Promise<RibActionResult> {
       // Never trust a slug off the wire: only a seat this proposal actually holds.
       const member = proposal.members.find((m) => m.slug === slug);
       if (!member) return { ok: false, error: `no proposed member '${slug}' in this cast` };
-      const { pin, note } = validateProviderPin(member.name, { provider, model }, safeProviders());
-      // validateProviderPin never throws: a REJECTED pin comes back empty WITH a note,
-      // and its only note-less empty pin is "the caller passed no provider" — the clear.
+      const { pin, rejected } = validateProviderPin(
+        member.name,
+        { provider, model },
+        safeProviders(),
+      );
+      // validateProviderPin never throws: a REJECTED pin comes back empty WITH a reason,
+      // and its only reason-less empty pin is "the caller passed no provider" — the clear.
       // A rejection on an operator's explicit retune must fail, not read as a clear.
-      if (note) return { ok: false, error: note };
+      if (rejected) return { ok: false, error: `invalid ${rejected.what}: ${rejected.why}` };
       const next: CastProposalRecord = {
         ...proposal,
         members: proposal.members.map((m) => (m.slug === slug ? { ...withoutPin(m), ...pin } : m)),
@@ -3949,9 +3953,15 @@ async function setModelAction(action: RibAction): Promise<RibActionResult> {
     const membersRoot = scopeMembersDir(home, scopeId);
     const member = await readMember(membersRoot, slug);
     if (!member) return { ok: false, error: `no member '${slug}' in this scope` };
-    const { pin, note } = validateProviderPin(member.name, { provider, model }, safeProviders());
-    // A rejection on an operator's explicit retune must fail, not read as a clear.
-    if (note) return { ok: false, error: note };
+    const { pin, rejected } = validateProviderPin(
+      member.name,
+      { provider, model },
+      safeProviders(),
+    );
+    // A rejection on an operator's explicit retune must fail, not read as a clear. The
+    // note's "dropped …" phrasing is for the callers that normalize and carry on; this
+    // one writes nothing, so it says so in its own words.
+    if (rejected) return { ok: false, error: `invalid ${rejected.what}: ${rejected.why}` };
     await setMemberModel(membersRoot, slug, pin);
     await refreshWorkflow?.("squad-roster");
     return { ok: true, data: { slug, ...(pin.model ? { model: pin.model } : {}) } };
