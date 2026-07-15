@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.26.1...v0.27.0) (2026-07-15)
+
+
+### Added
+
+* **squad:** recompose the cast board around purpose and provenance ([#236](https://github.com/danielscholl/keelson-rib-squad/issues/236)) ([7da0466](https://github.com/danielscholl/keelson-rib-squad/commit/7da0466e13d704417b1fd8954dc7c029d24dc68e))
+
 ## [0.26.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.26.0...v0.26.1) (2026-07-14)
 
 
