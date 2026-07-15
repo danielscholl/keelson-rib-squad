@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.27.0...v0.28.0) (2026-07-15)
+
+
+### Added
+
+* **roster:** recompose the roster card around purpose and capability ([#240](https://github.com/danielscholl/keelson-rib-squad/issues/240)) ([374cf82](https://github.com/danielscholl/keelson-rib-squad/commit/374cf82c7303d3e0268f0caa94ffdadb9aeb2e43))
+
 ## [0.27.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.26.1...v0.27.0) (2026-07-15)
 
 
