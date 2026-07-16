@@ -198,8 +198,14 @@ export function usageOf(reg: CastingRegistry): ThemeUsage {
       activeCountByTheme[e.themeId] = (activeCountByTheme[e.themeId] ?? 0) + 1;
     }
   }
+  // "Active" is a fact about the seated roster, not the persisted field: retire never
+  // clears activeThemeId, so an ensemble whose last member is gone would otherwise stay
+  // active with FULL capacity — the stickiest it can ever be — and pin every later cast
+  // to it. Derived here (the one input both the prompt and the engine read) so an empty
+  // roster genuinely starts fresh. themeHistory still carries it, for LRU freshness.
+  const stillSeated = reg.activeThemeId ? (activeCountByTheme[reg.activeThemeId] ?? 0) > 0 : false;
   return {
-    ...(reg.activeThemeId ? { activeThemeId: reg.activeThemeId } : {}),
+    ...(stillSeated && reg.activeThemeId ? { activeThemeId: reg.activeThemeId } : {}),
     themeHistory: reg.themeHistory,
     activeCountByTheme,
   };

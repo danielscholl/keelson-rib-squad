@@ -72,6 +72,25 @@ describe("castingOptions", () => {
     expect(castingOptions(reg, themed).activeTheme?.remainingCapacity).toBe(0);
   });
 
+  test("a theme whose members are all retired is no longer active", () => {
+    const usualSuspects = THEMES[0]!;
+    const reg: CastingRegistry = {
+      version: 1,
+      activeThemeId: usualSuspects.id,
+      themeHistory: [usualSuspects.id],
+      members: {
+        mcmanus: { themedName: "McManus", themeId: usualSuspects.id, status: "retired" },
+        verbal: { themedName: "Verbal", themeId: usualSuspects.id, status: "retired" },
+      },
+    };
+    const view = castingOptions(reg, themed);
+    // The cast that empties a roster must not pin the next one to the same ensemble.
+    expect(view.activeTheme).toBeUndefined();
+    expect(view.takenCharacterNames).toEqual([]);
+    // Still in history, so the next cast is nudged toward freshness rather than blind.
+    expect(view.themeHistory).toEqual([usualSuspects.id]);
+  });
+
   test("a custom theme is listed with its own remaining capacity, active or not", () => {
     const reg: CastingRegistry = {
       version: 1,
