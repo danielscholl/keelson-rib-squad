@@ -1,0 +1,710 @@
+<title>Squad cold start — the cast screen, recomposed</title>
+<style>
+  :root {
+    --bg: #090d18;
+    --panel: #101a30;
+    --panel-2: #0c1526;
+    --field: #0b1322;
+    --border: #223052;
+    --border-soft: #1a2540;
+    --ink: #e8ecf6;
+    --muted: #828ea8;
+    --faint: #5b6782;
+    --brand: #8a7bf2;
+    --brand-soft: #b6a9fb;
+    /* the five host identity hues (IDENTITY_SLOT_TONES), in slot order */
+    --id-blue: #5b8def;
+    --id-amber: #e0922f;
+    --id-teal: #2fc7b0;
+    --id-rose: #e06a86;
+    --id-olive: #a9b25c;
+    --remove: #ef6a52;
+    --remove-wash: rgba(239, 106, 82, 0.08);
+    --keep: #2fc7b0;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 700px at 50% -10%, #0e1630 0%, transparent 60%),
+      var(--bg);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 44px 28px 80px; }
+
+  /* ---- page header ---- */
+  .page-head { margin-bottom: 40px; }
+  .kicker {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--brand-soft); margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 27px; font-weight: 650; letter-spacing: -0.01em;
+    margin: 0 0 10px; text-wrap: balance;
+  }
+  .lede { margin: 0; max-width: 64ch; color: var(--muted); font-size: 15px; }
+  .lede b { color: var(--ink); font-weight: 600; }
+  .lede + .lede { margin-top: 12px; }
+  .lede code, .sec-lede code, .specimen-note code, .change code, .trap p code, .foot-note code {
+    font-family: var(--mono); font-size: 12.5px; color: var(--brand-soft);
+  }
+
+  /* ---- the finding callout ---- */
+  .finding {
+    margin-top: 26px;
+    border: 1px solid rgba(224, 146, 47, 0.35);
+    background: linear-gradient(180deg, rgba(224, 146, 47, 0.07), rgba(224, 146, 47, 0.02));
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .finding .f-tag {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--id-amber); margin-bottom: 8px;
+  }
+  .finding p { margin: 0; font-size: 14px; color: var(--muted); max-width: 74ch; }
+  .finding p + p { margin-top: 9px; }
+  .finding b { color: var(--ink); font-weight: 600; }
+  .finding code { font-family: var(--mono); font-size: 12.5px; color: var(--brand-soft); }
+  .finding--blue {
+    border-color: rgba(91, 141, 239, 0.35);
+    background: linear-gradient(180deg, rgba(91, 141, 239, 0.07), rgba(91, 141, 239, 0.02));
+  }
+  .finding--blue .f-tag { color: var(--id-blue); }
+
+  /* ---- the trace flow ---- */
+  .flow {
+    display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    margin-top: 16px; font-size: 12.5px; color: var(--muted);
+  }
+  .flow .step {
+    font-family: var(--mono); font-size: 11.5px;
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 5px 10px; background: #0a1120; color: var(--brand-soft);
+    white-space: nowrap;
+  }
+  .flow .step.plain { color: var(--muted); }
+  .flow .step.rose { color: var(--id-rose); border-color: rgba(224, 106, 134, 0.45); }
+  .flow .step.blue { color: var(--id-blue); border-color: rgba(91, 141, 239, 0.5); }
+  .flow .arrow { color: var(--faint); }
+
+  /* ---- specimen framing ---- */
+  .specimen { margin-top: 44px; }
+  .specimen-label {
+    display: flex; align-items: baseline; gap: 12px;
+    margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .tag {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; padding: 4px 10px; border-radius: 6px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .tag--now { color: var(--remove); border-color: rgba(239, 106, 82, 0.4); }
+  .tag--prop { color: var(--brand-soft); border-color: rgba(138, 123, 242, 0.45); }
+  .tag--alt { color: var(--id-teal); border-color: rgba(47, 199, 176, 0.4); }
+  .rec {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #0b1020; background: var(--brand);
+    padding: 3px 9px; border-radius: 999px; font-weight: 600;
+  }
+  .specimen-note { color: var(--faint); font-size: 13px; max-width: 70ch; }
+
+  h2.sec { font-size: 19px; font-weight: 620; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .sec-lede { color: var(--muted); font-size: 14px; max-width: 72ch; margin: 0 0 18px; }
+  .sec-lede b { color: var(--ink); font-weight: 600; }
+  .sec-lede + .sec-lede { margin-top: -8px; }
+
+  /* ---- the region card (faithful to the live surface) ---- */
+  .region {
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 18px 40px -28px rgba(0, 0, 0, 0.9);
+  }
+  .region-head {
+    display: flex; align-items: center; gap: 11px;
+    padding: 13px 18px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 70%);
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 14px;
+  }
+  .chev { color: var(--faint); font-size: 12px; }
+  .glyph {
+    width: 24px; height: 24px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: 7px;
+    color: var(--brand-soft); font-size: 13px;
+    background: rgba(138, 123, 242, 0.06); flex: none;
+  }
+  .r-title { font-weight: 600; font-size: 15px; }
+  .count {
+    font-size: 12px; color: var(--brand-soft);
+    border: 1px solid rgba(138, 123, 242, 0.4);
+    background: rgba(138, 123, 242, 0.08);
+    border-radius: 999px; padding: 2px 10px; white-space: nowrap;
+  }
+  /* header.chip — the same pill that carries the hoisted ensemble on a seated roster */
+  .head-chip {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 9px; white-space: nowrap;
+  }
+  .head-chip.strong { color: var(--brand-soft); border-color: rgba(138, 123, 242, 0.45); background: rgba(138, 123, 242, 0.08); }
+  .spacer { flex: 1; }
+  .updated { color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .dots-menu { color: var(--faint); font-size: 15px; }
+  .region-body { padding: 20px 22px 24px; }
+
+  /* ---- the surface header (host-owned) ---- */
+  .surface-head {
+    display: flex; align-items: flex-start; gap: 12px;
+    margin-bottom: 14px; padding: 0 2px;
+  }
+  .surface-head .s-title { font-size: 21px; font-weight: 650; letter-spacing: -0.01em; }
+  .surface-head .s-sub { color: var(--faint); font-size: 13px; margin-top: 2px; }
+  .chat-model-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #0a1120; border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 12px;
+    color: var(--muted); font-size: 12.5px; cursor: pointer;
+  }
+  .chat-model-chip .p { color: var(--faint); }
+  .chat-model-chip .n { color: var(--ink); font-family: var(--mono); font-size: 12px; }
+  .chat-model-chip .c { color: var(--faint); font-size: 10px; }
+
+  .eyebrow {
+    font-size: 11px; letter-spacing: 0.13em; text-transform: uppercase;
+    color: var(--faint); margin: 0 0 12px;
+  }
+  .eyebrow .target {
+    color: var(--brand-soft); font-family: var(--mono);
+    letter-spacing: 0; text-transform: none; font-size: 12.5px;
+  }
+
+  /* ---- rows (the brand-toned invitation line) ---- */
+  .row {
+    display: flex; gap: 10px; align-items: center;
+    color: var(--muted); font-size: 13.5px; margin-bottom: 20px;
+  }
+  .row .b { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); flex: none; }
+  /* `trailing` on a non-boxed feed row: a short right-aligned annotation */
+  .row .row-trailing {
+    margin-left: auto; font-family: var(--mono); font-size: 12px;
+    color: var(--faint); white-space: nowrap;
+  }
+
+  /* ---- shipped-status callout ---- */
+  .shipped {
+    margin-top: 26px;
+    border: 1px solid rgba(47, 199, 176, 0.35);
+    background: linear-gradient(180deg, rgba(47, 199, 176, 0.07), rgba(47, 199, 176, 0.02));
+    border-radius: 12px; padding: 18px 20px;
+  }
+  .shipped .f-tag {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--keep); margin-bottom: 8px;
+  }
+  .shipped p { margin: 0; font-size: 14px; color: var(--muted); max-width: 74ch; }
+  .shipped p + p { margin-top: 9px; }
+  .shipped b { color: var(--ink); font-weight: 600; }
+  .shipped code { font-family: var(--mono); font-size: 12.5px; color: var(--brand-soft); }
+
+  /* ---- CURRENT: full-width stacked action bars ---- */
+  .bar-stack { display: flex; flex-direction: column; gap: 8px; }
+  .bar {
+    display: flex; align-items: center; gap: 11px;
+    border: 1px solid var(--border-soft);
+    border-radius: 9px;
+    padding: 11px 14px;
+    font-size: 13.5px; color: var(--ink);
+    background: var(--panel-2);
+    cursor: pointer; width: 100%; text-align: left;
+  }
+  .bar .g { font-size: 12px; }
+  /* the tone WASH — a full-panel-width gradient per row, which is the bug */
+  .bar.tone-blue  { background: linear-gradient(90deg, rgba(91,141,239,0.16), rgba(91,141,239,0.02)); border-color: rgba(91,141,239,0.28); }
+  .bar.tone-amber { background: linear-gradient(90deg, rgba(224,146,47,0.16), rgba(224,146,47,0.02)); border-color: rgba(224,146,47,0.28); }
+  .bar.tone-teal  { background: linear-gradient(90deg, rgba(47,199,176,0.16), rgba(47,199,176,0.02)); border-color: rgba(47,199,176,0.28); }
+  .bar.tone-rose  { background: linear-gradient(90deg, rgba(224,106,134,0.16), rgba(224,106,134,0.02)); border-color: rgba(224,106,134,0.28); }
+  .bar.tone-olive { background: linear-gradient(90deg, rgba(169,178,92,0.16), rgba(169,178,92,0.02)); border-color: rgba(169,178,92,0.28); }
+  .bar .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .bar.tone-blue .dot  { background: var(--id-blue); }
+  .bar.tone-amber .dot { background: var(--id-amber); }
+  .bar.tone-teal .dot  { background: var(--id-teal); }
+  .bar.tone-rose .dot  { background: var(--id-rose); }
+  .bar.tone-olive .dot { background: var(--id-olive); }
+  .bar .g.plus { color: var(--brand-soft); }
+  .bar.hero {
+    background: linear-gradient(180deg, #9384f4, #7d6cef);
+    border: none; color: #0a0e1c; font-weight: 600; font-size: 14px;
+    padding: 12px 16px; justify-content: flex-start;
+  }
+
+  /* ---- PROPOSED: the expanded hero composer ---- */
+  .composer {
+    border: 1px solid rgba(138, 123, 242, 0.3);
+    border-radius: 11px;
+    background: linear-gradient(180deg, rgba(138,123,242,0.05), rgba(138,123,242,0.01));
+    padding: 14px 15px 15px;
+  }
+  .f-label { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; }
+  .composer textarea, .panel-form textarea {
+    width: 100%; min-height: 62px; resize: vertical;
+    background: var(--field); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--ink);
+    font-family: var(--sans); font-size: 13.5px;
+    padding: 10px 12px; line-height: 1.5;
+  }
+  .composer textarea::placeholder, .panel-form textarea::placeholder { color: var(--faint); }
+  .composer textarea:focus-visible, .panel-form textarea:focus-visible {
+    outline: 2px solid var(--brand); outline-offset: 1px;
+  }
+  .composer-foot { display: flex; align-items: center; gap: 12px; margin-top: 11px; flex-wrap: wrap; }
+  .author-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: linear-gradient(180deg, #9384f4, #7d6cef);
+    color: #0a0e1c; font-weight: 600; font-size: 13.5px;
+    border: none; border-radius: 9px; padding: 9px 17px; cursor: pointer;
+  }
+  .author-btn.quiet {
+    background: #0a1120; border: 1px solid var(--border);
+    color: var(--brand-soft); font-weight: 500;
+  }
+  .composer-foot .hint { color: var(--faint); font-size: 12.5px; }
+  .composer-foot .hint .path { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+
+  /* ---- PROPOSED: the wrapped chip strip ---- */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+  .starter-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    padding: 7px 15px 7px 12px;
+    color: var(--ink); font-size: 13px; cursor: pointer;
+    flex: 0 0 auto;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .starter-chip:hover { border-color: var(--border); background: #101b31; }
+  .starter-chip:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  .starter-chip .g { color: var(--brand-soft); font-size: 12px; }
+  .starter-chip.describe { border-style: dashed; color: var(--muted); }
+  .starter-chip.describe .g { color: var(--muted); }
+  /* the :has() rule — only an OPEN form takes the full line */
+  .chip-row .opened { flex-basis: 100%; }
+  .panel-form {
+    margin-top: 9px;
+    border: 1px solid var(--border);
+    border-radius: 10px; background: var(--panel-2);
+    padding: 14px 15px 15px;
+  }
+
+  /* the tooltip demo */
+  .tip-demo { position: relative; display: inline-flex; }
+  .tip {
+    position: absolute; top: calc(100% + 9px); left: 0; z-index: 5;
+    background: #060a14; border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 10px;
+    color: var(--muted); font-size: 12px; white-space: nowrap;
+    box-shadow: 0 14px 30px -14px rgba(0,0,0,0.95);
+  }
+
+  /* ---- markers ---- */
+  .rm { position: relative; outline: 1.5px dashed var(--remove); outline-offset: 5px; border-radius: 9px; }
+  .rm.mod { outline-color: var(--brand); }
+  .rm-n {
+    position: absolute; top: -11px; right: -11px;
+    width: 19px; height: 19px; display: grid; place-items: center;
+    color: #150808; font-family: var(--mono); font-size: 11px; font-weight: 700;
+    border-radius: 50%; z-index: 3; background: var(--remove);
+  }
+  .rm.mod .rm-n { background: var(--brand); color: #0b1020; }
+
+  /* ---- traps / rejected ---- */
+  .traps { display: grid; gap: 11px; margin-top: 18px; }
+  .trap {
+    border: 1px solid var(--border-soft);
+    border-left: 2px solid var(--remove);
+    border-radius: 9px; background: var(--panel-2);
+    padding: 13px 15px;
+  }
+  .trap.soft { border-left-color: var(--id-amber); }
+  .trap-h { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; flex-wrap: wrap; }
+  .trap-h .t { font-weight: 600; font-size: 13.5px; }
+  .trap-h .where {
+    font-family: var(--mono); font-size: 11px; color: var(--faint);
+    margin-left: auto; white-space: nowrap;
+  }
+  .trap p { margin: 0; font-size: 13px; color: var(--muted); }
+  .trap p b { color: var(--ink); font-weight: 600; }
+  .trap p + p { margin-top: 7px; }
+
+  /* ---- change legend ---- */
+  .legend { margin-top: 48px; border-top: 1px solid var(--border-soft); padding-top: 26px; }
+  .legend h2 { font-size: 15px; margin: 0 0 16px; font-weight: 600; }
+  .changes { display: grid; gap: 10px; }
+  .change {
+    display: grid; grid-template-columns: 24px 1fr auto;
+    gap: 12px; align-items: start; font-size: 13.5px;
+  }
+  .change .n {
+    width: 22px; height: 22px; display: grid; place-items: center;
+    border-radius: 50%; font-family: var(--mono); font-size: 11px; font-weight: 700;
+  }
+  .change .n.del { background: var(--remove-wash); color: var(--remove); border: 1px solid rgba(239,106,82,0.4); }
+  .change .n.mod { background: rgba(138,123,242,0.1); color: var(--brand-soft); border: 1px solid rgba(138,123,242,0.4); }
+  .change .n.keep { background: rgba(47,199,176,0.1); color: var(--keep); border: 1px solid rgba(47,199,176,0.4); }
+  .change .what { color: var(--ink); }
+  .change .what small { display: block; color: var(--muted); margin-top: 2px; }
+  .change .owner {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+    color: var(--faint); white-space: nowrap; padding-top: 3px;
+  }
+
+  .foot-note {
+    margin-top: 34px; padding-top: 20px; border-top: 1px solid var(--border-soft);
+    color: var(--faint); font-size: 12.5px; max-width: 74ch;
+  }
+
+  @media (max-width: 820px) {
+    .change { grid-template-columns: 24px 1fr; }
+    .change .owner { grid-column: 2; padding-top: 0; }
+    .trap-h .where { margin-left: 0; width: 100%; }
+    .surface-head { flex-direction: column; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .starter-chip { transition: none; }
+  }
+</style>
+
+<main class="wrap">
+  <header class="page-head">
+    <div class="kicker">Keelson · Squad</div>
+    <h1>Cold start: the cast screen, recomposed</h1>
+    <p class="lede">The screen has one job — get a first-time operator from an empty scope to a squad — and it has the priority right: <b>Cast</b> is the hero, seating one member is the escape hatch. What's wrong is the <b>shape</b>. The escape hatch renders as five full-width tone-washed bars that out-mass the hero four to one, the hero is a button hiding the only input that matters, the footer restates the header, and the screen never says which repository it is about to read.</p>
+    <p class="lede">Six changes, all rib-only. Every field used here ships today — no <code>@keelson/shared</code> change, so nothing waits on a contract landing in keelson <code>main</code>. Static mock — not the live app.</p>
+
+    <div class="shipped">
+      <div class="f-tag">Status — shipped, with two corrections found building it</div>
+      <p><b>Landed:</b> the five rib-side changes, green on <code>bun run check</code>, <code>bun run typecheck</code>, and 992 tests. Two things this mock originally claimed were wrong; the code is right rather than the drawing. Both are corrected above, and recorded here because a mock that quietly diverges from what shipped is worse than no mock.</p>
+      <p><b>1 · <code>hint</code> is hover-only.</b> The first draft drew <em>"Reads ~/keelson/cimpl-stack · creates nothing"</em> as a visible line beside the submit. It is not expressible: <code>hint</code> feeds <code>actionTooltip</code> (<code>BoardView.tsx:118</code>) and renders as a <code>title</code> tooltip, invisible at rest. The path echo moved to the intro row's <code>trailing</code> — "a short right-aligned annotation" — which is visible and needs no new primitive. <code>hint</code> remains exactly right for the archetype taglines, where a hover reminder <em>is</em> the intent.</p>
+      <p><b>2 · The name must resolve off <code>projectId</code>, never <code>scopeId</code>.</b> <code>DEFAULT_SCOPE_ID</code> and <code>DEFAULT_PROJECT_NAME</code> are the <b>same literal</b> — <code>"default"</code> — with different meanings, so a scopeId-keyed lookup could match a project whose <em>id</em> is "default" and chip the sentinel as though it were a repo identity. Resolution is snapshot-first keyed on <code>projectId</code>, with the frozen <code>selection.name</code> as fallback: <code>projects.json</code> is rewritten on every action while <code>selection.name</code> froze at select time, so after a rename the snapshot is right and the selection is stale.</p>
+    </div>
+
+    <div class="finding">
+      <div class="f-tag">What the trace turned up</div>
+      <p><b>The launchpad's five identity hues are a promise the write path breaks on the first click.</b> <code>authorSection</code> tones each archetype by its position in the array — <code>tone: identityToneForSlot(i)</code> — so Lead wears <span style="color:var(--id-blue)">id-blue</span>, Engineer <span style="color:var(--id-amber)">id-amber</span>, Reviewer <span style="color:var(--id-teal)">id-teal</span>, Tester <span style="color:var(--id-rose)">id-rose</span>. But nothing carries that slot into the write. <code>authorArchetypeAction</code> sends <code>{ role }</code> and a brief — no slot — and <code>squad_emit_member</code> assigns the hue from <b>cast order</b>: <code>themedRecord(…, existing.length)</code> → <code>identitySlotForIndex(0)</code> on an empty roster.</p>
+      <p>So click the rose Tester on a fresh scope and the boot card that replaces it is <b>blue</b> (<code>bootCard(pending, nextFreeSlot([]))</code> → slot 0), and the member it becomes is blue <b>for life</b> — <code>identitySlot</code> is persisted, and the dot, the roster peek, and every run board key off it. On an empty roster <b>every archetype authors into id-blue</b>: four of the five chips are wrong, immediately and permanently.</p>
+      <p><b>The ramp is right; the preview is wrong.</b> Slot-by-cast-order is deliberate — it's what stops a hand-built team stacking on slot 0, and reserving rose for Tester would give an all-Tester roster five rose seats. So the fix is not to teach the write path the archetype's hue. It is that <b>the launchpad cannot know the hue, and must stop claiming one.</b> Which is convenient: those tones are also the full-width gradient washes that make the escape hatch shout over the hero. One deletion, two problems.</p>
+
+      <div class="flow">
+        <span class="step plain">click</span>
+        <span class="step rose">Tester · id-rose</span>
+        <span class="arrow">→</span>
+        <span class="step">beginGenesis({ role })</span>
+        <span class="arrow">→</span>
+        <span class="step blue">bootCard · slot 0</span>
+        <span class="arrow">→</span>
+        <span class="step">themedRecord(…, 0)</span>
+        <span class="arrow">→</span>
+        <span class="step blue">seated · id-blue, for life</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ CURRENT ============ -->
+  <section class="specimen">
+    <div class="specimen-label">
+      <span class="tag tag--now">Current</span>
+      <span class="specimen-note">An empty scope on <code>cimpl-stack</code>. Everything below the invitation line is a single stacked column: <code>actions</code> without <code>wrap</code> renders one full-width bar per item. Numbered marks = what changes.</span>
+    </div>
+
+    <div class="surface-head">
+      <div>
+        <div class="s-title">Squad</div>
+        <div class="s-sub">Author members · cast a squad · assign work</div>
+      </div>
+      <span class="spacer"></span>
+      <span class="rm mod" style="outline-offset:7px;">
+        <button class="chat-model-chip">
+          <span class="p">Project</span><span class="c">·</span><span class="n">cimpl-stack</span><span class="c">▾</span>
+        </button>
+        <span class="rm-n">6</span>
+      </span>
+    </div>
+
+    <div class="region">
+      <div class="region-head">
+        <span class="chev">▾</span>
+        <span class="glyph">◆</span>
+        <span class="r-title">Roster</span>
+        <span class="count">0 members</span>
+        <span class="spacer"></span>
+        <span class="updated">updated just now</span>
+        <span class="dots-menu">⋯</span>
+      </div>
+
+      <div class="region-body">
+        <div class="row">
+          <span class="b"></span>
+          <span>One scan of the repo composes the team — you approve before anything is created.</span>
+        </div>
+
+        <p class="eyebrow">Cast a squad from this repo</p>
+        <div class="rm mod">
+          <button class="bar hero"><span class="g">✦</span> Cast a squad</button>
+          <span class="rm-n">3</span>
+        </div>
+
+        <p class="eyebrow" style="margin-top:22px;">or seat one member yourself</p>
+        <div class="rm">
+          <div class="bar-stack">
+            <button class="bar tone-blue"><span class="dot"></span><span class="g plus">＋</span> Lead — Direction, scope, and trade-off calls</button>
+            <button class="bar tone-amber"><span class="dot"></span><span class="g plus">＋</span> Engineer — Implementation, debugging, and design</button>
+            <button class="bar tone-teal"><span class="dot"></span><span class="g plus">＋</span> Reviewer — Correctness, clarity, and risk review</button>
+            <button class="bar tone-rose"><span class="dot"></span><span class="g plus">＋</span> Tester — Coverage, edge cases, and regressions</button>
+            <button class="bar tone-olive"><span class="dot"></span><span class="g plus">✎</span> Describe &amp; author</button>
+          </div>
+          <span class="rm-n">1</span>
+        </div>
+
+        <div class="rm" style="outline-offset:7px;">
+          <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:22px;">
+            <div style="display:grid; grid-template-columns:auto 1fr; column-gap:8px; row-gap:2px; padding:9px 10px; background:var(--panel-2); border:1px solid var(--border-soft); border-radius:10px;">
+              <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; color:var(--brand); background:rgba(138,123,242,0.14); font-family:var(--mono); font-size:11px; font-weight:700;">1</span>
+              <span style="color:var(--ink); font-size:13.5px; font-weight:700;">Cast</span>
+              <span style="grid-column:2; color:var(--muted); font-size:13px;">The scan proposes a team; you approve or discard it.</span>
+            </div>
+            <div style="display:grid; grid-template-columns:auto 1fr; column-gap:8px; row-gap:2px; padding:9px 10px; background:var(--panel-2); border:1px solid var(--border-soft); border-radius:10px;">
+              <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; color:var(--brand); background:rgba(138,123,242,0.14); font-family:var(--mono); font-size:11px; font-weight:700;">2</span>
+              <span style="color:var(--ink); font-size:13.5px; font-weight:700;">Meet</span>
+              <span style="grid-column:2; color:var(--muted); font-size:13px;">Each member becomes a chat agent you can enter and talk to.</span>
+            </div>
+            <div style="display:grid; grid-template-columns:auto 1fr; column-gap:8px; row-gap:2px; padding:9px 10px; background:var(--panel-2); border:1px solid var(--border-soft); border-radius:10px;">
+              <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; color:var(--brand); background:rgba(138,123,242,0.14); font-family:var(--mono); font-size:11px; font-weight:700;">3</span>
+              <span style="color:var(--ink); font-size:13.5px; font-weight:700;">Run</span>
+              <span style="grid-column:2; color:var(--muted); font-size:13px;">Give the squad a task — the loop's rounds and findings stream here.</span>
+            </div>
+          </div>
+          <span class="rm-n">5</span>
+        </div>
+      </div>
+    </div>
+    <p class="specimen-note" style="margin-top:12px;">Read it by mass: the escape hatch is <b>five</b> full-width rows, the hero is <b>one</b>. The tone washes make the four archetypes the brightest thing on a screen whose only job is the button above them — and each wash is a hue the member will not get. The mission field, the one input that steers the whole scan, is behind a click nobody makes. The project chip that decides <em>which repository gets read</em> sits in the far opposite corner, in the same quiet pill Chat uses for its model.</p>
+  </section>
+
+  <!-- ============ PROPOSED ============ -->
+  <section class="specimen">
+    <div class="specimen-label">
+      <span class="tag tag--prop">Proposed</span>
+      <span class="rec">recommended</span>
+      <span class="specimen-note">The hero becomes the composer; the escape hatch becomes one line of chips with Describe folded in at the end; the explainer is gone; and the target repository is said three times on the way to the verb that reads it.</span>
+    </div>
+
+    <div class="surface-head">
+      <div>
+        <div class="s-title">Squad</div>
+        <div class="s-sub">Author members · cast a squad · assign work</div>
+      </div>
+      <span class="spacer"></span>
+      <button class="chat-model-chip">
+        <span class="p">Project</span><span class="c">·</span><span class="n">cimpl-stack</span><span class="c">▾</span>
+      </button>
+    </div>
+
+    <div class="region">
+      <div class="region-head">
+        <span class="chev">▾</span>
+        <span class="glyph">◆</span>
+        <span class="r-title">Roster</span>
+        <span class="count">0 members</span>
+        <span class="head-chip strong">cimpl-stack</span>
+        <span class="spacer"></span>
+        <span class="updated">updated just now</span>
+        <span class="dots-menu">⋯</span>
+      </div>
+
+      <div class="region-body">
+        <div class="row">
+          <span class="b"></span>
+          <span>One scan of the repo composes the team — you approve before anything is created.</span>
+          <span class="row-trailing">~/keelson/cimpl-stack</span>
+        </div>
+
+        <p class="eyebrow">Cast a squad from <span class="target">cimpl-stack</span></p>
+        <div class="composer">
+          <div class="f-label">Mission (optional)</div>
+          <textarea placeholder='What is this squad for? e.g. "ship the new search rib"'></textarea>
+          <div class="composer-foot">
+            <button class="author-btn">✦ Cast a squad</button>
+          </div>
+        </div>
+
+        <p class="eyebrow" style="margin-top:22px;">or seat one member yourself</p>
+        <div class="chip-row">
+          <span class="tip-demo">
+            <button class="starter-chip"><span class="g">＋</span> Lead</button>
+            <span class="tip">Direction, scope, and trade-off calls</span>
+          </span>
+          <button class="starter-chip"><span class="g">＋</span> Engineer</button>
+          <button class="starter-chip"><span class="g">＋</span> Reviewer</button>
+          <button class="starter-chip"><span class="g">＋</span> Tester</button>
+          <button class="starter-chip describe"><span class="g">✎</span> Describe &amp; author…</button>
+        </div>
+      </div>
+    </div>
+    <p class="specimen-note" style="margin-top:12px;">The escape hatch went from ~250px of stacked column to one ~34px line. The taglines aren't lost — they move to <code>hint</code>, the schema's "short descriptive hover tooltip… so a producer can remind the operator what an unfamiliar action is for" (shown hanging off Lead). The hue washes are gone, so the only saturated thing left is the verb the screen exists for. Nothing here is a new primitive.</p>
+  </section>
+
+  <!-- ============ THE DESCRIBE FOLD ============ -->
+  <section class="specimen">
+    <div class="specimen-label">
+      <span class="tag tag--prop">Detail · Describe &amp; author, folded in</span>
+      <span class="specimen-note">Why the fifth chip doesn't hang: in a <code>wrap</code> strip a fields-carrying action is a <b>compact chip at rest</b> and only claims its own full-width line <b>once opened</b>. It is one chip in the row above, and the panel below is the same action, clicked.</span>
+    </div>
+
+    <div class="region">
+      <div class="region-body">
+        <p class="eyebrow">or seat one member yourself</p>
+        <div class="chip-row">
+          <button class="starter-chip"><span class="g">＋</span> Lead</button>
+          <button class="starter-chip"><span class="g">＋</span> Engineer</button>
+          <button class="starter-chip"><span class="g">＋</span> Reviewer</button>
+          <button class="starter-chip"><span class="g">＋</span> Tester</button>
+          <div class="opened">
+            <button class="starter-chip describe" style="border-color:rgba(138,123,242,0.5); color:var(--brand-soft);"><span class="g" style="color:var(--brand-soft)">✎</span> Describe &amp; author…</button>
+            <div class="panel-form">
+              <div class="f-label">Who should this member be?</div>
+              <textarea placeholder='e.g. "Atlas — a staff engineer who guards the architecture"'></textarea>
+              <div style="margin-top:11px;"><button class="author-btn quiet">✎ Describe &amp; author</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding finding--blue" style="margin-top:16px;">
+      <div class="f-tag">The mechanic — and the one constraint it carries</div>
+      <p>The rule is <code>.cvb-actions--wrap > .cvb-action:has(.cvb-action-form) { flex-basis: 100%; }</code>. The selector is <code>:has()</code>, and <code>.cvb-action-form</code> only exists in the DOM <b>while the form is open</b> — so at rest the item is <code>flex: 0 0 auto</code> like every sibling and sits in the line. The CSS says so in its own comment: <em>"…breaks to its own full-width line so the form still reads as a panel beneath the row (its button stays compact, the form stretches)."</em> This is the behaviour <code>hireSection</code> already relies on.</p>
+      <p><b>The constraint: Describe must stay last in <code>items</code>.</b> A <code>wrap</code> strip breaks the open form <em>in source order</em>, not below the strip — that "never breaks mid-row" guarantee belongs to <code>tabs</code>, which sends the form below via <code>order</code>. So Describe last means the four archetypes hold line one and the form drops cleanly to line two. Move it anywhere else and opening it splits the chip row in half. It is last today; this is a note for whoever reorders the array next.</p>
+    </div>
+  </section>
+
+  <!-- ============ THE PROJECT ============ -->
+  <section class="specimen">
+    <h2 class="sec">Making the project impossible to miss</h2>
+    <p class="sec-lede">The failure this prevents is expensive and silent: land on Squad, click the one big button, and a 300-second read runs against whichever repository the chip happened to hold — proposing a team into the wrong scope. On an empty roster there is no seated member to tip you off that you're in the wrong place. The chip is the only tell, and it is a small quiet pill in the opposite corner from the button.</p>
+
+    <div class="finding finding--blue">
+      <div class="f-tag">What the rib can and cannot do</div>
+      <p><b>The picker is not the rib's to style.</b> <code>Surface.tsx</code> renders it from <code>descriptor.projectScoped</code> as <code>&lt;ProjectChip projectName={…} popoverId={…} /&gt;</code> — three props, no prominence among them — and <code>ProjectChip</code> is the <b>shared</b> <code>chat-model-chip</code>, the same component and the same class Chat and Workflows use for their model pill. So there is no rib-side change that makes <em>the control</em> louder, and restyling that class to shout would drag Chat and Workflows along with it. A prominence variant for <code>projectScoped</code> surfaces is a real option, but it is a <b>keelson</b> PR — and CI here symlinks <code>@keelson/shared</code> to keelson <code>main</code>, so this rib can't land ahead of it.</p>
+      <p><b>So make the answer dominant, not the control.</b> What the operator needs isn't a bigger picker — it's to never be able to reach the button without having read the target. Three echoes on the way there, all rib-side, all shipping fields, and no second control to keep in sync:</p>
+    </div>
+
+    <div class="traps" style="margin-top:16px;">
+      <div class="trap" style="border-left-color: var(--keep);">
+        <div class="trap-h"><span class="t">1 · The panel head states its scope</span><span class="where">rib · roster.ts</span></div>
+        <p><code>header.chip</code> is <b>free at cold start</b>: it carries the hoisted ensemble on a seated roster, and <code>hoistedEnsemble([])</code> returns <code>undefined</code> for an empty one — there is no ensemble to collide with until there are members, and by then the cold-start board is gone. So the head reads <code>Roster · 0 members · cimpl-stack</code>, in the same pill that will later say <code>THE FLUX NAVIGATORS</code>. Top-left, where the eye starts, at zero cost.</p>
+      </div>
+      <div class="trap" style="border-left-color: var(--keep);">
+        <div class="trap-h"><span class="t">2 · The verb names its target</span><span class="where">rib · roster.ts · collect-roster.ts</span></div>
+        <p><code>Cast a squad from <b>cimpl-stack</b></code>, not "from this repo". The collector already reads the selection (<code>readSelectedProject</code>, for <code>selectedScopeId</code>) and <code>liveRunsStrip</code> already renders <code>run.name ?? run.scopeId</code> — the name is in hand and just needs threading into <code>buildRosterBoard</code>. Degrades to today's "this repo" on the <code>DEFAULT_SCOPE_ID</code> sentinel, which has no name to give.</p>
+      </div>
+      <div class="trap" style="border-left-color: var(--keep);">
+        <div class="trap-h"><span class="t">3 · The framing line says where</span><span class="where">rib · roster.ts</span></div>
+        <p>The invitation row already carries the trust claim — the scan reads, it does not write — so the root rides its <code>trailing</code>: <em>"One scan of the repo composes the team — you approve before anything is created."</em> with <code>~/keelson/cimpl-stack</code> right-aligned beside it. That is the last prose before the verb. The name says <em>which</em>; the path says <em>where</em>, and disambiguates two checkouts sharing a name. <code>rootPath</code> is already on the selection record — and has no fallback (<code>projects.json</code> carries only <code>{ id, name }</code>), so it degrades to silence rather than a guess.</p>
+      </div>
+    </div>
+
+    <p class="sec-lede" style="margin-top:18px;"><b>If that isn't enough,</b> the rib <em>can</em> ship a real contextual picker without touching the harness: an <code>actions</code> + <code>wrap</code> strip of <code>select-project</code> chips, one per project. The precedent already ships — <code>liveRunsStrip</code> dispatches exactly that verb with <code>payload: { scopeId }</code> — and it can't drift from the host chip, because both write the same file through the same handler. It is left out of the recommendation only because it is a second control for one piece of state, and because three echoes solve the actual failure without one. Worth adding the moment we see someone cast against the wrong repo anyway.</p>
+  </section>
+
+  <!-- ============ REJECTED ============ -->
+  <section class="specimen">
+    <h2 class="sec">Considered and rejected</h2>
+    <p class="sec-lede">Each of these is a primitive that looks made for this screen and isn't. Written down so the next pass doesn't re-derive them.</p>
+
+    <div class="traps">
+      <div class="trap">
+        <div class="trap-h"><span class="t">An empty bench of ghost seats</span><span class="where">canvas · cards.ghost / seats</span></div>
+        <p>The tempting one: make cold start <em>look like a squad</em> — a <code>grid</code> bench of dashed <code>ghost</code> seats, or the unused <code>seats</code> section ("a fixed-capacity identity row… unlabelled seats stay decorative so regions do not invent identities"). It's the shape Chamber's presence board uses, and it would make the empty state continuous with the seated roster. <b>But it has to commit to a number, and there isn't an honest one.</b> Five is the hue ramp (<code>IDENTITY_SLOT_COUNT</code>); six is <code>MAX_CAST_MEMBERS</code>; the cast itself proposes a variable team. Any fixed bench reports <b>an internal cap the operator never chose</b> — the exact ground the last pass deleted the <code>5 of 6 bench</code> stat tile on. Chamber can draw five seats because authoring one Mind at a time <em>is</em> its interaction. Squad's is one scan that decides the number for you.</p>
+      </div>
+
+      <div class="trap">
+        <div class="trap-h"><span class="t"><code>tabs</code> for the archetype strip</span><span class="where">canvas · actions.tabs</span></div>
+        <p>A tab strip of Lead / Engineer / Reviewer / Tester / Describe reads beautifully and lies. The four archetypes carry <b>no fields</b> — they dispatch a fixed brief on click — and in a tabs strip "items without <code>fields</code> still dispatch on click". So four of the five tabs would fire an action instead of revealing a panel. <b>A tab that fires is a lie about the affordance</b>, and the one tab that behaves like a tab would be the escape hatch's escape hatch. <code>wrap</code> is the honest primitive for a strip of immediate verbs — and it folds Describe in for free.</p>
+      </div>
+
+      <div class="trap">
+        <div class="trap-h"><span class="t">A dominant project <em>picker</em> on the board</span><span class="where">canvas · cards.action + selected</span></div>
+        <p>The literal reading of "make it dominant": a selectable <code>cards</code> bench of projects (<code>action</code> + <code>selected</code> gives a real ringed picker), sat above the hero. <b>It reintroduces the bug this pass exists to fix.</b> A grid of project cards out-masses the composer exactly the way five tone-washed bars do today — and it puts a control the operator touches once per session above the verb they came for. The dominant thing should be the <em>answer</em> ("you are about to read cimpl-stack"), not the control that sets it.</p>
+      </div>
+
+      <div class="trap soft">
+        <div class="trap-h"><span class="t">Keeping the Cast / Meet / Run explainer</span><span class="where">rib · roster.ts</span></div>
+        <p>It goes, and the duplication is only half the reason. Its <b>Cast</b> tile — "The scan proposes a team; you approve or discard it" — is the invitation row again, thirty words later. But <b>Meet</b> and <b>Run</b> describe panels that are <code>hideWhenEmpty</code>, so at cold start they explain two things the operator cannot see or act on, and the tiles re-render on <em>every</em> empty scope forever, not just the first one ever. The surface subtitle already says "Author members · cast a squad · assign work". If the arc needs telling, the honest place is docs, not a permanent footer on the create screen.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CHANGE LEGEND ============ -->
+  <section class="legend">
+    <h2>What changes</h2>
+    <div class="changes">
+      <div class="change">
+        <span class="n del">1</span>
+        <span class="what">Drop the per-archetype identity tones from the launchpad
+          <small>The hue is assigned by cast order at write time; the launchpad cannot know it and must stop claiming it. This is the correctness fix and the wash fix at once — untoned actions render as plain chips.</small></span>
+        <span class="owner">rib · roster.ts</span>
+      </div>
+      <div class="change">
+        <span class="n mod">2</span>
+        <span class="what">Set <code>wrap: true</code>; move each tagline from the label to <code>hint</code>
+          <small>Five full-width bars → one line of five chips. The label becomes the bare role (<code>Lead</code>), the tagline becomes the hover hint — the field documented for exactly this ("remind the operator what an unfamiliar action is for"). Describe stays <b>last</b>: at rest it's a chip in the line, and only its open form takes a full line. Keep that order.</small></span>
+        <span class="owner">rib · roster.ts</span>
+      </div>
+      <div class="change">
+        <span class="n mod">3</span>
+        <span class="what">Set <code>expanded: true</code> on the cast action; drop its inert <code>inline: true</code>
+          <small>The mission box opens with the screen — "a hero action whose input IS the affordance". <code>inline</code> is documented as inert on a non-destructive action, so it parses and does nothing; delete it rather than leave a key that reads like it's load-bearing.</small></span>
+        <span class="owner">rib · roster.ts</span>
+      </div>
+      <div class="change">
+        <span class="n mod">4</span>
+        <span class="what">Say the target three times: <code>header.chip</code>, the cast title, and the intro row's <code>trailing</code>
+          <small><code>Roster · 0 members · cimpl-stack</code> / <code>Cast a squad from cimpl-stack</code> / the framing line trailing <code>~/keelson/cimpl-stack</code>. <code>chip</code> is free at cold start (no ensemble to hoist). The collector resolves the name snapshot-first off <code>projectId</code>; each echo degrades independently to today's copy. No second control.</small></span>
+        <span class="owner">rib · roster.ts · collect-roster.ts</span>
+      </div>
+      <div class="change">
+        <span class="n del">5</span>
+        <span class="what">Delete the Cast / Meet / Run journey
+          <small>Its Cast tile restates the invitation row; Meet and Run explain panels that are hidden at cold start. Removes <code>journeySection()</code> and ~120px of permanent footer.</small></span>
+        <span class="owner">rib · roster.ts</span>
+      </div>
+      <div class="change">
+        <span class="n keep">6</span>
+        <span class="what">Deferred: a prominence variant for the host <code>ProjectChip</code> on <code>projectScoped</code> surfaces
+          <small>Not doable from a rib — it's the shared <code>chat-model-chip</code> Chat and Workflows use, rendered by <code>Surface.tsx</code> with no prominence prop. A keelson PR, and CI here symlinks to keelson <code>main</code>, so this rib can't land ahead of it. Change 4 is the rib-side answer that doesn't need it.</small></span>
+        <span class="owner">keelson · Surface.tsx</span>
+      </div>
+      <div class="change">
+        <span class="n keep">·</span>
+        <span class="what">Unchanged: the priority, the zones, and the moment-carrier rule
+          <small>Cast stays the hero, seating one member stays the escape hatch. A pending genesis still takes the moment (boot card), a pending proposal still hands it to the Proposed-squad panel. This pass only touches the cold-start shape.</small></span>
+        <span class="owner">rib · roster.ts</span>
+      </div>
+    </div>
+  </section>
+
+  <p class="foot-note">
+    Change 1 raises a question this proposal doesn't settle: the archetype briefs still author into whatever hue cast order hands them, so seating Lead → Engineer → Reviewer gives blue → amber → teal while any other order pairs them differently. That is correct — the hue identifies the <em>member</em>, not the <em>role</em> — but it is worth saying out loud, because the current screen is the only place that ever implied otherwise. Verify with <code>bun run check</code>, <code>bun run typecheck</code>, and <code>bun test</code>; the roster board builder is covered by <code>test/boards/</code>, and the cold-start shape is validated against <code>canvasViewSchema</code> there.
+  </p>
+</main>
