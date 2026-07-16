@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.31.0...v0.31.1) (2026-07-16)
+
+
+### Fixed
+
+* **cast:** derive activeTheme from seated roster to start fresh ([#252](https://github.com/danielscholl/keelson-rib-squad/issues/252)) ([9fb4b0c](https://github.com/danielscholl/keelson-rib-squad/commit/9fb4b0c7e194531e9ff1544594cddeb1f4382de2))
+
 ## [0.31.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.30.0...v0.31.0) (2026-07-16)
 
 
