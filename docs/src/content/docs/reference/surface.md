@@ -15,7 +15,6 @@ The surface has a stable identity:
 |---|---|
 | `id` | `squad` |
 | `title` | `Squad` |
-| `subtitle` | `Author members · cast a squad · assign work` |
 | `projectScoped` | `true` |
 
 Because the surface is project-scoped, the host renders its shared
