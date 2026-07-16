@@ -75,7 +75,7 @@ member count, and stays reachable while the panel is collapsed.
 
 Casting from a scan composes a whole team in one pass: it reads the selected
 project's languages, frameworks, layout, docs, tests, and CI, then proposes a
-small set of members suited to what it finds. Start it with "Cast a squad" on
+small set of members suited to what it finds. Start it with "Hire" on
 the roster's cold-start screen — the section names the project it will read, so
 you can see the target before you start the scan — optionally naming a mission
 to focus the team (also capped at 2,000 characters), or from the CLI:

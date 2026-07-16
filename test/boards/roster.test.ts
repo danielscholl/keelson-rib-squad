@@ -119,7 +119,7 @@ describe("buildRosterBoard cold start", () => {
     );
     const items = section?.kind === "actions" ? section.items : [];
     const own = items.find((i) => i.type === "describe-own");
-    expect(own?.label).toBe("Describe…");
+    expect(own?.label).toBe("Author");
     expect(own?.fields?.[0]?.name).toBe("brief");
     expect(own?.fields?.[0]?.multiline).toBe(true);
     // Reading order only: the escape hatch follows the quick picks. `tabs` gives an open
@@ -132,26 +132,21 @@ describe("buildRosterBoard cold start", () => {
     expect(board.sections.some((s) => s.kind === "cards")).toBe(false);
     // No journey anymore — its Cast tile restated the intro row, and Meet/Run described
     // panels that are hideWhenEmpty and invisible at cold start.
-    expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "actions"]);
+    expect(board.sections.map((s) => s.kind)).toEqual(["actions", "actions"]);
     expect(board.sections.some((s) => s.kind === "journey")).toBe(false);
   });
 
-  test("leads with framing copy then the hero cast action with a verb label", () => {
+  test("leads with the hero cast action with a verb label", () => {
     const board = buildRosterBoard([]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const intro = board.sections.find((s) => s.kind === "rows");
-    expect(intro?.kind).toBe("rows");
-    expect(intro?.kind === "rows" ? intro.items[0]?.text : "").toContain(
-      "One scan of the repo composes the team",
-    );
     const hero = board.sections.find(
-      (s) => s.kind === "actions" && s.title === "Cast a squad from this repo",
+      (s) => s.kind === "actions" && s.title === "Scan this repo and propose a squad",
     );
     expect(hero?.kind).toBe("actions");
-    expect(hero?.title).toBe("Cast a squad from this repo");
+    expect(hero?.title).toBe("Scan this repo and propose a squad");
     const cast = hero?.kind === "actions" ? hero.items[0] : undefined;
     expect(cast?.type).toBe("cast-propose");
-    expect(cast?.label).toBe("Cast a squad");
+    expect(cast?.label).toBe("Hire a squad");
     expect(cast).toBeDefined();
     // No free-text "project" field — casting follows the project picker selection.
     expect(cast?.fields?.map((f) => f.name)).toEqual(["mission"]);
@@ -165,10 +160,13 @@ describe("buildRosterBoard cold start", () => {
     const actionTitles = board.sections
       .filter((s) => s.kind === "actions")
       .map((s) => (s.kind === "actions" ? s.title : undefined));
-    expect(actionTitles).toEqual(["Cast a squad from this repo", "or hire a member yourself"]);
+    expect(actionTitles).toEqual([
+      "Scan this repo and propose a squad",
+      "or hire a member yourself",
+    ]);
   });
 
-  test("a resolved project is named in the head, the cast title, and the intro row", () => {
+  test("a resolved project is named in the head and the cast title", () => {
     const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [], {
       name: "cimpl-stack",
       rootPath: "/Users/dev/keelson/cimpl-stack",
@@ -180,21 +178,15 @@ describe("buildRosterBoard cold start", () => {
     const titles = board.sections
       .filter((s) => s.kind === "actions")
       .map((s) => (s.kind === "actions" ? s.title : undefined));
-    expect(titles).toEqual(["Cast a squad from cimpl-stack", "or hire a member yourself"]);
-    const intro = board.sections.find((s) => s.kind === "rows");
-    expect(intro?.kind === "rows" ? intro.items[0]?.trailing : undefined).toBe(
-      "/Users/dev/keelson/cimpl-stack",
-    );
+    expect(titles).toEqual(["Scan cimpl-stack and propose a squad", "or hire a member yourself"]);
   });
 
   test("a project with a name but no root names it without inventing a path", () => {
     // projects.json carries only { id, name } — there is no root to fall back to, so the
-    // name resolves and the trailing stays absent.
+    // name resolves.
     const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [], {
       name: "cimpl-stack",
     });
-    const intro = board.sections.find((s) => s.kind === "rows");
-    expect(intro?.kind === "rows" ? intro.items[0]?.trailing : "unset").toBeUndefined();
     expect(board.header?.chip).toBe("cimpl-stack");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
@@ -205,7 +197,7 @@ describe("buildRosterBoard cold start", () => {
     const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [], {});
     expect(board.header?.chip).toBeUndefined();
     const hero = board.sections.find((s) => s.kind === "actions");
-    expect(hero?.kind === "actions" ? hero.title : "").toBe("Cast a squad from this repo");
+    expect(hero?.kind === "actions" ? hero.title : "").toBe("Scan this repo and propose a squad");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 });
@@ -483,8 +475,8 @@ describe("buildRosterBoard persistent verbs", () => {
       .filter((s) => s.kind === "actions")
       .map((s) => (s.kind === "actions" ? s.title : undefined));
     // Cast + the archetype quick-picks are cold-start scaffolding, not steady state.
-    expect(titles).not.toContain("Cast a squad from this repo");
-    expect(titles.some((t) => t?.startsWith("Cast a squad from"))).toBe(false);
+    expect(titles).not.toContain("Scan this repo and propose a squad");
+    expect(titles.some((t) => t?.startsWith("Scan ") && t.includes("propose a squad"))).toBe(false);
     expect(titles).not.toContain("or hire a member yourself");
     const items = actionItems(board);
     expect(items.some((i) => i.type === "cast-propose")).toBe(false);

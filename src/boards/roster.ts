@@ -66,7 +66,6 @@ export function buildRosterBoard(
     if (proposal) {
       sections.push(awaitingSection(proposal.members.length));
     } else {
-      sections.push(introSection(project?.rootPath));
       sections.push(castSection(project?.name));
       sections.push(authorSection());
     }
@@ -323,25 +322,6 @@ function liveRunsStrip(runs: readonly LiveRunElsewhere[]): Section {
   };
 }
 
-// The framing line above the hero: copy belongs here, not on the action label —
-// the button stays a verb. The root rides `trailing` when the selection carries one:
-// a cast is a read of someone's repository, and this row is the last prose before the
-// verb that starts it. No fallback — projects.json has no roots, so a selection without
-// one (the literal DEFAULT_SCOPE_ID sentinel) says nothing rather than guessing.
-function introSection(rootPath?: string): Section {
-  const root = rootPath?.trim();
-  return {
-    kind: "rows",
-    items: [
-      {
-        glyph: "brand",
-        text: "One scan of the repo composes the team — you approve before anything is created.",
-        ...(root ? { trailing: root } : {}),
-      },
-    ],
-  };
-}
-
 // The defining verb: scan the SELECTED project and propose the team best suited to
 // it. Scope follows the project picker — casting always targets the selected project,
 // so the team lands in the same scope a no-arg run reads. The title names that project
@@ -354,11 +334,11 @@ function castSection(projectName?: string): Section {
   const target = projectName?.trim();
   return {
     kind: "actions",
-    title: target ? `Cast a squad from ${target}` : "Cast a squad from this repo",
+    title: target ? `Scan ${target} and propose a squad` : "Scan this repo and propose a squad",
     items: [
       {
         type: CAST_PROPOSE_ACTION,
-        label: "Cast a squad",
+        label: "Hire a squad",
         glyph: "✦",
         tone: "brand" as CanvasTone,
         expanded: true,
@@ -403,7 +383,7 @@ function authorSection(): Section {
       })),
       {
         type: "describe-own",
-        label: "Describe…",
+        label: "Author",
         glyph: "✎",
         fields: [
           {

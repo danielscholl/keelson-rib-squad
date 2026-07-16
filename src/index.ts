@@ -380,7 +380,7 @@ Compose:
 
 Then call squad_casting_options to see the squad's casting state, and decide whether to cast this member:
 - If it returns {"mode":"off"}, skip casting — do not include castAs.
-- Otherwise, prefer reusing the active ensemble (activeTheme) while it has remainingCapacity, picking a free character whose role fits (set castAs.themeId to activeTheme.id). If it has no room, or none of its characters fit this role, either pick a fitting catalog ensemble (castAs.themeId, one of catalog[].id — the catalog is inspiration, not a limit) or invent a fresh one grounded in the brief/project (castAs.newThemeLabel, a short recognizable movie/TV/book universe name — never both themeId and newThemeLabel). Pick a characterName that is NOT in takenCharacterNames and, for an existing ensemble, IS one of its listed characterNames (inventing a new character is only valid for a brand-new ensemble via newThemeLabel). Write a short personality and backstory for it in your own words. If a pin is present, only cast within that exact ensemble (invent it via newThemeLabel matching the pin if it isn't a known ensemble yet).
+- Otherwise, prefer reusing the active ensemble (activeTheme) while it has remainingCapacity, picking a free character whose role fits (set castAs.themeId to activeTheme.id). If it has no room, or none of its characters fit this role, either pick a fitting catalog ensemble (castAs.themeId, one of catalog[].id — the catalog is a starting set, not a limit) or draw on an ensemble outside it (castAs.newThemeLabel — never both themeId and newThemeLabel). A newThemeLabel MUST name a REAL, widely-known movie/TV/book work (e.g. "The Expanse", "The Matrix", "Apollo 13"), and the characterName MUST be one of that work's ACTUAL characters. Do NOT make up a team name or invent characters: "The Flux Navigators" with an invented crew is WRONG; "The Expanse" with Holden or Naomi is right. If no real work fits the brief, reuse a catalog ensemble rather than fabricating one. Pick a characterName that is NOT in takenCharacterNames and, for an ensemble already in play, IS one of its listed characterNames (a characterName not already listed is only accepted for a work introduced via newThemeLabel). Write a short personality and backstory for it in your own words. If a pin is present, only cast within that exact ensemble (name it via newThemeLabel matching the pin if it isn't a known ensemble yet, using that work's real characters).
 - Spoiler/tone guard: prefer the character's earliest, most neutral identity (not a later-earned title or a twist/reveal name); do not cast a character whose reputation clashes with the role (e.g. a betrayer as a "trusted reviewer"); keep it workplace-appropriate.
 
 Then call the squad_emit_member tool EXACTLY ONCE with { name, role, charter, castAs? } to persist the member — do NOT print the JSON as your reply. After the tool returns, reply with EXACTLY one line: "Authored <name> (<slug>)", using the name you authored and the tool-returned slug verbatim.`;
@@ -768,7 +768,7 @@ function makeCastingOptionsTool(projectsSeam?: RibContext["getProjects"]): ToolD
   return {
     name: "squad_casting_options",
     description:
-      "Read-only casting context for authoring a member's themed identity: the squad's active ensemble (with remaining capacity), the ensembles it has used before (oldest first, for freshness), the 8 catalog ensembles as inspiration (id/label/character names only — you are not limited to these), any ensemble this squad has already invented, every character name already taken, and any operator-pinned ensemble (KEELSON_SQUAD_THEME). Call this BEFORE deciding a member's cast, then pass your decision as `castAs` to squad_emit_member (genesis) or in the proposal (auto-cast). `project` (optional id/name) selects the scope like squad_list_members. Never fails: a missing/corrupt registry, or theming turned off, reads as `{mode:\"off\"}` — author a plain name instead.",
+      "Read-only casting context for authoring a member's themed identity: the squad's active ensemble (with remaining capacity), the ensembles it has used before (oldest first, for freshness), the 8 catalog ensembles as a starting set (id/label/character names only — you are not limited to these, but any ensemble you name instead must be a REAL, widely-known movie/TV/book work cast with that work's actual characters), any ensemble this squad is already drawing on, every character name already taken, and any operator-pinned ensemble (KEELSON_SQUAD_THEME). Call this BEFORE deciding a member's cast, then pass your decision as `castAs` to squad_emit_member (genesis) or in the proposal (auto-cast). `project` (optional id/name) selects the scope like squad_list_members. Never fails: a missing/corrupt registry, or theming turned off, reads as `{mode:\"off\"}` — author a plain name instead.",
     inputSchema: castingOptionsSchema,
     async execute(input, ctx) {
       const parsed = castingOptionsSchema.safeParse(input);
@@ -2830,7 +2830,7 @@ const rib: Rib = {
       definition: {
         name: "squad-cast",
         description:
-          'Use when: review the squad auto-composed for a project. Triggers: the roster "Cast a squad" action, opening the Proposed squad panel. Does: reads the pending cast proposal from the Squad data home and publishes a "Proposed squad" board (one card per proposed member) to the Squad Cast canvas. NOT for: scanning a project (the cast-propose board action) or scaffolding the members (the Approve action).',
+          'Use when: review the squad auto-composed for a project. Triggers: the roster "Hire" action, opening the Proposed squad panel. Does: reads the pending cast proposal from the Squad data home and publishes a "Proposed squad" board (one card per proposed member) to the Squad Cast canvas. NOT for: scanning a project (the cast-propose board action) or scaffolding the members (the Approve action).',
         nodes: [
           {
             id: "collect",
@@ -2916,7 +2916,7 @@ const rib: Rib = {
       definition: {
         name: "squad-cast-scan",
         description:
-          'Use when: auto-compose a squad for the selected project. Triggers: the roster "Cast a squad" action. Does: one agent turn calls squad_propose_cast to run a confined read-only repo scan and publish a Proposed squad to Approve or Discard. NOT for: authoring one member (squad-genesis) or approving a proposal (the Proposed squad board actions).',
+          'Use when: auto-compose a squad for the selected project. Triggers: the roster "Hire" action. Does: one agent turn calls squad_propose_cast to run a confined read-only repo scan and publish a Proposed squad to Approve or Discard. NOT for: authoring one member (squad-genesis) or approving a proposal (the Proposed squad board actions).',
         nodes: [
           {
             id: "scan",
