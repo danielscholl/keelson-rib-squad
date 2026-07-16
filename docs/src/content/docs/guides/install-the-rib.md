@@ -57,7 +57,7 @@ http://127.0.0.1:7878
 ```
 
 Squad's own surface reads **Squad** in the tab list. If the tab is present, the
-rib activated. Its surface is project-scoped, so the header carries the shared
+rib is active. Its surface is project-scoped, so the header carries the shared
 project-picker chip; picking a project there is what every panel and tool on the
 surface keys on.
 
