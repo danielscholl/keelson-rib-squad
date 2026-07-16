@@ -72,6 +72,49 @@ describe("castingOptions", () => {
     expect(castingOptions(reg, themed).activeTheme?.remainingCapacity).toBe(0);
   });
 
+  test("a theme whose members are all retired is no longer active", () => {
+    const usualSuspects = THEMES[0]!;
+    const reg: CastingRegistry = {
+      version: 1,
+      activeThemeId: usualSuspects.id,
+      themeHistory: [usualSuspects.id],
+      members: {
+        mcmanus: { themedName: "McManus", themeId: usualSuspects.id, status: "retired" },
+        verbal: { themedName: "Verbal", themeId: usualSuspects.id, status: "retired" },
+      },
+    };
+    const view = castingOptions(reg, themed);
+    // The cast that empties a roster must not pin the next one to the same ensemble.
+    expect(view.activeTheme).toBeUndefined();
+    expect(view.takenCharacterNames).toEqual([]);
+    // Still in history, so the next cast is nudged toward freshness rather than blind.
+    expect(view.themeHistory).toEqual([usualSuspects.id]);
+  });
+
+  test("an unseated active theme falls back to the ensemble the roster still sits in", () => {
+    const usualSuspects = THEMES[0]!;
+    const oceans = THEMES[1]!;
+    const reg: CastingRegistry = {
+      version: 1,
+      // The squad rolled to a second ensemble, then that ensemble's only member retired
+      // while the first still seats members — the roster has a cast, the pointer doesn't.
+      activeThemeId: oceans.id,
+      themeHistory: [usualSuspects.id, oceans.id],
+      members: {
+        mcmanus: { themedName: "McManus", themeId: usualSuspects.id, status: "active" },
+        verbal: { themedName: "Verbal", themeId: usualSuspects.id, status: "active" },
+        danny: { themedName: "Danny", themeId: oceans.id, status: "retired" },
+      },
+    };
+    // Reporting no active theme here would tell the next cast to found a fresh ensemble
+    // and scatter a live squad; only an empty roster has no cast.
+    expect(castingOptions(reg, themed).activeTheme).toEqual({
+      id: usualSuspects.id,
+      label: usualSuspects.label,
+      remainingCapacity: usualSuspects.characters.length - 2,
+    });
+  });
+
   test("a custom theme is listed with its own remaining capacity, active or not", () => {
     const reg: CastingRegistry = {
       version: 1,

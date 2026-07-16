@@ -11,6 +11,7 @@ import {
   resolveThemingConfig,
   retireCastingName,
   saveRegistry,
+  usageOf,
 } from "../../src/casting/registry.ts";
 
 let home: string;
@@ -400,6 +401,9 @@ describe("assignThemedIdentity with an llmProposal", () => {
 
 describe("retire frees the name", () => {
   test("a retired character's name returns to the pool and links lineage on reuse", async () => {
+    // A second seat keeps the ensemble seated across the retire: reusing a freed name is
+    // a live-squad move, whereas emptying the roster rolls the next cast to a fresh one.
+    await assignThemedIdentity(home, { proposedName: "Nova", role: "Tech Lead" });
     const first = await assignThemedIdentity(home, { proposedName: "Atlas", role: "Engineer" });
     expect(first.name).toBe("McManus");
 
@@ -425,6 +429,46 @@ describe("retire frees the name", () => {
   test("retiring an unknown slug is a fail-soft no-op", async () => {
     await expect(retireCastingName(home, "ghost")).resolves.toBeUndefined();
     await expect(retireCastingName(join(home, "nope"), "x")).resolves.toBeUndefined();
+  });
+
+  test("an unseated pointer picks a seated ensemble by an explicit rule, not key order", async () => {
+    // A drifted registry: two seated ensembles, neither recorded in themeHistory, so
+    // recency can't separate them. The pick must not ride on member key order.
+    const base: CastingRegistry = {
+      version: 1,
+      activeThemeId: "firefly",
+      themeHistory: [],
+      members: {
+        danny: { themedName: "Danny", themeId: "oceans-eleven", status: "active" },
+        mcmanus: { themedName: "McManus", themeId: "usual-suspects", status: "active" },
+      },
+    };
+    const flipped: CastingRegistry = {
+      ...base,
+      members: {
+        mcmanus: base.members.mcmanus!,
+        danny: base.members.danny!,
+      },
+    };
+    expect(usageOf(base).activeThemeId).toBe("oceans-eleven");
+    expect(usageOf(flipped).activeThemeId).toBe("oceans-eleven");
+  });
+
+  test("retiring the last member frees the ensemble, so the next cast starts fresh", async () => {
+    const first = await assignThemedIdentity(home, { proposedName: "Atlas", role: "Engineer" });
+    expect(first.themeId).toBe("usual-suspects");
+    await retireCastingName(home, first.slug);
+
+    // The emptied ensemble stays in activeThemeId on disk (retire never clears it), but
+    // an unseated ensemble is not active — otherwise it would hold every later cast at
+    // full capacity, the stickiest it can be.
+    const reg = await loadRegistry(home);
+    expect(reg.activeThemeId).toBe("usual-suspects");
+
+    const next = await assignThemedIdentity(home, { proposedName: "Bob", role: "Engineer" });
+    expect(next.themeId).not.toBe("usual-suspects");
+    // History still carries the emptied ensemble, so LRU sorts it last rather than first.
+    expect((await loadRegistry(home)).themeHistory).toEqual(["usual-suspects", next.themeId!]);
   });
 });
 
