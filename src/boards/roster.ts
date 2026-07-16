@@ -96,7 +96,7 @@ export function buildRosterBoard(
 
   return {
     view: "board",
-    title: "Roster",
+    title: "Crew",
     header: {
       status: {
         label: `${members.length} ${members.length === 1 ? "member" : "members"}`,
@@ -384,15 +384,15 @@ function castSection(projectName?: string): Section {
 // matter which one was clicked. A per-preset hue here would be a promise the write path
 // breaks on the first click, and it would outlive the click: identitySlot is persisted.
 //
-// `wrap` keeps the strip one line of chips (a stacked column wastes the surface's width
-// and out-masses the Cast hero above it); the tagline rides `hint`, a hover tooltip.
-// describe-own MUST stay last: in a wrap strip an OPEN form takes flex-basis:100% in
-// SOURCE order, so anywhere else it would split the chip row in half when opened.
+// `tabs`, not `wrap`: a wrap strip gives an OPEN form flex-basis:100%, dropping the chip
+// that carries it onto its own row. A tabs form takes `order: 1` instead — the chips hold
+// one row and the form opens full-width below the whole strip, so describe-own's position
+// is reading order, not layout. The tagline rides `hint`, a hover tooltip.
 function authorSection(): Section {
   return {
     kind: "actions",
-    title: "or seat one member yourself",
-    wrap: true,
+    title: "or hire a member yourself",
+    tabs: true,
     items: [
       ...GENESIS_STARTERS.map((s) => ({
         type: "author-archetype",
@@ -403,7 +403,7 @@ function authorSection(): Section {
       })),
       {
         type: "describe-own",
-        label: "Describe & author…",
+        label: "Describe…",
         glyph: "✎",
         fields: [
           {
