@@ -10,7 +10,7 @@ import { type CastProposalRecord, readProposal, writeProposal } from "../src/cas
 import { type CoordinatorLedger, loadLedger, saveLedger } from "../src/coordinator.ts";
 import { type MemberRecord, readMembers, scaffoldMember } from "../src/member-store.ts";
 import { scopeDataHome, scopeMembersDir } from "../src/paths.ts";
-import { readSelectedProject, writeSelectedProject } from "../src/scope.ts";
+import { readSelectedProject, writeProjectsSnapshot, writeSelectedProject } from "../src/scope.ts";
 
 const ROSTER = fileURLToPath(new URL("../bin/collect-roster.ts", import.meta.url));
 const CAST = fileURLToPath(new URL("../bin/collect-cast.ts", import.meta.url));
@@ -107,6 +107,59 @@ describe("collector follows the persisted selection", () => {
     const scoped = await readMembers(scopeMembersDir(home, "alpha"));
     const expected = buildRosterBoard(scoped);
     expect(await runCollector(ROSTER, home)).toEqual(JSON.parse(JSON.stringify(expected)));
+  });
+
+  test("roster collector names the selected project on the cold-start board", async () => {
+    // No members in the selected scope -> the cast launchpad, which must say which repo
+    // the scan will read. The snapshot is authoritative over the frozen selection name:
+    // projects.json is rewritten on every action, selection.name froze at select time.
+    await writeSelectedProject(home, {
+      scopeId: "alpha",
+      projectId: "p-alpha",
+      name: "the name it was selected under",
+      rootPath: "/repo/alpha",
+      at: "2026-06-06T00:00:00.000Z",
+    });
+    await writeProjectsSnapshot(home, [{ id: "p-alpha", name: "cimpl-stack" }]);
+
+    const board = (await runCollector(ROSTER, home)) as {
+      header?: { chip?: string };
+      sections: { kind: string; title?: string; items?: { trailing?: string }[] }[];
+    };
+
+    expect(board.header?.chip).toBe("cimpl-stack");
+    expect(board.sections.find((s) => s.kind === "actions")?.title).toBe(
+      "Cast a squad from cimpl-stack",
+    );
+    expect(board.sections.find((s) => s.kind === "rows")?.items?.[0]?.trailing).toBe("/repo/alpha");
+  });
+
+  test("roster collector falls back to the frozen name when the snapshot can't resolve it", async () => {
+    await writeSelectedProject(home, {
+      scopeId: "alpha",
+      projectId: "p-alpha",
+      name: "cimpl-stack",
+      at: "2026-06-06T00:00:00.000Z",
+    });
+
+    const board = (await runCollector(ROSTER, home)) as { header?: { chip?: string } };
+    expect(board.header?.chip).toBe("cimpl-stack");
+  });
+
+  test("roster collector says 'this repo' when no project can be resolved", async () => {
+    // The literal DEFAULT_SCOPE_ID sentinel: a real castable repo, but the selection
+    // carries no projectId and no name, and a collector has no projects seam to ask.
+    await writeSelectedProject(home, { scopeId: "default", at: "2026-06-06T00:00:00.000Z" });
+
+    const board = (await runCollector(ROSTER, home)) as {
+      header?: { chip?: string };
+      sections: { kind: string; title?: string }[];
+    };
+
+    expect(board.header?.chip).toBeUndefined();
+    expect(board.sections.find((s) => s.kind === "actions")?.title).toBe(
+      "Cast a squad from this repo",
+    );
   });
 
   test("roster collector includes a switch strip for a live run in another scope", async () => {

@@ -35,9 +35,14 @@ own:
 
 Each archetype is a pre-written brief, not a baked charter: picking "Reviewer"
 launches genesis with a brief describing a code reviewer for this repo, and
-the turn writes a fresh charter grounded in whatever it finds. "Describe &
-author" takes a freeform brief instead (capped at 2,000 characters), for a
+the turn writes a fresh charter grounded in whatever it finds. The archetypes
+render as a row of chips — hover one for the "Good for" line above. "Describe &
+author…" takes a freeform brief instead (capped at 2,000 characters), for a
 member the four archetypes do not cover.
+
+An archetype does not reserve an identity colour. A member's hue is assigned
+when it is written, from the order it joined the roster, so the first member you
+seat wears the first hue whichever archetype you picked.
 
 From the CLI, run the workflow directly:
 
@@ -70,10 +75,10 @@ member count, and stays reachable while the panel is collapsed.
 
 Casting from a scan composes a whole team in one pass: it reads the selected
 project's languages, frameworks, layout, docs, tests, and CI, then proposes a
-small set of members suited to what it finds. Start it from the roster's
-cold-start screen with "Cast a squad for the selected project", optionally
-naming a mission to focus the team (also capped at 2,000 characters), or from
-the CLI:
+small set of members suited to what it finds. Start it with "Cast a squad" on
+the roster's cold-start screen — the section names the project it will read, so
+you can see the target before you start the scan — optionally naming a mission
+to focus the team (also capped at 2,000 characters), or from the CLI:
 
 ```bash
 keelson workflow run squad-cast-scan --arguments "prioritize test coverage and CI reliability"

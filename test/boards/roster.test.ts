@@ -58,11 +58,6 @@ function cards(board: ReturnType<typeof buildRosterBoard>) {
   if (section?.kind !== "cards") throw new Error("no cards section");
   return section.items;
 }
-function journey(board: ReturnType<typeof buildRosterBoard>) {
-  const section = board.sections.find((s) => s.kind === "journey");
-  if (section?.kind !== "journey") throw new Error("no journey section");
-  return section.items;
-}
 function liveStrip(board: ReturnType<typeof buildRosterBoard>) {
   const section = board.sections.find(
     (s) => s.kind === "actions" && s.items.some((i) => i.type === "select-project"),
@@ -75,7 +70,8 @@ describe("buildRosterBoard cold start", () => {
     const board = buildRosterBoard([]);
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.view).toBe("board");
-    // The redundant ROSTER slug chip is gone; the head carries the count + title.
+    // With no project resolved the head carries the count + title alone — the chip slot
+    // stays empty rather than naming a repo the collector couldn't identify.
     expect(board.header?.chip).toBeUndefined();
     expect(board.header?.status?.label).toBe("0 members");
     // Cold start emits no roster peek or collapse hint — the cast launchpad stays open.
@@ -89,37 +85,55 @@ describe("buildRosterBoard cold start", () => {
       (s) => s.kind === "actions" && s.title === "or seat one member yourself",
     );
     expect(section?.kind).toBe("actions");
+    // One line of chips, not a stacked column of full-width bars.
+    expect(section).toMatchObject({ wrap: true });
     const authors =
       section?.kind === "actions" ? section.items.filter((i) => i.type === "author-archetype") : [];
     expect(authors).toHaveLength(GENESIS_STARTERS.length);
     expect(authors.map((a) => a.payload)).toEqual(GENESIS_STARTERS.map((s) => ({ slug: s.slug })));
-    expect(authors.map((a) => a.label)).toEqual(
-      GENESIS_STARTERS.map((s) => `${s.name} — ${s.tagline}`),
-    );
+    // The label is the bare role so the strip fits one line; the tagline rides `hint`.
+    expect(authors.map((a) => a.label)).toEqual(GENESIS_STARTERS.map((s) => s.name));
+    expect(authors.map((a) => a.hint)).toEqual(GENESIS_STARTERS.map((s) => s.tagline));
     expect(authors.map((a) => (a.payload as { slug: string }).slug)).toEqual([
       "lead",
       "engineer",
       "reviewer",
       "tester",
     ]);
-    // Each preset wears the identity seat it will occupy, in cast order.
-    expect(authors.map((a) => a.tone)).toEqual(["id-blue", "id-amber", "id-teal", "id-rose"]);
   });
 
-  test("a describe-own action carries a multiline brief field and the fifth seat tone", () => {
+  test("no preset previews an identity hue — the write path assigns it by cast order", () => {
+    // squad_emit_member hands themedRecord `existing.length`, so on an empty roster every
+    // preset lands on slot 0 (id-blue) whichever was clicked. A per-preset tone here would
+    // be a promise broken on the first click, and identitySlot is persisted for life.
+    const items = actionItems(buildRosterBoard([]));
+    const presets = items.filter((i) => i.type === "author-archetype" || i.type === "describe-own");
+    expect(presets).toHaveLength(GENESIS_STARTERS.length + 1);
+    expect(presets.map((p) => p.tone)).toEqual(presets.map(() => undefined));
+  });
+
+  test("a describe-own action carries a multiline brief field and comes last", () => {
     const board = buildRosterBoard([]);
-    const own = actionItems(board).find((i) => i.type === "describe-own");
-    expect(own?.label).toBe("Describe & author");
-    expect(own?.tone).toBe("id-olive");
+    const section = board.sections.find(
+      (s) => s.kind === "actions" && s.title === "or seat one member yourself",
+    );
+    const items = section?.kind === "actions" ? section.items : [];
+    const own = items.find((i) => i.type === "describe-own");
+    expect(own?.label).toBe("Describe & author…");
     expect(own?.fields?.[0]?.name).toBe("brief");
     expect(own?.fields?.[0]?.multiline).toBe(true);
+    // Load-bearing: in a `wrap` strip an OPEN form takes flex-basis:100% in SOURCE order,
+    // so describe-own anywhere but last would split the chip row in half when opened.
+    expect(items.at(-1)).toBe(own);
   });
 
   test("no cards section at cold start; the documented sections render", () => {
     const board = buildRosterBoard([]);
     expect(board.sections.some((s) => s.kind === "cards")).toBe(false);
-    // No seats row anymore — identity moved to the head (and it's absent at cold start).
-    expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "actions", "journey"]);
+    // No journey anymore — its Cast tile restated the intro row, and Meet/Run described
+    // panels that are hideWhenEmpty and invisible at cold start.
+    expect(board.sections.map((s) => s.kind)).toEqual(["rows", "actions", "actions"]);
+    expect(board.sections.some((s) => s.kind === "journey")).toBe(false);
   });
 
   test("leads with framing copy then the hero cast action with a verb label", () => {
@@ -142,7 +156,11 @@ describe("buildRosterBoard cold start", () => {
     // No free-text "project" field — casting follows the project picker selection.
     expect(cast?.fields?.map((f) => f.name)).toEqual(["mission"]);
     expect(cast?.fields?.find((f) => f.name === "mission")?.multiline).toBe(true);
-    expect(cast?.inline).toBe(true);
+    // The mission box opens with the screen: it steers every seat the scan composes, and
+    // behind a disclosure click the default cast is always the missionless one.
+    expect(cast?.expanded).toBe(true);
+    // `inline` is inert on a non-destructive action — it must not come back.
+    expect(cast?.inline).toBeUndefined();
     // The cast section leads the manual author section (the defining capability first).
     const actionTitles = board.sections
       .filter((s) => s.kind === "actions")
@@ -150,22 +168,44 @@ describe("buildRosterBoard cold start", () => {
     expect(actionTitles).toEqual(["Cast a squad from this repo", "or seat one member yourself"]);
   });
 
-  test("renders the first-class three-step journey beneath authoring", () => {
-    const board = buildRosterBoard([]);
-    expect(journey(board)).toEqual([
-      {
-        title: "Cast",
-        text: "The scan proposes a team; you approve or discard it.",
-      },
-      {
-        title: "Meet",
-        text: "Each member becomes a chat agent you can enter and talk to.",
-      },
-      {
-        title: "Run",
-        text: "Give the squad a task — the loop's rounds and findings stream here.",
-      },
-    ]);
+  test("a resolved project is named in the head, the cast title, and the intro row", () => {
+    const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [], {
+      name: "cimpl-stack",
+      rootPath: "/Users/dev/keelson/cimpl-stack",
+    });
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    // The head states its scope: the host's picker chip lives in the surface header, a
+    // different element in the opposite corner, so the panel says it itself.
+    expect(board.header?.chip).toBe("cimpl-stack");
+    const titles = board.sections
+      .filter((s) => s.kind === "actions")
+      .map((s) => (s.kind === "actions" ? s.title : undefined));
+    expect(titles).toEqual(["Cast a squad from cimpl-stack", "or seat one member yourself"]);
+    const intro = board.sections.find((s) => s.kind === "rows");
+    expect(intro?.kind === "rows" ? intro.items[0]?.trailing : undefined).toBe(
+      "/Users/dev/keelson/cimpl-stack",
+    );
+  });
+
+  test("a project with a name but no root names it without inventing a path", () => {
+    // projects.json carries only { id, name } — there is no root to fall back to, so the
+    // name resolves and the trailing stays absent.
+    const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [], {
+      name: "cimpl-stack",
+    });
+    const intro = board.sections.find((s) => s.kind === "rows");
+    expect(intro?.kind === "rows" ? intro.items[0]?.trailing : "unset").toBeUndefined();
+    expect(board.header?.chip).toBe("cimpl-stack");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+  });
+
+  test("an unresolvable project degrades to the generic title and no chip", () => {
+    // The literal DEFAULT_SCOPE_ID sentinel carries no name and no root against a real
+    // repo, and the collector has no projects seam to resolve one — say nothing.
+    const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [], {});
+    expect(board.header?.chip).toBeUndefined();
+    const hero = board.sections.find((s) => s.kind === "actions");
+    expect(hero?.kind === "actions" ? hero.title : "").toBe("Cast a squad from this repo");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
   });
 });
@@ -346,6 +386,30 @@ describe("buildRosterBoard ensemble hoist", () => {
     expect(chip(roster)).toBeUndefined();
     expect(castField(roster)).toBeUndefined();
   });
+
+  test("the project never contends for the chip once a seat is taken", () => {
+    // The two chip producers can't collide: a hoist needs a seated member, the project
+    // chip needs none. Pin it — a seated roster's subject is its members, not its repo.
+    const withProject = (members: Member[]) =>
+      buildRosterBoard(members, null, Date.parse("2026-07-08T00:00:00.000Z"), null, [], {
+        name: "cimpl-stack",
+      }).header?.chip;
+    expect(withProject([castMember({ slug: "a" }), castMember({ slug: "b", name: "Bo" })])).toBe(
+      "The Usual Suspects",
+    );
+    expect(withProject([member({ slug: "atlas", name: "Atlas" })])).toBeUndefined();
+    // A genesis in flight still has no seat, so the scope keeps naming its project.
+    expect(
+      buildRosterBoard(
+        [],
+        { startedAt: "2026-07-08T00:00:00.000Z", role: "Tech Lead" },
+        Date.parse("2026-07-08T00:00:10.000Z"),
+        null,
+        [],
+        { name: "cimpl-stack" },
+      ).header?.chip,
+    ).toBe("cimpl-stack");
+  });
 });
 
 describe("buildRosterBoard live runs elsewhere", () => {
@@ -420,6 +484,7 @@ describe("buildRosterBoard persistent verbs", () => {
       .map((s) => (s.kind === "actions" ? s.title : undefined));
     // Cast + the archetype quick-picks are cold-start scaffolding, not steady state.
     expect(titles).not.toContain("Cast a squad from this repo");
+    expect(titles.some((t) => t?.startsWith("Cast a squad from"))).toBe(false);
     expect(titles).not.toContain("or seat one member yourself");
     const items = actionItems(board);
     expect(items.some((i) => i.type === "cast-propose")).toBe(false);

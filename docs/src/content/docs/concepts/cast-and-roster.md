@@ -66,8 +66,9 @@ manual reload needed.
 
 Auto-cast is the faster path when you would rather describe what the project
 needs than author members one by one. From the roster's cold start, "Cast a
-squad for the selected project" launches another workflow, `squad-cast-scan`,
-against whichever project is currently selected.
+squad" launches another workflow, `squad-cast-scan`, against whichever project
+is currently selected — named in the section title, the panel head, and the
+framing line, so the target is never a guess.
 
 That workflow runs one confined, read-only agent turn: it can read files,
 glob, and grep the project's root, but it cannot edit or execute anything, and

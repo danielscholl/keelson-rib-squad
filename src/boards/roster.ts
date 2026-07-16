@@ -24,6 +24,15 @@ export const SELECT_PROJECT_ACTION = "select-project";
 // Shared with onAction so the type can't drift from its handler.
 export const RETIRE_ALL_ACTION = "retire-all";
 
+// The selected project, as much of it as an out-of-process collector can resolve.
+// `name` falls back to the projects.json snapshot; `rootPath` has no fallback at all
+// (the snapshot carries only { id, name }), so both are optional and both degrade to
+// silence rather than to a stand-in.
+export interface RosterProject {
+  name?: string;
+  rootPath?: string;
+}
+
 // Pure: a roster of members -> a canvas `board`. Cold start (empty scope) shows the
 // launchpad — Cast a whole team from the repo, or author the first member (archetype
 // quick-starts + describe). A populated roster shows the member cards over a single
@@ -46,6 +55,7 @@ export function buildRosterBoard(
   now: number = Date.now(),
   proposal?: CastProposalRecord | null,
   liveRunsElsewhere: readonly LiveRunElsewhere[] = [],
+  project?: RosterProject,
 ): CanvasBoardView {
   const sections: Section[] = [];
   const hoisted = hoistedEnsemble(members);
@@ -56,10 +66,9 @@ export function buildRosterBoard(
     if (proposal) {
       sections.push(awaitingSection(proposal.members.length));
     } else {
-      sections.push(introSection());
-      sections.push(castSection());
+      sections.push(introSection(project?.rootPath));
+      sections.push(castSection(project?.name));
       sections.push(authorSection());
-      sections.push(journeySection());
     }
   } else {
     // A genesis in flight takes the next free seat as a boot card; the seated cards
@@ -83,6 +92,8 @@ export function buildRosterBoard(
     }
   }
 
+  const chip = hoisted ?? (members.length === 0 ? project?.name?.trim() || undefined : undefined);
+
   return {
     view: "board",
     title: "Roster",
@@ -92,8 +103,11 @@ export function buildRosterBoard(
         tone: "brand" as CanvasTone,
       },
       // The ensemble is the roster's subject only when every seat wears it — so it is
-      // said once here instead of on all five cards.
-      ...(hoisted ? { chip: hoisted } : {}),
+      // said once here instead of on all five cards. An empty roster has no ensemble to
+      // hoist, so the slot names the project the cast is about to read instead: the two
+      // can never collide, because a hoist needs a seated member and the project chip
+      // needs none.
+      ...(chip ? { chip } : {}),
       // Once members are seated, feed the host head its roster peek (an identity dot
       // per member, names on hover) and the collapse hint so the panel folds to its
       // head strip — the host collapses once, a manual toggle wins after. Cold start
@@ -310,14 +324,19 @@ function liveRunsStrip(runs: readonly LiveRunElsewhere[]): Section {
 }
 
 // The framing line above the hero: copy belongs here, not on the action label —
-// the button stays a verb.
-function introSection(): Section {
+// the button stays a verb. The root rides `trailing` when the selection carries one:
+// a cast is a read of someone's repository, and this row is the last prose before the
+// verb that starts it. No fallback — projects.json has no roots, so a selection without
+// one (the literal DEFAULT_SCOPE_ID sentinel) says nothing rather than guessing.
+function introSection(rootPath?: string): Section {
+  const root = rootPath?.trim();
   return {
     kind: "rows",
     items: [
       {
         glyph: "brand",
         text: "One scan of the repo composes the team — you approve before anything is created.",
+        ...(root ? { trailing: root } : {}),
       },
     ],
   };
@@ -325,18 +344,24 @@ function introSection(): Section {
 
 // The defining verb: scan the SELECTED project and propose the team best suited to
 // it. Scope follows the project picker — casting always targets the selected project,
-// so the team lands in the same scope a no-arg run reads. Mission is optional.
-function castSection(): Section {
+// so the team lands in the same scope a no-arg run reads. The title names that project
+// because the host's picker chip sits in the surface header, a different element in the
+// opposite corner: without this the panel never says which repository it will read.
+// `expanded` opens the mission inline — it is the one input that steers every seat the
+// scan composes, and behind a disclosure click the default cast is always the missionless
+// one, not because anyone chose that but because they never saw the box.
+function castSection(projectName?: string): Section {
+  const target = projectName?.trim();
   return {
     kind: "actions",
-    title: "Cast a squad from this repo",
+    title: target ? `Cast a squad from ${target}` : "Cast a squad from this repo",
     items: [
       {
         type: CAST_PROPOSE_ACTION,
         label: "Cast a squad",
         glyph: "✦",
         tone: "brand" as CanvasTone,
-        inline: true,
+        expanded: true,
         fields: [
           {
             name: "mission",
@@ -351,33 +376,40 @@ function castSection(): Section {
 }
 
 // The manual escape hatch: author one member at a time — the starter archetypes plus
-// a describe-your-own brief. Each launches the squad-genesis workflow. Every preset
-// wears the identity seat it will occupy (Lead→id-blue … Tester→id-rose, describe→
-// id-olive): the hue is assigned by slot at cast/author, so the launchpad previews the
-// five seats to fill rather than a flat row of status-neutral buttons.
+// a describe-your-own brief. Each launches the squad-genesis workflow.
+//
+// NO identity tone rides a preset. The hue is not the role's, it is the member's, and
+// it is assigned at WRITE time from cast order — squad_emit_member hands themedRecord
+// `existing.length`, so on an empty roster every preset lands on slot 0 (id-blue) no
+// matter which one was clicked. A per-preset hue here would be a promise the write path
+// breaks on the first click, and it would outlive the click: identitySlot is persisted.
+//
+// `wrap` keeps the strip one line of chips (a stacked column wastes the surface's width
+// and out-masses the Cast hero above it); the tagline rides `hint`, a hover tooltip.
+// describe-own MUST stay last: in a wrap strip an OPEN form takes flex-basis:100% in
+// SOURCE order, so anywhere else it would split the chip row in half when opened.
 function authorSection(): Section {
   return {
     kind: "actions",
     title: "or seat one member yourself",
+    wrap: true,
     items: [
-      ...GENESIS_STARTERS.map((s, i) => ({
+      ...GENESIS_STARTERS.map((s) => ({
         type: "author-archetype",
-        label: `${s.name} — ${s.tagline}`,
+        label: s.name,
         glyph: "＋",
-        tone: identityToneForSlot(i),
+        hint: s.tagline,
         payload: { slug: s.slug },
       })),
       {
         type: "describe-own",
-        label: "Describe & author",
+        label: "Describe & author…",
         glyph: "✎",
-        tone: identityToneForSlot(GENESIS_STARTERS.length),
         fields: [
           {
             name: "brief",
-            label: "Or describe your own",
-            placeholder:
-              'Who should this member be? e.g. "Atlas — a staff engineer who guards the architecture"',
+            label: "Who should this member be?",
+            placeholder: 'e.g. "Atlas — a staff engineer who guards the architecture"',
             multiline: true,
           },
         ],
@@ -410,26 +442,6 @@ function hireSection(): Section {
             multiline: true,
           },
         ],
-      },
-    ],
-  };
-}
-
-function journeySection(): Section {
-  return {
-    kind: "journey",
-    items: [
-      {
-        title: "Cast",
-        text: "The scan proposes a team; you approve or discard it.",
-      },
-      {
-        title: "Meet",
-        text: "Each member becomes a chat agent you can enter and talk to.",
-      },
-      {
-        title: "Run",
-        text: "Give the squad a task — the loop's rounds and findings stream here.",
       },
     ],
   };
