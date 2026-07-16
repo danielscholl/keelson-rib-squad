@@ -12,6 +12,8 @@ updates:
   # Root project (Biome, TypeScript, @types/bun)
   - package-ecosystem: npm
     directory: "/"
+    cooldown:
+      default-days: 7
     schedule:
       interval: weekly
       day: monday
@@ -30,6 +32,8 @@ updates:
   # Docs site (Astro Starlight)
   - package-ecosystem: npm
     directory: "/docs"
+    cooldown:
+      default-days: 7
     schedule:
       interval: weekly
       day: monday

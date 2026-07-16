@@ -1,0 +1,5 @@
+[install]
+# Never resolve npm versions younger than 7 days: keeps every release
+# installable through corporate vetting feeds that quarantine fresh publishes,
+# and shields the lockfile from just-published supply-chain attacks.
+minimumReleaseAge = 604800
