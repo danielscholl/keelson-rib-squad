@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.28.0...v0.29.0) (2026-07-16)
+
+
+### Added
+
+* **roster:** make cold-start roster project-aware ([#243](https://github.com/danielscholl/keelson-rib-squad/issues/243)) ([72f7eb2](https://github.com/danielscholl/keelson-rib-squad/commit/72f7eb2345e17cb7bd3448cd0f032f7e001ed0b8))
+
 ## [0.28.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.27.0...v0.28.0) (2026-07-15)
 
 
