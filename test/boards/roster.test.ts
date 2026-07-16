@@ -82,11 +82,11 @@ describe("buildRosterBoard cold start", () => {
   test("the secondary authoring group mirrors GENESIS_STARTERS in order", () => {
     const board = buildRosterBoard([]);
     const section = board.sections.find(
-      (s) => s.kind === "actions" && s.title === "or seat one member yourself",
+      (s) => s.kind === "actions" && s.title === "or hire a member yourself",
     );
     expect(section?.kind).toBe("actions");
-    // One line of chips, not a stacked column of full-width bars.
-    expect(section).toMatchObject({ wrap: true });
+    // One row of chips whose open form drops below the strip, not a stacked column.
+    expect(section).toMatchObject({ tabs: true });
     const authors =
       section?.kind === "actions" ? section.items.filter((i) => i.type === "author-archetype") : [];
     expect(authors).toHaveLength(GENESIS_STARTERS.length);
@@ -115,15 +115,15 @@ describe("buildRosterBoard cold start", () => {
   test("a describe-own action carries a multiline brief field and comes last", () => {
     const board = buildRosterBoard([]);
     const section = board.sections.find(
-      (s) => s.kind === "actions" && s.title === "or seat one member yourself",
+      (s) => s.kind === "actions" && s.title === "or hire a member yourself",
     );
     const items = section?.kind === "actions" ? section.items : [];
     const own = items.find((i) => i.type === "describe-own");
-    expect(own?.label).toBe("Describe & author…");
+    expect(own?.label).toBe("Describe…");
     expect(own?.fields?.[0]?.name).toBe("brief");
     expect(own?.fields?.[0]?.multiline).toBe(true);
-    // Load-bearing: in a `wrap` strip an OPEN form takes flex-basis:100% in SOURCE order,
-    // so describe-own anywhere but last would split the chip row in half when opened.
+    // Reading order only: the escape hatch follows the quick picks. `tabs` gives an open
+    // form `order: 1`, so it drops below the strip whatever its source position.
     expect(items.at(-1)).toBe(own);
   });
 
@@ -165,7 +165,7 @@ describe("buildRosterBoard cold start", () => {
     const actionTitles = board.sections
       .filter((s) => s.kind === "actions")
       .map((s) => (s.kind === "actions" ? s.title : undefined));
-    expect(actionTitles).toEqual(["Cast a squad from this repo", "or seat one member yourself"]);
+    expect(actionTitles).toEqual(["Cast a squad from this repo", "or hire a member yourself"]);
   });
 
   test("a resolved project is named in the head, the cast title, and the intro row", () => {
@@ -180,7 +180,7 @@ describe("buildRosterBoard cold start", () => {
     const titles = board.sections
       .filter((s) => s.kind === "actions")
       .map((s) => (s.kind === "actions" ? s.title : undefined));
-    expect(titles).toEqual(["Cast a squad from cimpl-stack", "or seat one member yourself"]);
+    expect(titles).toEqual(["Cast a squad from cimpl-stack", "or hire a member yourself"]);
     const intro = board.sections.find((s) => s.kind === "rows");
     expect(intro?.kind === "rows" ? intro.items[0]?.trailing : undefined).toBe(
       "/Users/dev/keelson/cimpl-stack",
@@ -485,7 +485,7 @@ describe("buildRosterBoard persistent verbs", () => {
     // Cast + the archetype quick-picks are cold-start scaffolding, not steady state.
     expect(titles).not.toContain("Cast a squad from this repo");
     expect(titles.some((t) => t?.startsWith("Cast a squad from"))).toBe(false);
-    expect(titles).not.toContain("or seat one member yourself");
+    expect(titles).not.toContain("or hire a member yourself");
     const items = actionItems(board);
     expect(items.some((i) => i.type === "cast-propose")).toBe(false);
     expect(items.filter((i) => i.type === "author-archetype")).toHaveLength(0);

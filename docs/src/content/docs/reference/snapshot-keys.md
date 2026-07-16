@@ -15,7 +15,7 @@ arranged into rows and columns, and their refresh cadence, see
 
 | Key | Publishing workflow | Canvas title | Renders |
 |---|---|---|---|
-| `rib:squad:roster` | `squad-roster` | Roster | One card per authored member: name, role, charter, status, pinned model/provider, and capability tags. |
+| `rib:squad:roster` | `squad-roster` | Crew | One card per authored member: name, role, charter, status, pinned model/provider, and capability tags. |
 | `rib:squad:cast` | `squad-cast` | Proposed squad | One card per member in the pending cast proposal, awaiting approve or discard. |
 | `rib:squad:coordinator` | `squad-coordinator` | Run loop | The persisted coordinator ledger for the active run: goal, plan, findings, abandoned steps, and recent activity. |
 | `rib:squad:runs` | `squad-runs` | Runs | One row per archived coordinator run in the selected scope, newest first. |

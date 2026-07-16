@@ -57,7 +57,7 @@ tool definitions, the workflow prompts, and the action handlers inline, and impo
 the domain logic from the modules under `src/`. It contributes:
 
 - **Views + a surface** — five snapshot keys (`rib:squad:{roster,cast,coordinator,
-  runs,decisions}`) and one `projectScoped` **Squad** nav surface: the Roster in the
+  runs,decisions}`) and one `projectScoped` **Squad** nav surface: the Crew roster in the
   header, then four rows — the **Run loop** (promoted to its own row, `live` so it
   pulses while a coordinator run streams round by round), **Proposed squad** (also its
   own row: its board lays the bench beside the scan's receipt via `columns`, and a half
