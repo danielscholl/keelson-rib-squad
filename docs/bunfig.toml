@@ -1,0 +1,4 @@
+[install]
+# Never resolve npm versions younger than 7 days — mirrors the root bunfig so
+# local docs builds also work behind corporate vetting feeds.
+minimumReleaseAge = 604800
