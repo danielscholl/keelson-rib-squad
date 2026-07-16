@@ -56,11 +56,10 @@ With the server up, open the harness in a browser:
 http://127.0.0.1:7878
 ```
 
-Squad's own surface reads **Squad** in the tab list, subtitled "Author members,
-cast a squad, assign work". If the tab is present, the rib activated. Its
-surface is project-scoped, so the header also carries the shared project-picker
-chip; picking a project there is what every panel and tool on the surface keys
-on.
+Squad's own surface reads **Squad** in the tab list. If the tab is present, the
+rib is active. Its surface is project-scoped, so the header carries the shared
+project-picker chip; picking a project there is what every panel and tool on the
+surface keys on.
 
 You can check the same fact from the CLI:
 

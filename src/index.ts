@@ -2685,7 +2685,6 @@ const rib: Rib = {
     {
       id: SQUAD_SURFACE_ID,
       title: "Squad",
-      subtitle: "Author members · cast a squad · assign work",
       // Squad is an authoring console, not snapshot panels to lift into chat — drop
       // the host's per-region ✦/◻/⤢ chrome on every Squad panel.
       hideRegionActions: true,
