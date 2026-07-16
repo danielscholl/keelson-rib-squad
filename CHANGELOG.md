@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.30.0...v0.31.0) (2026-07-16)
+
+
+### Added
+
+* **cast:** require real-world ensembles in casting prompts ([#250](https://github.com/danielscholl/keelson-rib-squad/issues/250)) ([117e238](https://github.com/danielscholl/keelson-rib-squad/commit/117e238b2b29919dcdb39e5ac3f89c63ec1d9d9b))
+
 ## [0.30.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.29.0...v0.30.0) (2026-07-16)
 
 
