@@ -115,6 +115,36 @@ describe("castingOptions", () => {
     });
   });
 
+  test("a grown catalog theme stays one entry, listing added characters once", () => {
+    const firefly = THEMES.find((t) => t.id === "firefly")!;
+    const reg: CastingRegistry = {
+      version: 1,
+      activeThemeId: firefly.id,
+      themeHistory: [firefly.id],
+      members: { zoe: { themedName: "Zoe", themeId: firefly.id, status: "active" } },
+      // Zoe is a listed character the squad voiced for itself; Saffron is one the catalog
+      // omits. Both are minted, but only Saffron is new to the ensemble's roster.
+      customThemes: {
+        firefly: {
+          label: "Firefly",
+          characters: [
+            { name: "Zoe", personality: "p", backstory: "b", preferredRoles: ["lead"] },
+            { name: "Saffron", personality: "p", backstory: "b", preferredRoles: ["engineer"] },
+          ],
+        },
+      },
+    };
+    const view = castingOptions(reg, themed);
+    const names = view.catalog.find((t) => t.id === firefly.id)?.characterNames ?? [];
+    // Listed once, not once per source — a duplicate would also overstate the room left.
+    expect(names.filter((n) => n === "Zoe")).toHaveLength(1);
+    expect(names).toContain("Saffron");
+    expect(new Set(names).size).toBe(names.length);
+    // A grown catalog ensemble is not ALSO a custom one; it would read as two ensembles.
+    expect(view.customThemes.map((t) => t.id)).not.toContain(firefly.id);
+    expect(view.activeTheme?.remainingCapacity).toBe(firefly.characters.length);
+  });
+
   test("a custom theme is listed with its own remaining capacity, active or not", () => {
     const reg: CastingRegistry = {
       version: 1,
