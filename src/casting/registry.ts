@@ -198,14 +198,23 @@ export function usageOf(reg: CastingRegistry): ThemeUsage {
       activeCountByTheme[e.themeId] = (activeCountByTheme[e.themeId] ?? 0) + 1;
     }
   }
-  // "Active" is a fact about the seated roster, not the persisted field: retire never
-  // clears activeThemeId, so an ensemble whose last member is gone would otherwise stay
-  // active with FULL capacity — the stickiest it can ever be — and pin every later cast
-  // to it. Derived here (the one input both the prompt and the engine read) so an empty
-  // roster genuinely starts fresh. themeHistory still carries it, for LRU freshness.
-  const stillSeated = reg.activeThemeId ? (activeCountByTheme[reg.activeThemeId] ?? 0) > 0 : false;
+  // "Active" is the ensemble the seated roster is drawn from, not the persisted field:
+  // retire never clears activeThemeId, so an ensemble whose last member is gone would
+  // otherwise stay active with FULL capacity — the stickiest it can ever be — and pin
+  // every later cast to it. When the pointer is unseated the squad still has a cast if
+  // anyone is seated, so fall back to the newest ensemble that holds a member (sorted by
+  // themeHistory activation order, an unrecorded one last) rather than reporting none —
+  // reporting none would tell both rungs to found a fresh cast and scatter a live squad
+  // across ensembles. Only an empty roster genuinely has no cast. Derived here, the one
+  // input the prompt and the engine share; themeHistory still carries it for LRU freshness.
+  const seated = (id: string | undefined): boolean => !!id && (activeCountByTheme[id] ?? 0) > 0;
+  const activeThemeId = seated(reg.activeThemeId)
+    ? reg.activeThemeId
+    : Object.keys(activeCountByTheme).sort(
+        (a, b) => reg.themeHistory.lastIndexOf(b) - reg.themeHistory.lastIndexOf(a),
+      )[0];
   return {
-    ...(stillSeated && reg.activeThemeId ? { activeThemeId: reg.activeThemeId } : {}),
+    ...(activeThemeId ? { activeThemeId } : {}),
     themeHistory: reg.themeHistory,
     activeCountByTheme,
   };
