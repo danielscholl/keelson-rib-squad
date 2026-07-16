@@ -1,6 +1,11 @@
 # Changelog
 
-## [0.31.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.31.0...v0.31.1) (2026-07-16)
+## [0.32.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.31.0...v0.32.0) (2026-07-16)
+
+
+### Added
+
+* **cast:** prioritize registry canon over catalog rosters ([#254](https://github.com/danielscholl/keelson-rib-squad/issues/254)) ([aa58f5e](https://github.com/danielscholl/keelson-rib-squad/commit/aa58f5eeacafa35b148ea3c6efce8eb086500d0a))
 
 
 ### Fixed
