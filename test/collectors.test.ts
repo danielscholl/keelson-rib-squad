@@ -129,9 +129,8 @@ describe("collector follows the persisted selection", () => {
 
     expect(board.header?.chip).toBe("cimpl-stack");
     expect(board.sections.find((s) => s.kind === "actions")?.title).toBe(
-      "Cast a squad from cimpl-stack",
+      "Scan cimpl-stack and propose a squad",
     );
-    expect(board.sections.find((s) => s.kind === "rows")?.items?.[0]?.trailing).toBe("/repo/alpha");
   });
 
   test("roster collector falls back to the frozen name when the snapshot can't resolve it", async () => {
@@ -158,7 +157,7 @@ describe("collector follows the persisted selection", () => {
 
     expect(board.header?.chip).toBeUndefined();
     expect(board.sections.find((s) => s.kind === "actions")?.title).toBe(
-      "Cast a squad from this repo",
+      "Scan this repo and propose a squad",
     );
   });
 

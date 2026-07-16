@@ -150,7 +150,7 @@ function castingContextBlock(ctx: CastingOptionsView): string {
     .join("; ");
   const custom =
     ctx.customThemes.length > 0
-      ? ` This squad has already invented: ${ctx.customThemes
+      ? ` This squad is already drawing on: ${ctx.customThemes
           .map(
             (t) =>
               `"${t.label}" (id "${t.id}", ${t.remainingCapacity} free): ${t.characterNames.join(", ")}`,
@@ -162,12 +162,12 @@ function castingContextBlock(ctx: CastingOptionsView): string {
       ? ` Already-taken character names (never reuse, and never repeat one across members in THIS proposal): ${ctx.takenCharacterNames.join(", ")}.`
       : "";
   const pin = ctx.pin
-    ? ` The operator has pinned casting to "${ctx.pin}" — only cast within that exact ensemble (invent it via castAs.newThemeLabel matching the pin if it isn't a known ensemble yet).`
+    ? ` The operator has pinned casting to "${ctx.pin}" — only cast within that exact ensemble (name it via castAs.newThemeLabel matching the pin if it isn't a known ensemble yet, using that work's real characters).`
     : "";
   return `
 
 Casting context: ${active}${history}${custom}${taken}${pin}
-Catalog ensembles (inspiration, not a limit — invent a fresh one via castAs.newThemeLabel if it fits the project better): ${catalog}`;
+Catalog ensembles (a starting set, not a limit — any other REAL, widely-known movie/TV/book work may be named via castAs.newThemeLabel if it fits the project better): ${catalog}`;
 }
 
 function scanPrompt(
@@ -194,7 +194,7 @@ function scanPrompt(
   const castInstructions =
     castingContext.mode === "off"
       ? ""
-      : `\n- castAs (optional): a themed cast for this member — set castAs.themeId to reuse an ensemble (the active one, another catalog id, or one this squad already invented) with a characterName from ITS listed characters, or castAs.newThemeLabel to invent a fresh ensemble (never both) with any characterName. Every member's characterName must be distinct from every other member's in this same proposal, and from the already-taken names above. Always include personality and backstory in your own words. Spoiler/tone guard: prefer a character's earliest, most neutral identity (not a later-earned title or a twist/reveal name); do not cast a character whose reputation clashes with the role. Omit castAs for a member you'd rather leave with a plain name.`;
+      : `\n- castAs (optional): a themed cast for this member — set castAs.themeId to reuse an ensemble (the active one, another catalog id, or one this squad is already drawing on) with a characterName from ITS listed characters, or castAs.newThemeLabel to draw on an ensemble outside the catalog (never both). A newThemeLabel MUST name a REAL, widely-known movie/TV/book work (e.g. "The Expanse", "The Matrix", "Apollo 13"), and every characterName under it MUST be that work's ACTUAL character. Do NOT make up a team name or invent characters: "The Flux Navigators" with invented crew is WRONG; "The Expanse" with Holden, Naomi, and Amos is right. If no real work fits this project, reuse a catalog ensemble rather than fabricating one. Every member's characterName must be distinct from every other member's in this same proposal, and from the already-taken names above. Always include personality and backstory in your own words. Spoiler/tone guard: prefer a character's earliest, most neutral identity (not a later-earned title or a twist/reveal name); do not cast a character whose reputation clashes with the role. Omit castAs for a member you'd rather leave with a plain name.`;
   const jsonExample =
     providers.length > 0
       ? `{"members":[{"name":"...","role":"...","charter":"...","tools":["read"],"rationale":"...","provider":"claude","model":"claude-opus-4-8","castAs":{"themeId":"...","characterName":"...","personality":"...","backstory":"..."}}],"summary":"one line describing the team"}`
