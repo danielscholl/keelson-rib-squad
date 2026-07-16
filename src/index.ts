@@ -2667,7 +2667,7 @@ const rib: Rib = {
   // Binds the rib's keys to the canvas renderer; data arrives when the bound
   // collector/render workflow runs (squad-roster, squad-decisions).
   views: [
-    { key: ROSTER_KEY, canvasKind: "view", title: "Crew" },
+    { key: ROSTER_KEY, canvasKind: "view", title: "The Squad" },
     { key: DECISIONS_KEY, canvasKind: "view", title: "Decisions" },
     { key: CAST_KEY, canvasKind: "view", title: "Proposed squad" },
     { key: COORDINATOR_KEY, canvasKind: "view", title: "Run loop" },
@@ -2695,7 +2695,7 @@ const rib: Rib = {
         header: {
           key: ROSTER_KEY,
           workflow: "squad-roster",
-          title: "Crew",
+          title: "The Squad",
           // A cheap deterministic collector that only changes on author/retire; a
           // modest cadence keeps it self-populating on open and fresh after a new
           // member without hammering.
@@ -2808,7 +2808,7 @@ const rib: Rib = {
       definition: {
         name: "squad-roster",
         description:
-          'Use when: you want to see the members of the squad. Triggers: "show the crew", "show the roster", "list members", "who is on the team". Does: reads the authored members from the Squad data home and publishes a Crew board (one card per member) to the Squad Crew canvas. NOT for: creating or retiring members (genesis is the squad-genesis workflow; retire is a Crew board action).',
+          'Use when: you want to see the members of the squad. Triggers: "show the squad", "show the roster", "list members", "who is on the team". Does: reads the authored members from the Squad data home and publishes The Squad board (one card per member) to the Squad canvas. NOT for: creating or retiring members (genesis is the squad-genesis workflow; retire is a board action).',
         nodes: [
           {
             id: "collect",

@@ -141,7 +141,7 @@ navigating.
 | `discard-cast` | `{ castAt? }` | data (`{ discarded: true }`) |
 | `set-model` | `{ slug, model?, provider? }` | data (`{ slug, model? }`) |
 | `retire` | `{ slug }` | data (`{ slug }`) |
-| `retire-all` | _(none)_ | data (`{ retired }`); dispatched from the Crew panel head's `⋯`, not a board section |
+| `retire-all` | _(none)_ | data (`{ retired }`); dispatched from The Squad panel head's `⋯`, not a board section |
 | `coordinate` | `{ task }` | `run-workflow` `squad-coordinate-run`, `stay: true` |
 | `dispatch` | `{ task }` | `run-workflow` `squad-dispatch-run` |
 | `record-decision` | `{ summary, content }` | `run-workflow` `squad-decide` |
