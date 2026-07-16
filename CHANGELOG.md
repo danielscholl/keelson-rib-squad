@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.30.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.29.0...v0.30.0) (2026-07-16)
+
+
+### Added
+
+* **roster:** name the panel Crew and unify the hire vocabulary ([#245](https://github.com/danielscholl/keelson-rib-squad/issues/245)) ([6b93ab6](https://github.com/danielscholl/keelson-rib-squad/commit/6b93ab6a2c63a113953e8272fb796cc8048ca763))
+* **surface:** drop the Squad surface subtitle for a bare tab ([#248](https://github.com/danielscholl/keelson-rib-squad/issues/248)) ([230ecb7](https://github.com/danielscholl/keelson-rib-squad/commit/230ecb7f040df6643da7510ff3eed9a8e464ed4e))
+* **surface:** rename the seated-roster panel from Crew to The Squad ([#249](https://github.com/danielscholl/keelson-rib-squad/issues/249)) ([7d17174](https://github.com/danielscholl/keelson-rib-squad/commit/7d1717463ff31c26e6dafa92d7290a5cc5a11504))
+
 ## [0.29.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.28.0...v0.29.0) (2026-07-16)
 
 
