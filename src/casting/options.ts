@@ -43,12 +43,18 @@ export function castingOptions(reg: CastingRegistry, config: ThemingConfig): Cas
 
   const activeTheme = usage.activeThemeId ? resolveActiveTheme(reg, usage) : undefined;
 
-  const customThemes = Object.entries(reg.customThemes ?? {}).map(([id, t]) => ({
-    id,
-    label: t.label,
-    characterNames: t.characters.map((c) => c.name),
-    remainingCapacity: remainingCustomCapacity(usage.activeCountByTheme, id),
-  }));
+  // A catalog ensemble this squad has grown stays ONE entry, listed with the catalog and
+  // carrying the characters the squad added. Splitting it across both lists would read as
+  // two rival ensembles of the same name, and the custom entry's short roster would look
+  // like the whole work.
+  const customThemes = Object.entries(reg.customThemes ?? {})
+    .filter(([id]) => !themeById(id))
+    .map(([id, t]) => ({
+      id,
+      label: t.label,
+      characterNames: t.characters.map((c) => c.name),
+      remainingCapacity: remainingCustomCapacity(usage.activeCountByTheme, id),
+    }));
 
   return {
     mode: "themed",
@@ -58,7 +64,7 @@ export function castingOptions(reg: CastingRegistry, config: ThemingConfig): Cas
     catalog: THEMES.map((t) => ({
       id: t.id,
       label: t.label,
-      characterNames: t.characters.map((c) => c.name),
+      characterNames: [...t.characters, ...grownCharacters(reg, t.id)].map((c) => c.name),
     })),
     customThemes,
     takenCharacterNames: [...activeNames(reg)].sort(),
@@ -73,10 +79,17 @@ function resolveActiveTheme(
   if (!id) return undefined;
   const staticTheme = themeById(id);
   if (staticTheme) {
+    // Count the characters the squad added, not just the catalog's examples: reporting a
+    // grown ensemble as full would tell the prompt to roll to a new one and scatter a
+    // squad that still has room. capacityLeft is the engine's view, which is narrower on
+    // purpose — it can only assign the catalog's own characters.
     return {
       id: staticTheme.id,
       label: staticTheme.label,
-      remainingCapacity: capacityLeft(staticTheme, usage),
+      remainingCapacity: Math.max(
+        0,
+        capacityLeft(staticTheme, usage) + grownCharacters(reg, id).length,
+      ),
     };
   }
   const custom = reg.customThemes?.[id];
@@ -86,6 +99,16 @@ function resolveActiveTheme(
     label: custom.label,
     remainingCapacity: remainingCustomCapacity(usage.activeCountByTheme, id),
   };
+}
+
+// The characters a squad has cast into a CATALOG ensemble beyond the ones it ships with
+// — the model may name any character from a real work, so a catalog roster grows like an
+// invented one. Casting a LISTED character mints it too (canon carries the squad's own
+// voice for it), so those are filtered out here: counting a character under both its
+// catalog entry and its minted one would list it twice and overstate the room left.
+function grownCharacters(reg: CastingRegistry, themeId: string): readonly { name: string }[] {
+  const listed = new Set(themeById(themeId)?.characters.map((c) => c.name) ?? []);
+  return (reg.customThemes?.[themeId]?.characters ?? []).filter((c) => !listed.has(c.name));
 }
 
 function remainingCustomCapacity(

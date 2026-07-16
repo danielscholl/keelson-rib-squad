@@ -267,17 +267,17 @@ function characterIn(themeId: string, name: string): ThemeCharacter | undefined 
   return themeById(themeId)?.characters.find((c) => c.name === name);
 }
 
-// Registry-aware sibling of characterIn: also checks a squad's custom (LLM-
-// invented) ensembles, so re-casting the same proposed name for a member
-// previously cast into a custom theme still returns its personality/backstory.
+// Registry-aware sibling of characterIn: the squad's own cast is canon, so it is read
+// BEFORE the catalog — a catalog character this squad voiced for itself must come back
+// with the voice it was cast with, not the catalog's example of it.
 function characterInRegistry(
   reg: CastingRegistry,
   themeId: string,
   name: string,
 ): ThemeCharacter | undefined {
   return (
-    characterIn(themeId, name) ??
-    reg.customThemes?.[themeId]?.characters.find((c) => c.name === name)
+    reg.customThemes?.[themeId]?.characters.find((c) => c.name === name) ??
+    characterIn(themeId, name)
   );
 }
 
@@ -511,29 +511,21 @@ function resolveLlmProposal(
 
   if (themeId) {
     const staticTheme = themeById(themeId);
-    if (staticTheme) {
-      const char = staticTheme.characters.find((c) => c.name === characterName);
-      return char
-        ? {
-            theme: { id: staticTheme.id, label: staticTheme.label },
-            char,
-            isNewCustomCharacter: false,
-          }
-        : undefined;
-    }
     const custom = reg.customThemes?.[themeId];
-    if (!custom) return undefined;
-    const existingChar = custom.characters.find((c) => c.name === characterName);
-    if (existingChar) {
-      return {
-        theme: { id: themeId, label: custom.label },
-        char: existingChar,
-        isNewCustomCharacter: false,
-      };
+    if (!staticTheme && !custom) return undefined; // named an ensemble that doesn't exist
+    const theme = { id: themeId, label: staticTheme?.label ?? custom!.label };
+    // The squad's own cast is canon: a character it already voiced keeps that voice, so a
+    // freed name reused by a later member still reads as the same character. Everything
+    // else the model names is minted from ITS proposal — the catalog rosters are examples
+    // of who a work fields, never the set it may field, so a character the catalog omits
+    // (or voices differently) is cast for THIS project rather than rejected.
+    const canon = custom?.characters.find((c) => c.name === characterName);
+    if (canon) {
+      return { theme, char: canon, isNewCustomCharacter: false };
     }
-    if (custom.characters.length >= CUSTOM_THEME_CAPACITY) return undefined;
+    if ((custom?.characters.length ?? 0) >= CUSTOM_THEME_CAPACITY) return undefined;
     return {
-      theme: { id: themeId, label: custom.label },
+      theme,
       char: newCustomCharacter(characterName, proposal, role),
       isNewCustomCharacter: true,
     };

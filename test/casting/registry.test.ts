@@ -13,6 +13,7 @@ import {
   saveRegistry,
   usageOf,
 } from "../../src/casting/registry.ts";
+import { themeById } from "../../src/casting/themes.ts";
 
 let home: string;
 
@@ -233,19 +234,76 @@ describe("assignThemedIdentity with an llmProposal", () => {
     expect(id.name).not.toBe("McManus");
   });
 
-  test("a static-theme proposal naming an unknown character falls through to the deterministic engine", async () => {
+  test("a catalog character the example roster omits is cast, growing the ensemble", async () => {
+    // Saffron is a real Firefly character the catalog's examples leave out. The roster is
+    // an example of who the work fields, not the set the model may field.
     const id = await assignThemedIdentity(home, {
       proposedName: "Atlas",
       role: "Engineer",
       llmProposal: {
-        themeId: "usual-suspects",
-        characterName: "Neo",
-        personality: "p",
+        themeId: "firefly",
+        characterName: "Saffron",
+        personality: "Runs a long con behind a disarming smile.",
+        backstory: "Talks her way aboard before anyone thinks to check the manifest.",
+      },
+    });
+    expect(id.name).toBe("Saffron");
+    expect(id.themeId).toBe("firefly");
+    expect(id.themeLabel).toBe("Firefly");
+    expect(id.personality).toBe("Runs a long con behind a disarming smile.");
+
+    // Recorded against the catalog id, so a later cast in this squad sees her too.
+    const reg = await loadRegistry(home);
+    expect(reg.customThemes?.firefly?.label).toBe("Firefly");
+    expect(reg.customThemes?.firefly?.characters.map((c) => c.name)).toEqual(["Saffron"]);
+  });
+
+  test("a listed catalog character is cast with the model's voice, not the example's", async () => {
+    const catalogZoe = themeById("firefly")?.characters.find((c) => c.name === "Zoe");
+    const id = await assignThemedIdentity(home, {
+      proposedName: "Avery Cole",
+      role: "Tech Lead",
+      llmProposal: {
+        themeId: "firefly",
+        characterName: "Zoe",
+        personality: "Steady, disciplined, and mission-focused.",
+        backstory: "Built her judgment where unclear plans got people hurt.",
+      },
+    });
+    expect(id.name).toBe("Zoe");
+    // The catalog voices Zoe too, but as an example — the words the model wrote for THIS
+    // project are what she is cast with.
+    expect(id.personality).toBe("Steady, disciplined, and mission-focused.");
+    expect(id.personality).not.toBe(catalogZoe?.personality);
+  });
+
+  test("a catalog character's cast voice is canon, surviving a retire and reuse", async () => {
+    const first = await assignThemedIdentity(home, {
+      proposedName: "Avery Cole",
+      role: "Tech Lead",
+      llmProposal: {
+        themeId: "firefly",
+        characterName: "Zoe",
+        personality: "the voice this squad cast her with",
         backstory: "b",
       },
     });
-    expect(id.themeId).toBe("usual-suspects");
-    expect(id.name).not.toBe("Neo");
+    await retireCastingName(home, first.slug);
+
+    const reused = await assignThemedIdentity(home, {
+      proposedName: "Nova",
+      role: "Tech Lead",
+      llmProposal: {
+        themeId: "firefly",
+        characterName: "Zoe",
+        personality: "a different voice",
+        backstory: "different",
+      },
+    });
+    // Same rule a squad's invented ensembles already follow: once the squad has cast a
+    // character, that character keeps its voice across members.
+    expect(reused.name).toBe("Zoe");
+    expect(reused.personality).toBe("the voice this squad cast her with");
   });
 
   test("a malformed llmProposal (blank characterName) falls through to the deterministic engine", async () => {
