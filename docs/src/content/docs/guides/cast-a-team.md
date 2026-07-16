@@ -8,7 +8,7 @@ sidebar:
 A squad's roster starts empty. There are two ways to fill it: author one member
 at a time from a brief, or point Squad at a project and let it scan the
 repository and propose a whole team at once. Both paths end at the same place,
-a directory of files under the squad's data home and a card on the Crew
+a directory of files under the squad's data home and a card on The Squad
 board. This guide walks both, plus how to review an auto-cast proposal and how
 to retire a member (or the whole roster) when you are done with it.
 
@@ -68,7 +68,7 @@ a squad" scan (below) both drop away: only "Hire a member" (describe your own)
 stays reachable. Re-casting an already-populated squad is confusing enough
 that it is not offered; switching to an empty project is the way back to a
 fresh cast. Squad teardown is not on the board at all — "Retire the whole
-squad" lives in the Crew panel's `⋯` menu, in the panel head beside the
+squad" lives in The Squad panel's `⋯` menu, in the panel head beside the
 member count, and stays reachable while the panel is collapsed.
 
 ## Auto-cast a team from a repository scan
@@ -169,5 +169,5 @@ deleted, so you know what you are committing to before you confirm.
   roster once it exists.
 - [Mix providers](../mix-providers/): pinning a member to a specific model
   and provider, by hand or via an auto-cast proposal.
-- [Surface](../../reference/surface/): the Crew and Proposed squad panels
+- [Surface](../../reference/surface/): The Squad and Proposed squad panels
   this guide drives.

@@ -35,13 +35,13 @@ snapshot key and a workflow that produces it.
 | Row 2, column 2 | `rib:squad:cast` | `squad-cast` | none | no | yes |
 | Row 3, column 1 | `rib:squad:decisions` | `squad-decisions` | none | no | yes |
 
-Only the header (Crew) is always visible. The four content panels — Run loop,
+Only the header (The Squad) is always visible. The four content panels — Run loop,
 Runs, Proposed squad, and Decisions — set `hideWhenEmpty: true`, so they collapse
 away on a cold start when there is no seated squad and no ledger or proposal
 content. Row 2 holds Runs and Proposed squad side by side when they have content.
 Row 3 holds Decisions on its own.
 
-### Header: Crew
+### Header: The Squad
 
 `rib:squad:roster` is bound to `squad-roster`, a deterministic bash collector
 that reads the members authored under the data home and publishes them as a

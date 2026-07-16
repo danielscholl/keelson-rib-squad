@@ -96,7 +96,7 @@ export function buildRosterBoard(
 
   return {
     view: "board",
-    title: "Crew",
+    title: "The Squad",
     header: {
       status: {
         label: `${members.length} ${members.length === 1 ? "member" : "members"}`,
