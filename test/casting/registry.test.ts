@@ -11,6 +11,7 @@ import {
   resolveThemingConfig,
   retireCastingName,
   saveRegistry,
+  usageOf,
 } from "../../src/casting/registry.ts";
 
 let home: string;
@@ -428,6 +429,29 @@ describe("retire frees the name", () => {
   test("retiring an unknown slug is a fail-soft no-op", async () => {
     await expect(retireCastingName(home, "ghost")).resolves.toBeUndefined();
     await expect(retireCastingName(join(home, "nope"), "x")).resolves.toBeUndefined();
+  });
+
+  test("an unseated pointer picks a seated ensemble by an explicit rule, not key order", async () => {
+    // A drifted registry: two seated ensembles, neither recorded in themeHistory, so
+    // recency can't separate them. The pick must not ride on member key order.
+    const base: CastingRegistry = {
+      version: 1,
+      activeThemeId: "firefly",
+      themeHistory: [],
+      members: {
+        danny: { themedName: "Danny", themeId: "oceans-eleven", status: "active" },
+        mcmanus: { themedName: "McManus", themeId: "usual-suspects", status: "active" },
+      },
+    };
+    const flipped: CastingRegistry = {
+      ...base,
+      members: {
+        mcmanus: base.members.mcmanus!,
+        danny: base.members.danny!,
+      },
+    };
+    expect(usageOf(base).activeThemeId).toBe("oceans-eleven");
+    expect(usageOf(flipped).activeThemeId).toBe("oceans-eleven");
   });
 
   test("retiring the last member frees the ensemble, so the next cast starts fresh", async () => {

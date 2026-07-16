@@ -208,11 +208,14 @@ export function usageOf(reg: CastingRegistry): ThemeUsage {
   // across ensembles. Only an empty roster genuinely has no cast. Derived here, the one
   // input the prompt and the engine share; themeHistory still carries it for LRU freshness.
   const seated = (id: string | undefined): boolean => !!id && (activeCountByTheme[id] ?? 0) > 0;
+  // Lexical breaks the tie only when neither id is in themeHistory (both lastIndexOf -1),
+  // which a consistent registry can't produce — activation always records. It keeps the
+  // pick an explicit rule rather than member key order for one that drifted.
+  const byRecency = (a: string, b: string): number =>
+    reg.themeHistory.lastIndexOf(b) - reg.themeHistory.lastIndexOf(a) || a.localeCompare(b);
   const activeThemeId = seated(reg.activeThemeId)
     ? reg.activeThemeId
-    : Object.keys(activeCountByTheme).sort(
-        (a, b) => reg.themeHistory.lastIndexOf(b) - reg.themeHistory.lastIndexOf(a),
-      )[0];
+    : Object.keys(activeCountByTheme).sort(byRecency)[0];
   return {
     ...(activeThemeId ? { activeThemeId } : {}),
     themeHistory: reg.themeHistory,
