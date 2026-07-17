@@ -1,6 +1,6 @@
 {
   "name": "@keelson/rib-squad",
-  "version": "0.32.0",
+  "version": "0.32.1",
   "description": "Squad as a Keelson rib — author a roster of named team members and talk to each one as a first-class chat agent on the canvas substrate.",
   "license": "Apache-2.0",
   "author": "Daniel Scholl",
