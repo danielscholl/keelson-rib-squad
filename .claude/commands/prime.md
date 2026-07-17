@@ -5,220 +5,154 @@ allowed-tools: Bash, Read, Glob, Grep
 
 <prime-command>
   <objective>
-    Build a working mental model of @keelson/rib-squad — a Keelson rib that adds a
-    roster of named team members you author (genesis / auto-cast), each a first-class
-    chat agent, plus a standing coordinator loop that plans, delegates, and verifies
-    its own progress against a project's repo — fast enough to navigate it and
-    respect its invariants before making a change.
+    Build a working, current mental model of @keelson/rib-squad — fast enough to
+    navigate it and respect its invariants before making a change. AGENTS.md
+    (already in context) carries the stable contract, patterns, and invariants;
+    this command's job is to discover what is true RIGHT NOW — the inventories,
+    the surface layout, the seams — from the code itself. Report only what you
+    derived this pass; never recall a count, layout, or name list from memory or
+    from a doc.
   </objective>
 
   <constraints>
-    <rule>Stay bounded. Read the few load-bearing files named below; for everything
-      else, LIST and skim — don't deep-read.</rule>
-    <rule>src/index.ts is ~3800 lines. Do NOT read it whole — read the `Rib` object at
-      the tail (from `const rib: Rib =`, ~line 2630, to the end) plus the seam
-      singletons at the top (~lines 145-185); SKIM the tool implementations between.</rule>
-    <rule>src/coordinator.ts is ~2600 lines. SKIM the interfaces/consts at the top
-      only (CoordinatorLedger, the RUN_STATUS_* set, RunCoordinatorOptions) — never
-      the round-loop body.</rule>
+    <rule>Stay bounded. Read the few load-bearing files named below; for
+      everything else, LIST and skim — don't deep-read.</rule>
+    <rule>src/index.ts and src/coordinator.ts are large (thousands of lines —
+      check with wc -l). NEVER read either whole. Find anchors with grep, not
+      remembered line numbers:
+      - index.ts: read from the line grep finds for `const rib: Rib =` to EOF,
+        plus the module-singleton seam declarations near the top (grep `^let `).
+        Skim the inline tool bodies between only if the task needs one.
+      - coordinator.ts: read only the exported interfaces/consts the grep in
+        phase 3 surfaces — never the round-loop body.</rule>
     <rule>DO NOT read test files — count them only.</rule>
-    <rule>DO NOT read every board/collector/tool/casting file — read ONE of each as
-      the pattern, list the rest.</rule>
+    <rule>DO NOT read every board/collector/tool/casting file — read ONE of each
+      as the pattern, list the rest.</rule>
     <rule>DO NOT launch subagents — this is a single-pass orientation.</rule>
-    <rule>CLAUDE.md / AGENTS.md are already project context; build on them, don't
-      re-read. They track the current architecture, but the code is still the truth
-      — if they disagree, believe the code and report it (see the drift phase).</rule>
+    <rule>AGENTS.md / CLAUDE.md are already project context; build on them, don't
+      re-read them. The code is the truth. If something you read materially
+      contradicts AGENTS.md or a docs/ page, note it in ONE closing line and move
+      on — auditing docs is not this command's job.</rule>
   </constraints>
 
   <phase number="1" name="orient">
     <step name="layout">
-      <action>Map the package shape — directories and rough size, not every file.</action>
+      <action>Map the package shape — directories and rough sizes, not every file.</action>
       <command>git ls-files | sed 's#/[^/]*$##' | sort | uniq -c | sort -rn | head -20</command>
-      <command>wc -l src/*.ts src/boards/*.ts src/casting/*.ts | sort -rn | head -20</command>
+      <command>wc -l src/*.ts src/boards/*.ts src/casting/*.ts bin/*.ts | sort -rn | head -20</command>
     </step>
     <step name="readme">
       <action>Read README.md.</action>
-      <extract>The pitch: author a roster of named members (a Lead, Engineer,
-        Reviewer, Tester); each becomes a Keelson chat agent and a card on the Squad
-        canvas surface; a standing coordinator plans/delegates/verifies against a repo;
-        mixed providers per member; governed decision memory; a non-overridable policy
-        floor (can open a PR, can never merge or force-push); zero React.</extract>
+      <learn>The current pitch: what the rib adds, what it requires, how it
+        installs and links into a local Keelson.</learn>
     </step>
   </phase>
 
   <phase number="2" name="the-rib-surface">
-    <intent>The whole rib is one `Rib` object exported from src/index.ts. Unlike the
-      chamber rib, index.ts is NOT a thin composition root — it holds the tool
-      definitions, the workflow prompts, and the action handlers INLINE, and imports
-      the domain logic from the modules under src/. Read the object; skim the rest.</intent>
+    <intent>The whole rib is one `Rib` object exported from src/index.ts — a flat
+      assembly file (tool definitions, workflow prompts, and action handlers
+      inline) over the domain modules in src/. Read the object; skim the rest.</intent>
     <step name="rib-object">
-      <action>Read the `Rib` object (src/index.ts, `const rib: Rib =` to EOF) and the
-        module-singleton seams captured near the top (refreshWorkflow, runAgentTurn,
-        getProjects, getProviders, acquireWorkspace, registerOp).</action>
-      <extract>contributeViews / the Squad surface (id "squad", projectScoped): the
-        header (Roster) plus three rows — Run loop (promoted, `live`), Runs + Proposed
-        squad, Decisions. Each region binds a `rib:squad:*` snapshot key to a workflow;
-        the content panels are `hideWhenEmpty`.</extract>
-      <extract>contributeWorkflows: the collectors (bash) + the prompt-turn workflows,
-        each fail-closed (`output_schema` + `expectView` on the collectors;
-        `fail_on_tool_error` + a named `allowed_tools` opt-in on the prompt turns).</extract>
-      <extract>registerTools as the seam-capture + tool-assembly point: it is the only
-        hook with the full ctx, so it captures ctx.getDataDir (bakes the data home
-        BEFORE the roster bash node interpolates it), the seam singletons, and
-        imperatively registers the run-detail + report snapshots. Every squad_* tool is
-        returned UNCONDITIONALLY; seam-dependent tools (dispatch/code/coordinate/…) fail
-        closed at call time with "seam unavailable" rather than being absent.</extract>
-      <extract>contributePolicies → squadPolicies() (the governance floor); onAction (a
-        verb switch — enter-member, select-project, coordinate, dispatch, assign-code,
-        approve/discard-cast, record-decision, … — that rejects any `canvas-html`
-        origin outright); listAgents/resolveAgent (every member enterable, both built
-        from buildSeedFor so Enter and the agent seam can't drift); dispose (clears
-        every captured seam so a re-boot recaptures the new ctx's).</extract>
+      <action>Locate and read the `Rib` object (grep `const rib: Rib =`, read to
+        EOF) and the module-singleton seams near the top of the file.</action>
+      <learn>Which views/keys exist and what surface layout binds them to which
+        producer workflows; which regions carry cadence, `live`, or hideWhenEmpty
+        and why.</learn>
+      <learn>How contributeWorkflows shapes its two producer kinds and how each
+        fails closed.</learn>
+      <learn>What registerTools captures from ctx, what it registers imperatively,
+        and what dispose tears down.</learn>
+      <learn>How onAction guards action origin, and the full set of verbs it
+        switches on. Trust the action STRINGS (defined where the boards emit
+        them, src/boards/*.ts), not the constant names — they can differ.</learn>
+      <learn>How listAgents/resolveAgent stay consistent with the roster Enter
+        action.</learn>
     </step>
     <step name="types">
       <action>Read src/types.ts.</action>
-      <extract>Member (the roster record + casting fields), the identity-slot helpers,
-        normalizeToolAllowlist, and the "code" capability convention.</extract>
+      <learn>The Member record, its casting/identity fields, and the helpers the
+        boards and stores share.</learn>
     </step>
     <step name="one-tool">
-      <action>Read ONE tool as the pattern — makeEmitMemberTool (the genesis write
-        seam) or makeCoordinateTool. LIST the rest by grepping their names.</action>
+      <action>Read ONE tool implementation as the pattern (squad_emit_member is a
+        good driver-free one); grep the full list rather than reading each.</action>
       <command>grep -nE 'name: "squad_' src/index.ts</command>
-      <extract>The shape: a Zod inputSchema, `state_changing`, resolveRunScope (an
-        explicit `project` arg or the selected scope), then a driver-free disk op or a
-        seam call, emitting a bounded tool_result. The three tools that touch a real
-        remote or working tree (squad_open_pr, squad_resolve_review, squad_rollback)
-        also set `requires_confirmation`. The count re-derived by the grep is the
-        truth — trust it over any prose number (see the drift phase).</extract>
+      <learn>The common tool shape: schema validation, scope resolution, the
+        disk-op vs seam-call split, how seam-dependent tools fail closed, which
+        tools require confirmation.</learn>
     </step>
   </phase>
 
-  <phase number="3" name="the-two-producer-shapes">
-    <intent>Every panel is fed by one of two producers: a cheap deterministic bash
-      collector, or (for the Run loop) the long-running coordinator loop.</intent>
+  <phase number="3" name="producers-and-the-loop">
+    <intent>Every panel is fed by a producer; the Run loop panel is fed by the
+      long-running coordinator.</intent>
     <step name="collectors">
-      <action>Read ONE collector + its builder as the pattern
-        (bin/collect-roster.ts → src/boards/roster.ts); LIST the rest.</action>
-      <extract>A collector is an out-of-process bash node (`bun bin/collect-*.ts
-        <dataHome>`) that reads a file off the data home and prints a `board` view; the
-        pure builder in src/boards/ shapes it. Five collectors (roster, cast,
-        coordinator, runs) + count-members; five board builders (roster, cast,
-        coordinator, runs, decisions). decisions is the exception — a paid recall+render
-        turn, not a bash collector, which is why its region carries no cadence.</extract>
+      <action>Read ONE collector + its board builder as the pattern
+        (bin/collect-roster.ts → src/boards/roster.ts); list the rest of bin/ and
+        src/boards/.</action>
+      <learn>How a collector gets its data home, how it degrades instead of
+        throwing, and which panel (if any) is NOT collector-fed and why.</learn>
     </step>
-    <step name="coordinator-loop">
-      <action>SKIM src/coordinator.ts (interfaces/consts at the top ONLY) and LIST the
-        method modules.</action>
-      <command>grep -nE 'export (interface|const|type) (Coordinator|RunCoordinator|Verification|RUN_STATUS|LEDGER_STATUS|MAX_)' src/coordinator.ts | head</command>
-      <extract>The round: recall (governed memory, once) → assess (one manager turn
-        judging progress) → pick a method → execute one step → reflect (a repeat-outcome
-        stall forces a re-plan). The CoordinatorTerminalStatus union: done, gave-up,
-        max-rounds, max-tokens, verification-failed, change-quality-failed, aborted.
-        archiveRun fires for EVERY terminal status (aborted included); only "error" —
-        which is not in the union — escapes archival. A "done" claim is not trusted for
-        a code-changing run until an independent review and the project's own verify
-        commands come back clean.</extract>
-      <extract>The three methods a step can take (method agency): dispatch.ts (text-only
-        fan-out), code.ts + turn-runner.ts (a confined coding turn, write-railed to the
-        project root), and workflow-authoring.ts (author a reusable DAG). orchestrator.ts
-        holds DEFAULT_LIMITS; live-runs.ts / the activeCoordinateRuns + pendingSteers maps
-        back stop/steer; rollback.ts + rollback-store.ts preview undoing a failed run.</extract>
+    <step name="coordinator">
+      <action>Skim the top of src/coordinator.ts only, and list the method
+        modules it delegates to.</action>
+      <command>grep -nE 'export (interface|const|type|function) ' src/coordinator.ts | head -30</command>
+      <command>grep -nE 'DEFAULT_LIMITS|maxRounds|maxStall|maxResets' src/orchestrator.ts | head</command>
+      <learn>The ledger shape, the terminal-status union and which statuses get
+        archived, the current bound limits, and what gates a "done" claim on a
+        code-changing run.</learn>
+      <learn>The step methods a round can take and which module implements each;
+        how stop/steer reach a live run.</learn>
     </step>
   </phase>
 
   <phase number="4" name="scope-and-disk">
-    <intent>A squad-distinctive invariant: everything is per-project scoped on disk.</intent>
     <step name="scope">
       <action>Read src/paths.ts and skim src/scope.ts.</action>
-      <extract>A scope is a data-isolation boundary, one per project, under
-        `{keelson-home}/rib-squad/`. The DEFAULT_SCOPE_ID sentinel maps onto the flat
-        home root (so a pre-scoping roster is never orphaned); every other project maps
-        onto `projects/{segment}/`, the id sanitized to a bare token (or a stable hash
-        on collision). selected-project.json + projects.json live at the root regardless
-        of scope (the out-of-process collectors read them via argv before they can
-        resolve a scope). A member is one dir: member.json + charter.md + memory.md +
-        rules.md + log.md, keyed by a slug guarded by assertSafeSlug before any I/O.</extract>
+      <learn>How a project maps to a scope directory, what the default-scope
+        sentinel does, which files live at the data-home root regardless of
+        scope, and what one member's directory contains.</learn>
     </step>
   </phase>
 
   <phase number="5" name="inventory">
-    <step name="tests">
-      <action>Count test files; report the count only.</action>
-      <command>git ls-files 'test/**/*.test.ts' 'test/*.test.ts' | wc -l</command>
-    </step>
-    <step name="workflows-and-tools">
-      <action>Re-derive the real counts from code (the docs drift — see phase 8).</action>
-      <command>grep -cE '^\s+name: "squad-' src/index.ts   # workflows</command>
-      <command>grep -cE 'name: "squad_' src/index.ts        # chat tools</command>
-    </step>
-    <step name="commands"><command>ls .claude/commands/ 2>/dev/null</command></step>
+    <intent>Derive every number you will report. These commands are the only
+      legitimate source for counts — not AGENTS.md, not docs/, not memory.</intent>
+    <command>grep -cE '^\s+name: "squad-' src/index.ts   # workflows</command>
+    <command>grep -cE 'name: "squad_' src/index.ts        # chat tools</command>
+    <command>git ls-files 'test/**/*.test.ts' 'test/*.test.ts' | wc -l   # test files</command>
+    <command>ls .claude/commands/ 2>/dev/null</command>
   </phase>
 
   <phase number="6" name="conventions">
-    <action>Skim CONTRIBUTING.md for the rules that gate a PR.</action>
-    <points>
-      <point>Green before a PR: `bun run check` (Biome), `bun run typecheck` (needs
-        @keelson/shared linked), `bun test` (runs on stubs).</point>
-      <point>Invariants: zero React (boards, never hand-coded UI); attach only via the
-        `Rib` contract; fail closed everywhere (expectView + output_schema on
-        collectors, fail_on_tool_error on genesis, slug/collision guards in the stores);
-        the governance floor is non-overridable (no self-merge, no force-push; a BLOCK
-        review verdict fails a workflow-surface run); per-project scope isolation; fresh
-        seam capture per boot, cleared in dispose; coordinator runs are bounded
-        (maxRounds/maxStall/maxResets); a confined coding turn is write-railed to the
-        project root.</point>
-      <point>Comments: default to none; capture non-obvious why; no narration.</point>
-      <point>No abstractions ahead of a concrete second caller.</point>
-      <point>Commits/PR title are conventional commits (the squashed title feeds
-        release-please); workflow descriptions use the Use when / Triggers / Does / NOT
-        for shape.</point>
-    </points>
+    <action>Skim CONTRIBUTING.md for the rules that gate a PR — the required
+      checks, commit/PR-title format, and architecture rules.</action>
   </phase>
 
   <phase number="7" name="summarize">
-    <format>Concise markdown — no multi-page dump:</format>
+    <format>Concise markdown — no multi-page dump. Every count and layout claim
+      must come from this pass's commands and reads.</format>
     <sections>
-      <section>Project: 1–2 sentences (a Keelson rib; a roster of authored members + a
-        standing coordinator loop over a repo).</section>
-      <section>The Rib surface: views/surface, the two producer shapes, the tool
-        assembly + seam-dependent fail-closed rule, actions, agents — and index.ts as a
-        flat assembly (tool defs + prompts inline) over the src/ domain modules.</section>
-      <section>The coordinator loop: recall → assess → pick a method → execute one step
-        → reflect, gated by review + verify before "done"; dispatch / code / workflow as
-        the three methods.</section>
-      <section>The scope model: per-project data isolation under rib-squad/.</section>
-      <section>Commands: test / typecheck / check / check:fix / link:keelson.</section>
-      <section>Invariants to respect for the change at hand (esp. the governance floor,
-        scope isolation, and fail-closed producers).</section>
-      <section>Where to start: which file to open first.</section>
+      <section>Project: 1–2 sentences.</section>
+      <section>The Rib surface: views/surface as currently laid out, the producer
+        shapes, the tool assembly + fail-closed rule, actions, agents.</section>
+      <section>The coordinator loop: the round shape, the current limits and
+        terminal statuses, the step methods.</section>
+      <section>The scope model: per-project data isolation as implemented.</section>
+      <section>Commands: the package scripts that gate a PR.</section>
+      <section>Invariants bearing on the change at hand (from AGENTS.md, confirmed
+        against what you just read).</section>
+      <section>Where to start: which file to open first for this task.</section>
+      <section>Only if found: one closing line naming any material contradiction
+        between the code and AGENTS.md / docs/.</section>
     </sections>
   </phase>
 
-  <phase number="8" name="report-drift">
-    <action>This rib moves fast and the docs lag. If anything you read contradicts this
-      command file, AGENTS.md, or the docs/ reference pages, SAY SO in a closing line —
-      name the file and the specific claim. The greps in phase 5 re-derive the real
-      counts; trust them over any prose number, in the docs or in this file.</action>
-    <points>
-      <point>As of 2026-07-14 the counts in AGENTS.md and the docs/ reference pages
-        (17 tools, 12 workflows) match the code. Re-derive anyway — that is the point of
-        the phase-5 greps, and a stale number here is itself drift worth reporting.</point>
-      <point>Known-incomplete: reference/tools-and-commands.md's "Board action verbs"
-        table lists 14 of the 21 verbs in the onAction switch (dismiss-genesis,
-        stop-coordinate, steer-coordinate, rollback-run, reset-squad, view-run, and
-        squad-report are missing).</point>
-      <point>Read the verb STRINGS off src/boards/*.ts, never off the constant names in
-        the switch — three disagree: STOP_COORDINATOR_ACTION is "stop-coordinate",
-        STEER_COORDINATOR_ACTION is "steer-coordinate", and REPORT_RUN_ACTION is
-        "squad-report".</point>
-    </points>
-  </phase>
-
   <anti-patterns>
-    <avoid>Reading src/index.ts or src/coordinator.ts whole — read the Rib object /
-      the interfaces, skim the bodies.</avoid>
-    <avoid>Reading every board/collector/tool/casting file — read one of each, list the rest.</avoid>
-    <avoid>Trusting the docs' or this file's counts over the code — the greps are the contract.</avoid>
+    <avoid>Reading src/index.ts or src/coordinator.ts whole.</avoid>
+    <avoid>Reading every board/collector/tool/casting file — one of each, list the rest.</avoid>
+    <avoid>Reporting a count, layout, or name list you did not derive this pass.</avoid>
+    <avoid>Turning orientation into a docs audit — one closing drift line at most.</avoid>
     <avoid>Launching subagents. A multi-page summary.</avoid>
   </anti-patterns>
 </prime-command>
