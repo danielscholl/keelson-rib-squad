@@ -5,6 +5,12 @@ Copilot's coding agent, and (via an import in `CLAUDE.md`) Claude Code — worki
 in this repository. `CONTRIBUTING.md` is the authoritative human guide; this is
 its agent-facing distillation.
 
+It records only what stays true across changes: the contract, the commands, the
+recurring patterns, and the invariants. Inventories — how many tools, workflows,
+actions, or boards exist and what they are named — live in the code, change
+often, and are deliberately NOT recorded here. Derive them from the code when
+you need them; the `/prime` command does exactly that.
+
 ## What this is
 
 `@keelson/rib-squad` is a **rib** (extension) for
@@ -13,7 +19,7 @@ A rib is a standalone package the harness discovers at runtime and attaches
 through one typed contract — the `Rib` interface from `@keelson/shared`. Squad adds
 a roster of named team **members** you author — one at a time from a brief
 (genesis) or a whole team auto-cast from a confined repo scan — each surfaced as a
-first-class Keelson chat agent and rendered as a canvas board on a **Squad**
+first-class Keelson chat agent and rendered as canvas boards on a **Squad**
 surface. On top of the roster sits a **standing coordinator loop** that takes a
 task and plans, delegates one step at a time to the best-suited member, verifies
 its own claims of progress against real check/typecheck/test output, and replans
@@ -22,9 +28,7 @@ ships **zero React** into the trusted SPA.
 
 Everything is **per-project scoped** on disk, and a non-overridable **governance
 floor** lets the squad open a pull request but never merge or force-push its own
-change. The **Squad** surface is `projectScoped`: the host renders its
-project-picker chip, and the `select-project` action sets the scope every panel and
-tool keys on.
+change.
 
 ## Commands
 
@@ -49,102 +53,72 @@ cd ../keelson && KEELSON_RIBS=squad bun dev   # exercise it in a running harness
 `danielscholl/keelson` checkout's `packages/shared` from `main`, so a harness
 contract change that breaks this rib turns CI red here.
 
-## Architecture
+## Architecture (the shapes, not the inventory)
 
 The whole rib is one `Rib` object exported from `src/index.ts`. Note that
-`index.ts` is a large **assembly file**, not a thin composition root: it holds the
-tool definitions, the workflow prompts, and the action handlers inline, and imports
-the domain logic from the modules under `src/`. It contributes:
+`index.ts` is a large **assembly file**, not a thin composition root: it holds
+the tool definitions, the workflow prompts, and the action handlers inline, and
+imports the domain logic from the modules under `src/`. The recurring shapes:
 
-- **Views + a surface** — five snapshot keys (`rib:squad:{roster,cast,coordinator,
-  runs,decisions}`) and one `projectScoped` **Squad** nav surface: the Squad roster (titled "The Squad") in the
-  header, then four rows — the **Run loop** (promoted to its own row, `live` so it
-  pulses while a coordinator run streams round by round), **Proposed squad** (also its
-  own row: its board lays the bench beside the scan's receipt via `columns`, and a half
-  share collapses that adjacency), Runs, and Decisions. Content panels are
-  `hideWhenEmpty`. No hand-coded UI: every panel is a board a producer publishes.
-- **Workflows** (`contributeWorkflows`) — twelve, in two producer shapes. Four
-  deterministic **bash collectors** (`squad-roster`, `-cast`, `-coordinator`,
-  `-runs`) shell a `bin/collect-*.ts` script, read a file off the data home, and emit
-  a board — each bound fail-closed to its key via node `output_schema` + `validate:
-  expectView`. Six **prompt turns** (`squad-genesis`, `-cast-scan`, `-coordinate-run`,
-  `-dispatch-run`, `-code-run`, `-rollback-run`) each call exactly one squad tool,
-  with `fail_on_tool_error` and a named `allowed_tools` opt-in (rib tools are
-  default-off in workflow nodes). Two more back the governed decision ledger:
-  `squad-decide` (a constant bash node + a declarative `memory: { writeback }`) writes
-  a row; `squad-decisions` (a `memory: { recall }` then a prompt render) publishes the
-  Decisions board — the one paid-turn producer, which is why its region has no cadence.
-- **Tools** (`registerTools`) — seventeen `squad_*` tools, all registered
-  UNCONDITIONALLY. Many are driver-free disk ops usable on any harness
-  (`squad_emit_member` — the genesis write seam — `squad_list_members`,
-  `squad_retire_member`, `squad_remember`, `squad_casting_options`, `squad_runs`,
-  `squad_report`). The rest depend on a harness seam — the agent-turn seam
-  (`squad_dispatch`, `squad_code`, `squad_coordinate`, `squad_propose_cast`,
-  `squad_resolve_review`), the exec seam (`squad_open_pr`, `squad_view_diff`,
-  `squad_rollback`), or the projects seam to resolve a repo — and **fail closed at
-  call time** with "seam unavailable on this harness" rather than being absent from
-  the list. `registerTools` is the only hook with the full ctx: it captures the data
-  home (`ctx.getDataDir`, baked into the collector bash nodes) and the seam singletons
-  (`refreshWorkflow`, `runAgentTurn`, `getProjects`, `getProviders`, `acquireWorkspace`,
-  `registerOp`), and imperatively registers the run-detail + run-report snapshots;
-  `dispose` clears and unregisters all of it.
-- **The coordinator loop** (`src/coordinator.ts`) — a standing run over one task and
-  project. Each round: recall governed memory → a manager turn assesses progress →
-  picks one method for one member → executes that one step → reflects (a repeated
-  outcome is treated as a stall and forces a re-plan). It is bounded (`maxRounds` /
-  `maxStall` / `maxResets`), and a "done" claim on a code-changing run is not accepted
-  until an independent review and the project's own verify commands come back clean.
-  The three methods a step can take: a text-only fan-out (`dispatch.ts`), a confined
-  coding turn write-railed to the project root (`code.ts` + `turn-runner.ts`), or
-  authoring a reusable workflow DAG (`workflow-authoring.ts`).
-- **Policies** (`contributePolicies` → `squadPolicies`) — the non-overridable
-  governance floor, evaluated first-deny-wins on every squad turn: it denies a
-  self-merge or force-push outright, and fails a workflow-surface run on a BLOCK review
-  verdict. This is what lets `squad_code` and the coordinator open real PRs without the
-  squad ever being the thing that merges its own change.
-- **Actions** (`onAction`) — a verb switch of 23, listed here by their action STRINGS
-  (three constants disagree with theirs — `STOP_COORDINATOR_ACTION` is
-  `"stop-coordinate"`, `STEER_COORDINATOR_ACTION` is `"steer-coordinate"`, and
-  `REPORT_RUN_ACTION` is `"squad-report"`): `enter-member` (→ an `open-chat` client
-  effect), `select-project`, the `run-workflow` verbs (`author-archetype` /
-  `describe-own` / `cast-propose` / `coordinate` / `dispatch` / `rollback-run` /
-  `record-decision`), the data verbs (`cast-pick` / `cast-model` / `approve-cast` /
-  `discard-cast` / `set-model` / `retire` / `retire-all` / `reset-squad` /
-  `dismiss-genesis` / `stop-coordinate` / `steer-coordinate`), and `view-run` /
-  `squad-report` / `view-charter` (which drive the imperatively registered drill-down,
-  run-report, and charter snapshots). A roster card carries no code verb: entering the
-  member, `squad_code`, and the `squad-code-run` workflow are the paths to a confined
-  coding turn. Any `canvas-html`-origin action is rejected outright — the run-report
-  canvas is read-only and ships no frame actions.
-- **Agents** — every member is enterable as a keelson agent (`listAgents` /
-  `resolveAgent`), both building the SAME seed as the roster Enter action
-  (`buildSeedFor`) so the two entry points can't drift.
+- **Every panel is a board a producer publishes.** No hand-coded UI ships from
+  the rib. Producers come in two shapes: cheap deterministic **bash collectors**
+  (`bin/collect-*.ts` scripts that read a file off the data home and emit a
+  board, bound fail-closed to their view key via node `output_schema` +
+  `validate: expectView`), and **prompt turns** that each call exactly one squad
+  tool with `fail_on_tool_error` and a named `allowed_tools` opt-in (rib tools
+  are default-off in workflow nodes). Anything that costs a paid turn to render
+  carries no cadence.
+- **Tools register unconditionally, fail closed at call time.** Some tools are
+  driver-free disk ops usable on any harness; the rest depend on a harness seam
+  (agent-turn, exec, projects, …) and return "seam unavailable on this harness"
+  when it is absent — they are never missing from the list. Tools that touch a
+  real remote or working tree require confirmation.
+- **`registerTools` is the seam-capture point.** It is the only hook with the
+  full ctx: it captures the data home (`ctx.getDataDir`, baked into the
+  collector bash nodes) and the seam singletons, and imperatively registers the
+  drill-down snapshots. `dispose` clears and unregisters all of it so a re-boot
+  recaptures the new ctx's.
+- **The coordinator loop** (`src/coordinator.ts`) is a standing run over one
+  task and project. Each round: recall governed memory → a manager turn assesses
+  progress → picks one method for one member → executes that one step → reflects
+  (a repeated outcome is a stall and forces a re-plan). A step's method is a
+  text-only fan-out (`dispatch.ts`), a confined coding turn write-railed to the
+  project root (`code.ts` + `turn-runner.ts`), or authoring a reusable workflow
+  DAG (`workflow-authoring.ts`).
+- **Policies** (`contributePolicies` → `squadPolicies`) are the non-overridable
+  governance floor, evaluated first-deny-wins on every squad turn: deny
+  self-merge and force-push outright; fail a workflow-surface run on a BLOCK
+  review verdict. This is what lets the squad open real PRs without ever being
+  the thing that merges its own change.
+- **Actions** (`onAction`) are a verb switch driving the board buttons. The verb
+  STRINGS are defined where the boards emit them (`src/boards/*.ts`) and can
+  differ from the constant names in the switch — trust the strings. Any
+  `canvas-html`-origin action is rejected outright.
+- **Members are agents.** Every member is enterable as a keelson agent
+  (`listAgents` / `resolveAgent`), and both entry points build the SAME seed as
+  the roster Enter action (`buildSeedFor`) so they can't drift.
 
-### Layout (where things live)
+## Layout (where things live)
 
 - `src/index.ts` — the `Rib` object plus the inline tool definitions, workflow
   prompts, and action handlers (the assembly file).
-- `src/coordinator.ts` — the standing run-loop engine (ledger, rounds, done-gate);
-  `src/orchestrator.ts` holds `DEFAULT_LIMITS`; `src/turn-runner.ts` runs one member
-  turn; `src/live-runs.ts` backs stop/steer of an in-flight run.
-- `src/dispatch.ts` (text fan-out), `src/code.ts` (confined coding turn), and
-  `src/workflow-authoring.ts` — the three coordinator methods.
-- `src/cast.ts` + `src/casting/` (`registry` / `themes` / `engine` / `options`) —
-  auto-cast a team and assign each member a themed identity.
-- `src/member-store.ts` — file-based member persistence (one dir per member;
-  `member.json` + `charter.md` + `memory.md` + `rules.md` + `log.md`).
+- `src/coordinator.ts` — the run-loop engine; `src/orchestrator.ts` — the loop
+  limits; `src/turn-runner.ts` — one member turn; `src/live-runs.ts` —
+  stop/steer of an in-flight run; `src/rollback*.ts` — rollback preview + store.
+- `src/dispatch.ts` / `src/code.ts` / `src/workflow-authoring.ts` — the
+  coordinator's step methods.
+- `src/cast.ts` + `src/casting/` — auto-cast a team and assign themed identities.
+- `src/member-store.ts` — file-based member persistence (one dir per member).
 - `src/paths.ts` / `src/scope.ts` — the per-project scope model and data-home
-  resolution; `src/runs-store.ts` — archived run ledgers; `src/rollback*.ts` —
-  rollback preview + store.
-- `src/policies.ts` / `src/forbidden.ts` — the governance floor; `src/memory.ts` —
-  the governed decision-ledger seam; `src/compose.ts` — budgeted system-prompt
-  stacking + `buildSeedFor`.
-- `src/boards/` — the five pure board builders (roster, cast, coordinator, runs,
-  decisions); `bin/collect-*.ts` — the out-of-process collectors behind them.
-- `src/genesis.ts` (slug naming + safety), `src/keys.ts`, `src/starters.ts`,
-  `src/types.ts` — the seams.
+  resolution; `src/runs-store.ts` — archived run ledgers.
+- `src/policies.ts` / `src/forbidden.ts` — the governance floor; `src/memory.ts`
+  — the governed decision-ledger seam; `src/compose.ts` — system-prompt stacking
+  + `buildSeedFor`.
+- `src/boards/` — pure board builders; `bin/` — the out-of-process collectors.
+- `src/genesis.ts` / `src/keys.ts` / `src/starters.ts` / `src/types.ts` — the
+  seams and the domain types.
 
-### Invariants worth protecting
+## Invariants worth protecting
 
 - **Zero React into the trusted SPA.** Every panel renders through the canvas
   `board` contract, never hand-coded UI shipped from the rib.
@@ -160,10 +134,10 @@ the domain logic from the modules under `src/`. It contributes:
   `output_schema`; prompt turns set `fail_on_tool_error`; the stores reject an unsafe
   slug (`assertSafeSlug`) and refuse to clobber an existing member. A collector
   degrades, never throws — a missing file yields a valid empty board.
-- **Coordinator runs are bounded and durable.** `maxRounds` / `maxStall` /
-  `maxResets` cap the loop; the done-gate requires a clean review + verify for a
-  code-changing run; run state persists so a stopped or restarted run resumes rather
-  than starting over.
+- **Coordinator runs are bounded and durable.** The loop is capped by explicit
+  limits; the done-gate requires a clean review + verify for a code-changing
+  run; run state persists so a stopped or restarted run resumes rather than
+  starting over.
 - **Fresh seam capture per boot.** `registerTools` re-captures the ctx seams each
   activation; `dispose` clears and unregisters them so a re-boot recaptures the new
   ctx's.
