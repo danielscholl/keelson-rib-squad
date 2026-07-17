@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.32.0...v0.32.1) (2026-07-17)
+
+
+### Documentation
+
+* refresh prime command guidance and AGENTS.md ([#256](https://github.com/danielscholl/keelson-rib-squad/issues/256)) ([3f8087d](https://github.com/danielscholl/keelson-rib-squad/commit/3f8087d19ac8e77f4d3a83851552f86329ebbd00))
+
 ## [0.32.0](https://github.com/danielscholl/keelson-rib-squad/compare/v0.31.0...v0.32.0) (2026-07-16)
 
 
