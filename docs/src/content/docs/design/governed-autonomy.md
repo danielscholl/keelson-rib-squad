@@ -67,16 +67,33 @@ changes with the surface.
 
 ## Why bound the loop, not the wallet
 
-There is no dollar or token budget anywhere in this design, and a rib has no
-seam it could read one from even if it wanted to: the rib contract gives a rib a
-seam to run a turn, not a seam to learn what that turn costs. Squad genuinely
-cannot gate on price. What it can, and does, gate on is how many turns a run is
-allowed to take, and how much text an operator can pour into any one of them.
+There is no **dollar** budget anywhere in this design, and a rib has no seam it
+could read one from: the rib contract gives a rib a seam to run a turn and to
+learn what that turn spent in tokens, but nothing that converts tokens into
+money. Pricing is a property of the operator's contract with a vendor, not
+something the harness knows or a rib can discover. Squad genuinely cannot gate on
+price.
+
+What it can gate on is consumption rather than cost: how many turns a run is
+allowed to take, how many tokens it may burn getting there, and how much text an
+operator can pour into any one of them.
+
+**A token budget bounds the run's appetite.** The coordinate tool exposes
+`maxTokens`, a cumulative budget for the whole run. Provider-reported usage rides
+back on each settled turn and accumulates in the ledger; once the total crosses
+the budget the run halts with a `max-tokens` status, the token analogue of the
+round ceiling. It is opt-in — a run started without one is bounded by rounds
+alone — and it is a ceiling on consumption, not a price. A provider that reports
+no usage contributes nothing to the total, so the budget bounds what Squad can
+actually observe, and nothing it cannot.
 
 **Round, stall, and reset caps bound the loop itself.** The coordinate tool
 exposes `maxRounds`, `maxStall`, and `maxResets`, each capped in the tool's own
 schema (1 to 100, 1 to 20, 1 to 20) so an operator cannot ask for an unbounded
-loop; left unset, they default to 24, 3, and 2. Stall detection is deterministic
+loop; left unset, they default to 24, 3, and 2. The round ceiling auto-extends at
+most twice, and only for a run whose deterministic checks are green while a review
+still produces concrete BLOCK signal — a bounded exception that keeps a converging
+run from terminating with mergeable work stranded behind an unresolved review. Stall detection is deterministic
 rather than the manager's self-reported progress: a round that repeats the same
 outcome advances a stall counter regardless of what the plan claims, and enough
 consecutive stalls forces a re-plan; a re-plan that keeps failing eventually ends
@@ -98,11 +115,11 @@ ceiling on how large a single piece of operator-typed text can grow before it
 rides into a turn, which is the one lever a rib can actually pull without a
 pricing seam.
 
-This is the entirety of Squad's cost control: no dollar or token budget, just a
-cap on how many rounds a loop may run and a cap on how long a piece of
-operator-supplied text may be before it is truncated. Both are enforced in code,
-by schema bounds and input clamps, not by asking a model to police its own
-spending.
+This is the entirety of Squad's cost control: no dollar budget, just caps on how
+many rounds a loop may run, how many tokens it may consume, and how long a piece
+of operator-supplied text may be before it is truncated. All of them are enforced
+in code, by schema bounds, ledger arithmetic, and input clamps — never by asking a
+model to police its own spending.
 
 ## Rejected alternatives
 

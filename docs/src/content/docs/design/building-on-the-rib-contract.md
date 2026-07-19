@@ -106,7 +106,9 @@ the node succeeds. The executor stamps that write's provenance as `generated`
 itself; nothing a rib or a node writes can request a higher-trust provenance than
 that.
 
-`squad-decisions` mirrors the same pattern on the read side. Its one node carries a
+`squad-decisions` mirrors the same pattern on the read side, across two nodes. A
+cheap `members` bash node counts the seated roster first, so the render can gate its
+cold-start shape the way the pure board builder does. The `render` node then carries a
 `recall` block that runs first, querying for team decisions and lessons capped at 50
 items and substituting the results into `$memory.recall.items`; the node's prompt
 then renders those rows onto the Decisions board. That render is a paid agent turn,
@@ -119,8 +121,8 @@ opens or focuses it.
 
 `RibContext.registerRegion` lets a rib add a live panel to one of its own surfaces at
 runtime, one region per running thing, and remove it again later. Squad never calls
-it. Every region on the Squad surface, the roster header, the Run loop banner, Runs
-history, the Proposed squad panel, and Decisions, is declared once, up front, as part
+it. Every region on the Squad surface, The Squad header, the Run loop banner, the
+Proposed squad panel, Runs history, and Decisions, is declared once, up front, as part
 of the surface's static layout.
 
 That is a real architectural choice, not an oversight. Squad's live-updating unit is

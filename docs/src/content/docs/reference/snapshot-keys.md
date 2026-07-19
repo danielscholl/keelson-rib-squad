@@ -5,13 +5,17 @@ sidebar:
   order: 3
 ---
 
-Squad publishes five snapshot keys, one per view on the Squad surface. Each
-key is bound to exactly one workflow, and that workflow is the only writer
-for that key. This page is the key contract on its own; for how the keys are
-arranged into rows and columns, and their refresh cadence, see
-[Surface](../surface/).
+Squad declares eight views, which split into two groups by how they are
+published. **Five are workflow-bound**: each is the sole output of exactly one
+workflow, and that workflow is the only writer for that key. Those five are the
+regions of the Squad surface. **Three are registered imperatively** at boot and
+written by a board action or a tool; they are drill-downs an operator opens on
+top of the surface rather than regions laid out on it.
 
-## The keys
+This page is the key contract on its own; for how the workflow-bound keys are
+arranged into rows, and their refresh cadence, see [Surface](../surface/).
+
+## The workflow-bound keys
 
 | Key | Publishing workflow | Canvas title | Renders |
 |---|---|---|---|
@@ -21,10 +25,33 @@ arranged into rows and columns, and their refresh cadence, see
 | `rib:squad:runs` | `squad-runs` | Runs | One row per archived coordinator run in the selected scope, newest first. |
 | `rib:squad:decisions` | `squad-decisions` | Decisions | The governed decision and lesson rows recalled from the project's memory ledger, capped at 50 items. |
 
+## The imperatively registered keys
+
+These three have no workflow behind them. `registerTools` is the only hook
+handed the full rib context, so it registers their composers there and
+unregisters them in `dispose`, which is what lets a re-boot rebind cleanly
+against the new context's snapshot manager. Each composer reads module state
+that a board action or tool set, and each writer returns an `open-canvas`
+effect pointing at the key it just published. Before anything has written one,
+its composer returns a valid empty view rather than failing.
+
+| Key | Canvas kind | Written by | Renders |
+|---|---|---|---|
+| `rib:squad:run-detail` | `view` | the Runs board's `view-run` action | One archived run ledger, drilled into from the Runs list. |
+| `rib:squad:report` | `html` | the `squad-report` action / the `squad_report` tool | The deterministic styled HTML report for one archived run, composed from the ledger with no agent turn. |
+| `rib:squad:charter` | `view` | the Proposed squad card's `view-charter` action | One proposed seat's charter. A bench card carries the seat's purpose only, so the charter is what an operator reads to decide on the seat. |
+
+`rib:squad:report` is the rib's only `html` canvas; the other seven are `view`
+canvases rendering the board contract. It is read-only and ships no frame
+actions, which is why any action arriving from a sandboxed canvas iframe is
+rejected outright — see
+[Tools and commands](../tools-and-commands/#board-action-verbs).
+
 ## Producer shape per key
 
-The five keys split into two producer shapes: four deterministic bash
-collectors, and one prompt-turn render fed by a memory recall.
+The five workflow-bound keys split into two producer shapes: four
+deterministic bash collectors, and one prompt-turn render fed by a memory
+recall.
 
 **`rib:squad:roster`, `rib:squad:cast`, `rib:squad:coordinator`,
 `rib:squad:runs`** are each published by a bash node that reads a file
@@ -61,8 +88,9 @@ its own.
 
 ## Related
 
-- [Surface](../surface/): the layout that arranges these five keys into the
-  Squad surface's header and rows, with cadence and collapsibility per region.
+- [Surface](../surface/): the layout that arranges the five workflow-bound keys
+  into the Squad surface's header and rows, with cadence and collapsibility per
+  region.
 - [Workflows](../workflows/): the node-by-node shape of each publishing
   workflow listed above.
 - [Tools and commands](../tools-and-commands/): the `squad_coordinate` and

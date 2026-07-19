@@ -19,6 +19,11 @@ of what the manager's per-round judgment is actually for. See
 [the coordinator loop](../the-coordinator-loop/) for how this decision sits inside
 the wider recall, assess, execute, reflect cycle.
 
+These are the three methods for a step that is *delegated to a member*. A round
+need not delegate at all: a manager that only needs a fact about the repository
+can call for a read-only probe and spend no member turn on it. That option is
+covered on [the coordinator loop](../the-coordinator-loop/) page, not here.
+
 ## The three methods
 
 | Method | Chosen when | What it produces |

@@ -11,8 +11,8 @@ no-turn/deterministic: four bash collectors that read the data home and publish 
 board, plus one constant bash node paired with a declarative memory writeback.
 Six are single prompt turns, each scoped by `allowed_tools` to the seams it
 needs: five call exactly one tool, and `squad-genesis` calls two. The remaining
-workflow (`squad-decisions`) combines a memory recall with a prompt render to
-publish the Decisions board.
+workflow (`squad-decisions`) pairs a deterministic bash node with a memory
+recall and a prompt render to publish the Decisions board.
 
 Each workflow ships a description in the `Use when / Triggers / Does / NOT
 for` shape, so the catalog and the surface render it scannably and a reader
@@ -33,7 +33,7 @@ can tell at a glance what a workflow is for and what it is not.
 | `squad-code-run` | prompt turn | none | no |
 | `squad-rollback-run` | prompt turn | none | no |
 | `squad-decide` | bash + memory writeback | none | no |
-| `squad-decisions` | memory recall + prompt turn | `rib:squad:decisions` | yes |
+| `squad-decisions` | bash + memory recall + prompt turn | `rib:squad:decisions` | yes |
 
 ## The collectors
 
@@ -120,10 +120,15 @@ two operator-supplied inputs, `summary` and `content`. The executor stamps
 this write's provenance as `"generated"`; a rib can never mint a higher-trust
 provenance than that for a memory row it did not personally witness.
 
-`squad-decisions` is the read path. Its one node carries a declarative
-`memory: { recall }` block that queries for team decisions and lessons
-(capped at 50 items) and runs first, substituting the recalled rows into the
-node's prompt; the prompt then renders them as a board. This is the one
+`squad-decisions` is the read path, and the only two-node workflow in the
+catalog. A cheap `members` bash node counts the seated roster first, so the
+render prompt can gate the cold-start shape exactly the way the pure board
+builder does: no members and no decisions yields `sections: []`, which keeps
+the `hideWhenEmpty` panel hidden instead of publishing an empty shell. The
+`render` node then depends on it and carries a declarative `memory: { recall }`
+block that queries for team decisions and lessons (capped at 50 items) and runs
+first, substituting the recalled rows into the node's prompt; the prompt
+renders them as a board. This is the one
 collector-shaped workflow in the catalog that costs a paid agent turn on
 every render, because turning recalled memory rows into a board is model
 work, not a deterministic transform. That is why the Decisions region of the

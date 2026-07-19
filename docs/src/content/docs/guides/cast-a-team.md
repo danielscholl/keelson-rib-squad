@@ -36,9 +36,9 @@ own:
 Each archetype is a pre-written brief, not a baked charter: picking "Reviewer"
 launches genesis with a brief describing a code reviewer for this repo, and
 the turn writes a fresh charter grounded in whatever it finds. The archetypes
-render as a row of chips — hover one for the "Good for" line above. "Describe &
-author…" takes a freeform brief instead (capped at 2,000 characters), for a
-member the four archetypes do not cover.
+render as a row of chips — hover one for the "Good for" line above. **Author**
+takes a freeform brief instead (capped at 2,000 characters), for a member the
+four archetypes do not cover.
 
 An archetype does not reserve an identity colour. A member's hue is assigned
 when it is written, from the order it joined the roster, so the first member you
@@ -63,8 +63,8 @@ overwriting an existing member's charter. For what each file is for and how a
 member's chat prompt is composed from them, see
 [Cast and roster](../../concepts/cast-and-roster/).
 
-Once a scope has at least one member, the cold-start archetypes and the "Cast
-a squad" scan (below) both drop away: only "Hire a member" (describe your own)
+Once a scope has at least one member, the cold-start archetypes and the "Hire a
+squad" scan (below) both drop away: only **Hire a member…** (describe your own)
 stays reachable. Re-casting an already-populated squad is confusing enough
 that it is not offered; switching to an empty project is the way back to a
 fresh cast. Squad teardown is not on the board at all — "Retire the whole
@@ -75,14 +75,20 @@ member count, and stays reachable while the panel is collapsed.
 
 Casting from a scan composes a whole team in one pass: it reads the selected
 project's languages, frameworks, layout, docs, tests, and CI, then proposes a
-small set of members suited to what it finds. Start it with "Hire" on
-the roster's cold-start screen — the section names the project it will read, so
-you can see the target before you start the scan — optionally naming a mission
-to focus the team (also capped at 2,000 characters), or from the CLI:
+small set of members suited to what it finds. Start it with **Hire a squad** on
+the roster's cold-start screen — the section names the project it will read
+("Scan &lt;project&gt; and propose a squad"), so you can see the target before you
+start the scan — optionally naming a mission to focus the team (also capped at
+2,000 characters), or from the CLI:
 
 ```bash
-keelson workflow run squad-cast-scan --arguments "prioritize test coverage and CI reliability"
+keelson workflow run squad-cast-scan --inputs mission="prioritize test coverage and CI reliability"
 ```
+
+`squad-cast-scan` reads its mission from `$inputs.mission`, so pass it with
+`--inputs mission=…`. Unlike `squad-genesis` above, this workflow does not
+interpolate `$ARGUMENTS`: a mission passed that way is silently dropped and the
+scan runs unfocused.
 
 The scan itself is one confined, read-only agent turn: it can `Read`, `Glob`,
 and `Grep` the project root, nothing else, so it cannot edit or run anything
@@ -157,9 +163,12 @@ no soft "inactive" state reachable from the board, only the delete. Use
 "Retire member…" on that member's card; the confirmation names the member and
 states plainly that this permanently deletes it.
 
-To clear a scope's roster in one action, use "Retire all" in the roster's
-Manage section. The confirmation names the exact count of members about to be
-deleted, so you know what you are committing to before you confirm.
+To clear a scope's roster in one action, use **Retire the whole squad…** in The
+Squad panel head's `⋯` menu (described above). It confirms before it runs, but
+the confirmation is static: it warns that every member and charter in the scope
+is about to be permanently deleted without naming a count. A head verb is fixed
+by contract and cannot count the scope it is offered on, which is also why it is
+offered on an empty roster — where it simply fails closed.
 
 ## Related
 

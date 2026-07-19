@@ -129,26 +129,54 @@ result; some carry an `effect` the host interprets (open a chat, run a
 workflow), and the rest return plain data the surface reads without
 navigating.
 
+There are 23. Note that three verb strings do not match the names of the
+constants that carry them in the source: `STOP_COORDINATOR_ACTION` is
+`stop-coordinate`, `STEER_COORDINATOR_ACTION` is `steer-coordinate`, and
+`REPORT_RUN_ACTION` is `squad-report`. The strings below are the contract.
+
 | Verb | Payload | Effect returned |
 |---|---|---|
 | `enter-member` | `{ slug }` | `open-chat` (the composed seed) |
 | `select-project` | `{ scopeId }` | data (`{ scopeId }`); refreshes the roster, cast, coordinator, and runs panels |
 | `author-archetype` | `{ slug }` | `run-workflow` `squad-genesis`, seeded with the archetype's brief |
 | `describe-own` | `{ brief }` | `run-workflow` `squad-genesis`, seeded with the operator's brief |
+| `dismiss-genesis` | _(none)_ | data; clears the scope's boot-card marker and refreshes the roster |
 | `cast-propose` | `{ mission? }` | `run-workflow` `squad-cast-scan` |
 | `cast-pick` | `{ slug, picked, castAt? }` | data (`{ slug, picked }`); refreshes the cast panel |
+| `cast-model` | `{ slug, model?, provider?, castAt? }` | data; pins or clears one proposed seat's provider/model before approval |
+| `view-charter` | `{ slug, castAt? }` | `open-canvas` `rib:squad:charter` (one proposed seat's charter) |
 | `approve-cast` | `{ castAt? }` | data (`{ created, skipped, truncated, dropped }`) |
 | `discard-cast` | `{ castAt? }` | data (`{ discarded: true }`) |
 | `set-model` | `{ slug, model?, provider? }` | data (`{ slug, model? }`) |
 | `retire` | `{ slug }` | data (`{ slug }`) |
 | `retire-all` | _(none)_ | data (`{ retired }`); dispatched from The Squad panel head's `⋯`, not a board section |
+| `reset-squad` | _(none)_ | data; retires every member and clears the scope's runs and ledger. Refuses while a run is active |
 | `coordinate` | `{ task }` | `run-workflow` `squad-coordinate-run`, `stay: true` |
 | `dispatch` | `{ task }` | `run-workflow` `squad-dispatch-run` |
+| `stop-coordinate` | `{ scopeId }` | data (`{ stopped }`); reconciles an orphaned ledger when no run is live |
+| `steer-coordinate` | `{ scopeId, instruction }` | data (`{ steered }`) |
+| `rollback-run` | `{ run, scopeId? }` | `run-workflow` `squad-rollback-run` (the preview half of the two-phase contract) |
+| `view-run` | `{ id }` | `open-canvas` `rib:squad:run-detail` |
+| `squad-report` | `{ runId }` | `open-canvas` `rib:squad:report` |
 | `record-decision` | `{ summary, content }` | `run-workflow` `squad-decide` |
 
 `coordinate` sets `stay: true`, which keeps the operator on the Squad surface
 (rather than switching to the Workflows tab) so they can watch the Run loop
 panel stream round by round.
+
+The three `open-canvas` verbs are the drill-downs. Each composes a board (or,
+for `squad-report`, an HTML page) into an imperatively registered snapshot key
+and hands the host an effect pointing at it; see
+[Snapshot keys](../snapshot-keys/#the-imperatively-registered-keys). All three
+need the harness's snapshot seam and fail closed without it, and `view-charter`
+and `cast-model` additionally reject a slug the current proposal does not hold,
+rather than trusting one off the wire.
+
+`cast-pick`, `cast-model`, `view-charter`, `approve-cast`, and `discard-cast`
+all accept an optional `castAt`, the proposal's timestamp. It is a staleness
+guard: a board rendered against a proposal that has since been replaced sends
+the old `castAt`, and the action refuses rather than applying the operator's
+click to a cast they were not looking at.
 
 A roster card carries no code verb. To hand one member a confined coding task,
 enter the member and ask, call the `squad_code` tool, or run the
@@ -156,8 +184,10 @@ enter the member and ask, call the `squad_code` tool, or run the
 confined turn, and `squad_code` itself rejects a member that is unknown,
 inactive, or not code-capable.
 
-Squad has no HTML-canvas surface, so any action arriving with a sandboxed
-canvas-iframe origin is rejected outright: there is nothing legitimate that
+Any action arriving with a sandboxed canvas-iframe origin (`canvas-html`, a
+marker the host stamps and a frame cannot forge) is rejected outright, before
+the verb switch runs. Squad does publish one HTML canvas — the run report — but
+it is read-only and ships no frame actions, so there is nothing legitimate that
 origin should ever be able to trigger.
 
 ## Related

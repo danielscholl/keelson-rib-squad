@@ -16,38 +16,55 @@ The surface has a stable identity:
 | `id` | `squad` |
 | `title` | `Squad` |
 | `projectScoped` | `true` |
+| `hideRegionActions` | `true` |
 
 Because the surface is project-scoped, the host renders its shared
 project-picker chip in the surface header. Picking a project there dispatches
 Squad's `select-project` action, which is the scope every panel and tool on
 the surface keys on.
 
+`hideRegionActions: true` drops the host's per-region ✦/◻/⤢ chrome from every
+Squad panel: Squad is an authoring console whose panels are worked in place,
+not snapshots to lift into a chat.
+
 ## Layout
 
-The surface declares a header and three rows below it. Every region binds a
+The surface declares a header and four rows below it. Every region binds a
 snapshot key and a workflow that produces it.
 
 | Region | Key | Workflow | Cadence | Live | Collapsible |
 |---|---|---|---|---|---|
-| Header | `rib:squad:roster` | `squad-roster` | 120000 ms | no | no |
-| Row 1, column 1 | `rib:squad:coordinator` | `squad-coordinator` | 120000 ms | yes | yes |
-| Row 2, column 1 | `rib:squad:runs` | `squad-runs` | 120000 ms | no | yes |
-| Row 2, column 2 | `rib:squad:cast` | `squad-cast` | none | no | yes |
-| Row 3, column 1 | `rib:squad:decisions` | `squad-decisions` | none | no | yes |
+| Header | `rib:squad:roster` | `squad-roster` | 120000 ms | no | yes |
+| Row 1 | `rib:squad:coordinator` | `squad-coordinator` | 120000 ms | yes | yes |
+| Row 2 | `rib:squad:cast` | `squad-cast` | none | no | yes |
+| Row 3 | `rib:squad:runs` | `squad-runs` | 120000 ms | no | yes |
+| Row 4 | `rib:squad:decisions` | `squad-decisions` | none | no | yes |
 
-Only the header (The Squad) is always visible. The four content panels — Run loop,
-Runs, Proposed squad, and Decisions — set `hideWhenEmpty: true`, so they collapse
-away on a cold start when there is no seated squad and no ledger or proposal
-content. Row 2 holds Runs and Proposed squad side by side when they have content.
-Row 3 holds Decisions on its own.
+Every row holds exactly one region: no Squad panel takes a half share of a row.
+Only the header (The Squad) is always visible. The four content panels — Run
+loop, Proposed squad, Runs, and Decisions — set `hideWhenEmpty: true`, so they
+collapse away on a cold start when there is no seated squad and no ledger or
+proposal content.
 
 ### Header: The Squad
 
 `rib:squad:roster` is bound to `squad-roster`, a deterministic bash collector
 that reads the members authored under the data home and publishes them as a
 board. It carries a 120000 ms cadence so a freshly opened surface populates on
-its own and stays current without an operator refresh. It is never
-collapsible: the roster is the anchor for every other panel on the surface.
+its own and stays current without an operator refresh.
+
+The header is collapsible, so a seated roster can fold to its head strip once
+the operator is done reading it. The board raises `header.defaultCollapsed`
+once it is populated, and the host honors that only because the region opts in
+with `collapsible: true` — without the opt-in the panel has no toggle at all.
+
+The header also carries the one `headActions` entry on the surface: **Retire
+the whole squad…**, a destructive, confirm-gated verb that dispatches
+`retire-all`. It lives in the head bar's `⋯` rather than on the board so it
+stays reachable while the panel is folded, and so the board's own foot is left
+for the verb that *grows* the roster. Being static by contract, its confirm
+copy cannot count the scope, and it is offered even on an empty roster — where
+the handler fails closed.
 
 ### Row 1: Run loop (promoted, live)
 
@@ -70,12 +87,7 @@ Two things distinguish it from every other region:
   fed by a long-running, round-by-round loop; the collectors behind the other
   panels each run once and return.
 
-### Row 2: Runs and Proposed squad
-
-`rib:squad:runs` is bound to `squad-runs`, a deterministic bash collector that
-renders the archived coordinator run ledgers for the selected scope, newest
-first. It carries the same 120000 ms cadence as the roster, so a run that just
-finished appears in the history without a manual refresh.
+### Row 2: Proposed squad
 
 `rib:squad:cast` is bound to `squad-cast`, a deterministic bash collector that
 renders the pending cast-proposal file as a board. It carries **no cadence at
@@ -84,9 +96,23 @@ action; a heartbeat here would poll a file that is idle between those actions.
 The `squad_propose_cast` tool refreshes this key itself once a scan finishes,
 so the panel is current the moment there is something new to show. It is
 collapsible but starts expanded when content exists; with `hideWhenEmpty: true`,
-an empty proposal does not clutter the row.
+an empty proposal costs the surface nothing at rest.
 
-### Row 3: Decisions
+It takes a full row rather than a half share beside Runs, and that is a layout
+constraint, not a preference. The bench renders as a `grid` of `columns: 3`,
+holding three tracks whatever the seat count. At a half share those tracks fall
+under their 240px floor and the bench reflows to a single column — which turns
+the approve decision into a scroll. The bench *is* the decision, so it gets the
+width.
+
+### Row 3: Runs
+
+`rib:squad:runs` is bound to `squad-runs`, a deterministic bash collector that
+renders the archived coordinator run ledgers for the selected scope, newest
+first. It carries the same 120000 ms cadence as the roster, so a run that just
+finished appears in the history without a manual refresh.
+
+### Row 4: Decisions
 
 `rib:squad:decisions` is bound to `squad-decisions`, which first runs a
 declarative memory recall (querying the project's governed ledger for team

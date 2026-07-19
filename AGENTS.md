@@ -56,13 +56,18 @@ The whole rib is one `Rib` object exported from `src/index.ts`. Note that
 tool definitions, the workflow prompts, and the action handlers inline, and imports
 the domain logic from the modules under `src/`. It contributes:
 
-- **Views + a surface** — five snapshot keys (`rib:squad:{roster,cast,coordinator,
-  runs,decisions}`) and one `projectScoped` **Squad** nav surface: the Squad roster (titled "The Squad") in the
+- **Views + a surface** — eight views. Five are workflow-bound
+  (`rib:squad:{roster,cast,coordinator,runs,decisions}`) and lay out one
+  `projectScoped` **Squad** nav surface: the Squad roster (titled "The Squad") in the
   header, then four rows — the **Run loop** (promoted to its own row, `live` so it
   pulses while a coordinator run streams round by round), **Proposed squad** (also its
   own row: its board lays the bench beside the scan's receipt via `columns`, and a half
   share collapses that adjacency), Runs, and Decisions. Content panels are
-  `hideWhenEmpty`. No hand-coded UI: every panel is a board a producer publishes.
+  `hideWhenEmpty`. The other three (`rib:squad:{run-detail,report,charter}`) are
+  drill-downs registered imperatively in `registerTools` and opened by an
+  `open-canvas` effect, not regions on the surface; `report` is the rib's only
+  `html` canvas (read-only, no frame actions). No hand-coded UI: every panel is a
+  board a producer publishes.
 - **Workflows** (`contributeWorkflows`) — twelve, in two producer shapes. Four
   deterministic **bash collectors** (`squad-roster`, `-cast`, `-coordinator`,
   `-runs`) shell a `bin/collect-*.ts` script, read a file off the data home, and emit
@@ -78,7 +83,8 @@ the domain logic from the modules under `src/`. It contributes:
   UNCONDITIONALLY. Many are driver-free disk ops usable on any harness
   (`squad_emit_member` — the genesis write seam — `squad_list_members`,
   `squad_retire_member`, `squad_remember`, `squad_casting_options`, `squad_runs`,
-  `squad_report`). The rest depend on a harness seam — the agent-turn seam
+  `squad_report`, and the live-run verbs `squad_stop` / `squad_steer`). The rest
+  depend on a harness seam — the agent-turn seam
   (`squad_dispatch`, `squad_code`, `squad_coordinate`, `squad_propose_cast`,
   `squad_resolve_review`), the exec seam (`squad_open_pr`, `squad_view_diff`,
   `squad_rollback`), or the projects seam to resolve a repo — and **fail closed at
@@ -139,8 +145,10 @@ the domain logic from the modules under `src/`. It contributes:
 - `src/policies.ts` / `src/forbidden.ts` — the governance floor; `src/memory.ts` —
   the governed decision-ledger seam; `src/compose.ts` — budgeted system-prompt
   stacking + `buildSeedFor`.
-- `src/boards/` — the five pure board builders (roster, cast, coordinator, runs,
-  decisions); `bin/collect-*.ts` — the out-of-process collectors behind them.
+- `src/boards/` — the six pure board builders (roster, cast, coordinator, runs,
+  decisions, charter); `bin/collect-*.ts` — the four out-of-process collectors behind
+  them, plus `count-members.ts` (the cheap gate node `squad-decisions` runs before its
+  paid render).
 - `src/genesis.ts` (slug naming + safety), `src/keys.ts`, `src/starters.ts`,
   `src/types.ts` — the seams.
 

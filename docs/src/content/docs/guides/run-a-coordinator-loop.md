@@ -94,14 +94,17 @@ The full schema for `squad_coordinate`, alongside `squad_dispatch` and
 Whichever way you launched it, the Run loop panel and the tool's own progress
 render the same durable ledger. While a run is active, in order:
 
-- **Pulse**: round, findings, stalls, and re-plans, as a stat strip.
+- **Pulse**: round, findings, stalls, and re-plans, as a stat strip — plus
+  **Tokens**, the run's cumulative usage, once any has been recorded.
 - **Goal**: the task text.
 - **Plan**: the coordinator's current numbered plan, once it has one.
 - **Findings**: the most recent accumulated facts.
 - **Verification**: appears only once a done-gate command check has actually run.
 - **Abandoned, do not resume**: steps swept off a plan the last time it re-planned, if any.
 - **Team gaps, consider casting**: roster capability gaps the manager flagged, if any.
-- **Worked by**: who, and on which provider, has produced work so far.
+- **Minds**: one lane per member that has worked — its provider, how many turns
+  it has taken, what they cost, and its latest act. Harness-side coordinator and
+  gate entries stay out of it.
 - **In flight**: a single card that appears only while a step is actively
   executing, naming the member, the action (`coding`, `authoring a workflow`, or
   `working`), and the instruction. It disappears the instant the step returns.
@@ -157,25 +160,30 @@ Steps:
 - **Steps** is the round-by-round trace of every dispatch, code, or workflow step
   that ran.
 
-The status on the first line is one of five terminal outcomes:
+The status on the first line is one of seven terminal outcomes:
 
 | Status | Means |
 |---|---|
 | `done` | The goal was met, and, for a coding run, review and verification both cleared. |
 | `gave-up` | The loop exhausted its re-plan budget without resolving. |
 | `max-rounds` | It hit the round ceiling before finishing. |
+| `max-tokens` | Cumulative usage crossed the run's token budget. |
 | `verification-failed` | A verify command kept failing at the done gate past its retry ceiling. |
 | `change-quality-failed` | A change kept tripping the done gate's regression checks (a net-deleted test, a suppressed lint or type error) past its retry ceiling. |
+| `aborted` | The run was stopped — by the operator, or by reconciling a ledger whose driver died without writing a verdict. |
 
-A run that is interrupted rather than finished (aborted, or a manager turn itself
-errors) is not one of these five; it leaves the ledger active. Launching the
+`aborted` is a real verdict, not an absence of one: a stopped run has settled,
+and it archives like any other terminal status.
+
+The one outcome that is *not* terminal is `error`, when a manager turn itself
+throws rather than reaching a verdict. It leaves the ledger active. Launching the
 identical task against the identical project again resumes it from where it left
 off, rather than starting over, as long as nothing has since finished or reset it.
 
 ## Where archived runs go
 
-Only the five terminal statuses above get archived; an aborted or errored run
-stays as the live, resumable ledger instead. Archiving writes the entire ledger,
+All seven terminal statuses above get archived, `aborted` included; only an
+errored run stays as the live, resumable ledger instead. Archiving writes the entire ledger,
 facts, transcript, plan, verification record, everything, as one JSON file under
 the scope's data home, keyed by the run's creation time. Re-finishing a resumed run
 overwrites that same file rather than piling up duplicates.

@@ -65,10 +65,10 @@ manual reload needed.
 ## Auto-cast: scanning a repository for a whole team at once
 
 Auto-cast is the faster path when you would rather describe what the project
-needs than author members one by one. From the roster's cold start, "Cast a
-squad" launches another workflow, `squad-cast-scan`, against whichever project
-is currently selected — named in the section title, the panel head, and the
-framing line, so the target is never a guess.
+needs than author members one by one. From the roster's cold start, **Hire a
+squad** launches another workflow, `squad-cast-scan`, against whichever project
+is currently selected — named in both the section title ("Scan &lt;project&gt; and
+propose a squad") and the panel head, so the target is never a guess.
 
 That workflow runs one confined, read-only agent turn: it can read files,
 glob, and grep the project's root, but it cannot edit or execute anything, and
@@ -84,6 +84,12 @@ reason for existing, and a receipt of what the scan actually opened, counted
 from the turn rather than reported by the model. Approving a cast is a staffing
 judgement, and those are what you judge it on.
 
+A bench card carries the seat's *purpose*, not its charter — the case for the
+seat, at a glance, across three tracks that hold their shape whatever the seat
+count. The seat's full charter is one verb away (`▤`), opening on its own
+Charter board, because a charter is what you actually read to decide on a seat
+and a bench of six of them is not a decision, it is a scroll.
+
 You review it on the Proposed squad panel and either:
 
 - **Pick the seats you want**, by clicking any card to drop or restore it. This
@@ -96,7 +102,7 @@ You review it on the Proposed squad panel and either:
   disagreeing with one seat shouldn't cost you the other five.
 
 Casting is deliberately a cold-start move. Once a project has an active roster,
-the roster only offers "add a member" (another genesis run); re-casting a
+the roster only offers **Hire a member…** (another genesis run); re-casting a
 populated squad is not offered, because it invites confusion about which
 members survive. Switching to a project with no roster yet reopens the cast
 option.
@@ -104,26 +110,45 @@ option.
 ## What casting a specialist actually means
 
 Both genesis and auto-cast let an agent propose a raw name and role. **Casting**
-is the deterministic step that turns that proposal into a persisted,
-distinctive identity, drawn from one of eight fixed movie and TV ensembles
-(among them The Usual Suspects, Ocean's Eleven, Firefly, and Breaking Bad), so a
-roster of five engineers reads as five actual people instead of "Engineer 1"
-through "Engineer 5."
+is the step that turns that proposal into a persisted, distinctive identity
+drawn from a movie, TV, or book ensemble, so a roster of five engineers reads as
+five actual people instead of "Engineer 1" through "Engineer 5."
 
-Casting does two things at once:
+Squad ships a catalog of eight ensembles (among them The Usual Suspects, Ocean's
+Eleven, Firefly, and Breaking Bad), but the catalog is a **starting set, not a
+limit**. The casting turn may name any other real, widely-known work if it fits
+the project better, and a listed character is an example rather than the pick
+set: the model may name any real character from that work, listed or not. What
+is not negotiable is that the ensemble be real — an invented one is rejected.
 
-- **Matches the character to the role.** A member's proposed role (say,
-  "Backend Engineer" or "DevOps Engineer") is mapped onto one of a handful of
-  canonical buckets, then Squad looks for a free character in the active
-  ensemble whose own preferred role fits best, falling back to any free
-  character in that ensemble, and finally to any free character at all if the
-  ensemble is exhausted.
-- **Keeps the whole squad on one ensemble, without collisions.** Squad reuses
-  the currently active ensemble while it still has free characters, and only
-  rolls to a different one once it runs out. Reservations are serialized so two
-  overlapping casts can never claim the same character, and when auto-cast
-  approves a batch of proposed members, each one is themed in turn so every
-  member in that batch reliably ends up with a distinct character.
+Casting resolves through three rungs, in order, and each falls through to the
+next on any rejection:
+
+1. **Name stability.** A live member already cast for this proposed name keeps
+   its character, so re-casting the same project is idempotent rather than
+   duplicating the member under a new name.
+2. **The LLM's proposal.** The casting turn's own choice of ensemble and
+   character, subject to exactly the same uniqueness checks as the rung below.
+   This is what lets a squad's ensemble be reused, rerolled, or invented instead
+   of being permanently confined to the static catalog. An ensemble named this
+   way is persisted for the squad as a custom theme.
+3. **The deterministic walk.** The tested fallback: the member's role is mapped
+   onto one of a handful of canonical buckets, then Squad takes a free character
+   in the active ensemble whose own preferred role fits best, falling back to any
+   free character in that ensemble, and finally to any free character at all.
+
+The LLM rung is additive — it never replaces the deterministic engine, which
+still catches every case the model declines or gets wrong.
+
+Underneath all three, casting keeps the squad coherent: it reuses the active
+ensemble while it still has free characters and only rolls to another once it is
+exhausted. "Active" is derived from the **seated roster**, not a stored field —
+an ensemble whose last member has been retired is no longer active, and Squad
+falls back to the newest ensemble that still holds a member, so a torn-down squad
+starts fresh rather than inheriting a ghost. Only a genuinely empty roster has no
+active ensemble. Reservations are serialized so two overlapping casts can never
+claim the same character, and an approved batch is themed one member at a time so
+every seat in it lands on a distinct character.
 
 When a character is assigned, its personality and backstory are folded into the
 member's charter alongside the role, mission, and voice the authoring turn

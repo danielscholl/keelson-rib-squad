@@ -15,9 +15,9 @@ allowed-tools: Bash, Read, Glob, Grep
   <constraints>
     <rule>Stay bounded. Read the few load-bearing files named below; for everything
       else, LIST and skim — don't deep-read.</rule>
-    <rule>src/index.ts is ~3800 lines. Do NOT read it whole — read the `Rib` object at
-      the tail (from `const rib: Rib =`, ~line 2630, to the end) plus the seam
-      singletons at the top (~lines 145-185); SKIM the tool implementations between.</rule>
+    <rule>src/index.ts is ~4050 lines. Do NOT read it whole — read the `Rib` object at
+      the tail (from `const rib: Rib =`, ~line 2655, to the end) plus the seam
+      singletons at the top (~lines 160-210); SKIM the tool implementations between.</rule>
     <rule>src/coordinator.ts is ~2600 lines. SKIM the interfaces/consts at the top
       only (CoordinatorLedger, the RUN_STATUS_* set, RunCoordinatorOptions) — never
       the round-loop body.</rule>
@@ -55,10 +55,12 @@ allowed-tools: Bash, Read, Glob, Grep
       <action>Read the `Rib` object (src/index.ts, `const rib: Rib =` to EOF) and the
         module-singleton seams captured near the top (refreshWorkflow, runAgentTurn,
         getProjects, getProviders, acquireWorkspace, registerOp).</action>
-      <extract>contributeViews / the Squad surface (id "squad", projectScoped): the
-        header (Roster) plus three rows — Run loop (promoted, `live`), Runs + Proposed
-        squad, Decisions. Each region binds a `rib:squad:*` snapshot key to a workflow;
-        the content panels are `hideWhenEmpty`.</extract>
+      <extract>views / the Squad surface (id "squad", projectScoped, hideRegionActions):
+        the header ("The Squad", collapsible, with the retire-all head verb) plus FOUR
+        one-region rows — Run loop (promoted, `live`), Proposed squad, Runs, Decisions.
+        Each region binds a `rib:squad:*` snapshot key to a workflow; the content panels
+        are `hideWhenEmpty`. Three more views (run-detail, report `html`, charter) are
+        NOT regions — they are imperatively registered drill-downs.</extract>
       <extract>contributeWorkflows: the collectors (bash) + the prompt-turn workflows,
         each fail-closed (`output_schema` + `expectView` on the collectors;
         `fail_on_tool_error` + a named `allowed_tools` opt-in on the prompt turns).</extract>
@@ -101,10 +103,12 @@ allowed-tools: Bash, Read, Glob, Grep
         (bin/collect-roster.ts → src/boards/roster.ts); LIST the rest.</action>
       <extract>A collector is an out-of-process bash node (`bun bin/collect-*.ts
         <dataHome>`) that reads a file off the data home and prints a `board` view; the
-        pure builder in src/boards/ shapes it. Five collectors (roster, cast,
-        coordinator, runs) + count-members; five board builders (roster, cast,
-        coordinator, runs, decisions). decisions is the exception — a paid recall+render
-        turn, not a bash collector, which is why its region carries no cadence.</extract>
+        pure builder in src/boards/ shapes it. Four board collectors (roster, cast,
+        coordinator, runs) + count-members; six board builders (roster, cast,
+        coordinator, runs, decisions, charter). decisions is the exception — a cheap
+        count node then a paid recall+render turn, not a bash collector, which is why
+        its region carries no cadence. charter has no collector: it is a drill-down the
+        cast board's view-charter verb publishes.</extract>
     </step>
     <step name="coordinator-loop">
       <action>SKIM src/coordinator.ts (interfaces/consts at the top ONLY) and LIST the
@@ -200,13 +204,10 @@ allowed-tools: Bash, Read, Glob, Grep
       name the file and the specific claim. The greps in phase 5 re-derive the real
       counts; trust them over any prose number, in the docs or in this file.</action>
     <points>
-      <point>As of 2026-07-14 the counts in AGENTS.md and the docs/ reference pages
-        (17 tools, 12 workflows) match the code. Re-derive anyway — that is the point of
-        the phase-5 greps, and a stale number here is itself drift worth reporting.</point>
-      <point>Known-incomplete: reference/tools-and-commands.md's "Board action verbs"
-        table lists 14 of the 21 verbs in the onAction switch (dismiss-genesis,
-        stop-coordinate, steer-coordinate, rollback-run, reset-squad, view-run, and
-        squad-report are missing).</point>
+      <point>As of 2026-07-16 the counts in AGENTS.md and the docs/ reference pages
+        (17 tools, 12 workflows, 23 action verbs, 8 views) match the code. Re-derive
+        anyway — that is the point of the phase-5 greps, and a stale number here is
+        itself drift worth reporting.</point>
       <point>Read the verb STRINGS off src/boards/*.ts, never off the constant names in
         the switch — three disagree: STOP_COORDINATOR_ACTION is "stop-coordinate",
         STEER_COORDINATOR_ACTION is "steer-coordinate", and REPORT_RUN_ACTION is

@@ -17,13 +17,17 @@ directly from the keelson home). Everything below is relative to that home.
 | `cast-proposal.json` | The default scope's pending cast proposal, if any. |
 | `casting-registry.json` | The default scope's theatrical-casting record. |
 | `coordinator-ledger.json` | The default scope's live coordinator run, if one is in progress. |
+| `pending-genesis.json` | The default scope's in-flight genesis or cast scan, if any: the marker that seats a boot card until the member lands. |
 | `runs/{id}.json` | The default scope's archived coordinator runs. |
+| `rollbacks/{runId}.jsonl` | The default scope's rollback events, appended one JSON line per event. |
 | `workspace.json` | The default scope's leased worktree record (`projectId`, `leaseId`, `worktreePath`), when the harness provides workspace isolation. |
 | `projects/{segment}/members/{slug}/` | A project scope's member directories. |
 | `projects/{segment}/cast-proposal.json` | That project scope's pending cast proposal, if any. |
 | `projects/{segment}/casting-registry.json` | That project scope's theatrical-casting record. |
 | `projects/{segment}/coordinator-ledger.json` | That project scope's live coordinator run, if one is in progress. |
+| `projects/{segment}/pending-genesis.json` | That project scope's in-flight genesis or cast scan, if any. |
 | `projects/{segment}/runs/{id}.json` | That project scope's archived coordinator runs. |
+| `projects/{segment}/rollbacks/{runId}.jsonl` | That project scope's rollback events. |
 | `projects/{segment}/workspace.json` | That project scope's leased worktree record (`projectId`, `leaseId`, `worktreePath`), when the harness provides workspace isolation. |
 | `selected-project.json` | The operator's current project selection, at the home root regardless of scope. |
 | `projects.json` | A snapshot of the known project catalog, at the home root regardless of scope. |
@@ -185,9 +189,17 @@ whole into `runs/{id}.json`, where `{id}` is derived from the ledger's
 `createdAt` timestamp (colons and dots replaced with hyphens). A run that
 resumes and later re-terminates overwrites its own archive file rather than
 creating a duplicate, because the filename is keyed on `createdAt`, not a
-fresh id each time. A run that ends `aborted` or `error` is never archived;
-only `done`, `gave-up`, `max-rounds`, `verification-failed`, and
-`change-quality-failed` write a file.
+fresh id each time.
+
+Every terminal status archives — `done`, `gave-up`, `max-rounds`,
+`max-tokens`, `verification-failed`, `change-quality-failed`, and `aborted`.
+An operator who stops a run still gets its ledger in the history, and so does a
+run reconciled as aborted after its driver died without writing a terminal
+status. The one status that never writes a file is `error`, which is precisely
+the status that is *not* a terminal status: it means the loop threw rather than
+reaching a verdict, so there is no settled ledger worth keeping. Archival is
+fail-soft at every call site — persistence of run history is never allowed to
+fail the live run's result.
 
 An archived run file is the entire ledger, unabridged:
 
@@ -212,10 +224,12 @@ An archived run file is the entire ledger, unabridged:
 ```
 
 Reading run history back does not re-parse all of that. `runs/` is listed and
-each file is reduced to a five-field `RunSummary`: `id`, `task`, `status`,
-`round`, `createdAt`, `updatedAt`, sorted newest-updated first. A file that
-fails to parse, or is missing any of those fields, is skipped rather than
-breaking the listing. The Runs panel and the `squad_runs` tool both read only
+each file is reduced to a coarse `RunSummary` — `id`, `task`, `status`,
+`round`, `createdAt`, `updatedAt`, plus `scopeId` when the ledger carries one —
+sorted newest-updated first. `id` is derived, not stored: it is the ledger's
+`createdAt` with colons and dots hyphenated, which is the same rule that names
+the file. A file that fails to parse, or is missing any of the required fields,
+is skipped rather than breaking the listing. The Runs panel and the `squad_runs` tool both read only
 this coarse index; the full facts, transcript, and verification detail sit in
 the file on disk but are not surfaced through either of those paths.
 

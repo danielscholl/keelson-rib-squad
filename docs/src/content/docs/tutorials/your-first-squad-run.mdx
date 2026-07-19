@@ -65,7 +65,7 @@ projects before.
 With an empty roster, the surface shows a cold-start screen explaining that a
 squad is a team tuned to your project, with two ways to start one: cast it
 automatically from the repo, or author members yourself. Take the first path.
-Click **Hire**, optionally adding a short mission in the field it
+Click **Hire a squad**, optionally adding a short mission in the field it
 opens. On the Cosmos project something like "this is a small
 full-stack catalog app; weight the frontend and the API equally" works, and
 the scan does the rest. Remember your build is your own: the scan reads what
@@ -77,13 +77,19 @@ languages, frameworks, layout, tests, and CI, but it cannot edit or run
 anything. A few moments later the **Proposed squad** panel fills in, typically
 three to five members (never more than six), each with a name, a role, a
 charter grounded in what the scan actually found, and a tools tag: `code` for
-an implementer, `read` for everyone reviewing or advising.
+an implementer, `read` for someone reviewing or advising, or `text-only` for a
+seat the scan gave no tools at all. The panel head tracks the decision — "3 of 5
+picked" — and the `▤` verb on a card opens that seat's full charter, since the
+card itself carries only the seat's purpose.
 
-Review the cards, then click **Approve & scaffold**. Every proposed member
-becomes a real chat agent on The Squad board, each with its own charter, working
-memory, and log file on disk. If you would rather build a team one member at a
-time from your own brief instead of a scan, [Cast a team](../../guides/cast-a-team/)
-covers genesis, the other path to the same roster.
+You do not have to take the whole bench. Every seat starts picked, and clicking
+a card drops it; clicking again picks it back. Drop the seats you don't want,
+then click **Approve 3 & scaffold** — the button counts what it is about to
+create. Only picked seats become real chat agents on The Squad board, each with
+its own charter, working memory, and log file on disk; a dropped seat is never
+created. If you would rather build a team one member at a time from your own
+brief instead of a scan, [Cast a team](../../guides/cast-a-team/) covers
+genesis, the other path to the same roster.
 
 ## Hand the team one small task
 

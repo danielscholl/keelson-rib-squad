@@ -58,25 +58,31 @@ member record can never end up with a stray model and no provider on disk.
 ## Pin a member's provider and model
 
 Every member in the roster, however it was created, carries an independent
-`provider`/`model` pin. From the member's card on the roster, use **Set
-model…**. The fields are pre-filled with the member's current pin as
-placeholders, so an empty submission clears both back to unpinned.
+`provider`/`model` pin. The member's card carries the verb for it, and the
+card's current pin reads straight off the button's own label: **Model —
+&lt;model&gt;**, or **Model — default** when the member is unpinned.
 
-Typical uses:
+The button opens the harness's model catalog as a popover, and picking an entry
+dispatches immediately — there is no form to fill in and nothing to submit. The
+catalog's rows are provider/model pairs, so a pick always carries both halves of
+the pin at once, and the **default (inherit)** row is how you clear one: the
+member falls back to the harness's default provider, exactly like a member that
+was never pinned.
 
-- **Pin a vendor only.** Set `provider` to `copilot` and leave `model` blank.
-  This member now always runs on Copilot, on whatever model Copilot resolves
-  as its default, and stays pinned to Copilot even if the harness's own
-  default provider changes later.
-- **Pin an exact model.** Set `provider` to `claude` and `model` to a specific
-  Claude model id. This member always runs that model, deliberately more (or
-  less) capable than whatever a sibling member is pinned to.
-- **Clear a pin.** Submit both fields empty. The member falls back to running
-  on the harness's default provider, same as a member that was never pinned.
+That single-picker shape is deliberate. The coherence rule above says a pinned
+model must arrive with its provider, and a pair of free-text boxes invited
+precisely the input that rule rejects. Picking from the catalog cannot express a
+model with no provider, so the rule stops being an error an operator discovers
+by tripping over it.
 
-There is no field for `model` with no `provider`: submitting one without the
-other surfaces the coherence rule as an error rather than silently doing
-something else with it.
+The trade is that a **provider-only** pin — "always Copilot, whatever model
+Copilot picks" — is not authorable from a board at all. A card renders one it
+already has (`claude default`, say, of the kind an auto-cast proposal assigns),
+but the catalog has no row meaning "this vendor, any model", and the Proposed
+squad card uses the same picker. A provider-only pin therefore arrives one of
+two ways: an auto-cast scan assigns it, or `squad_emit_member` writes it —
+that tool takes `provider` and `model` as independent fields and persists a
+provider with no model behind it.
 
 ## Give a squad independent judgment on purpose
 
