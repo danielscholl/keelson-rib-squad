@@ -71,7 +71,7 @@ allowed-tools: Bash, Read, Glob, Grep
         returned UNCONDITIONALLY; seam-dependent tools (dispatch/code/coordinate/…) fail
         closed at call time with "seam unavailable" rather than being absent.</extract>
       <extract>contributePolicies → squadPolicies() (the governance floor); onAction (a
-        verb switch — enter-member, select-project, coordinate, dispatch, assign-code,
+        verb switch — enter-member, select-project, coordinate, dispatch, cast-propose,
         approve/discard-cast, record-decision, … — that rejects any `canvas-html`
         origin outright); listAgents/resolveAgent (every member enterable, both built
         from buildSeedFor so Enter and the agent seam can't drift); dispose (clears

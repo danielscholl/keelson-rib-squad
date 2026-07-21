@@ -188,7 +188,7 @@ facts, transcript, plan, verification record, everything, as one JSON file under
 the scope's data home, keyed by the run's creation time. Re-finishing a resumed run
 overwrites that same file rather than piling up duplicates.
 
-The **Runs** panel (row two of the Squad surface) and the `squad_runs` tool both
+The **Runs** panel (row three of the Squad surface) and the `squad_runs` tool both
 read that directory, but they only show a coarse index: id, status, round, task,
 and when it last updated, one line per run, newest first. The full facts and
 transcript stay in the archived file itself; open it directly if you need more than

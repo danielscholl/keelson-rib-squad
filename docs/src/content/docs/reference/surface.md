@@ -114,10 +114,12 @@ finished appears in the history without a manual refresh.
 
 ### Row 4: Decisions
 
-`rib:squad:decisions` is bound to `squad-decisions`, which first runs a
-declarative memory recall (querying the project's governed ledger for team
-decisions and lessons, capped at 50 items) and then a prompt turn that renders
-the recalled rows as a board. This panel carries **no cadence by design**: unlike
+`rib:squad:decisions` is bound to `squad-decisions`, a two-node workflow: a
+deterministic `members` bash node counts the seated roster first (so the render
+can gate its cold-start shape), then a `render` node runs a declarative memory
+recall (querying the project's governed ledger for team decisions and lessons,
+capped at 50 items) and a prompt turn that renders the recalled rows as a board.
+This panel carries **no cadence by design**: unlike
 the bash collectors, rendering it costs one paid agent turn, and a heartbeat
 would burn turns while the panel sits open and idle. The client re-fetches it
 on open and on focus instead, so re-opening the panel after recording a

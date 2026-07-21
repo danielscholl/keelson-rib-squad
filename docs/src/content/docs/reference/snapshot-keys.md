@@ -69,10 +69,12 @@ refresh:
   is what lets the Run loop panel show a live freshness pulse mid-run.
 
 **`rib:squad:decisions`** is published by `squad-decisions`, the one key on
-this surface whose producer is not a bash collector. Its node runs a
-declarative `memory: { recall }` block first (querying the project's governed
-ledger for "team decisions and lessons," capped at 50 items), then a prompt
-turn renders the recalled rows into the board. That recall-then-render shape
+this surface whose producer is not a bash collector. It has two nodes: a cheap
+`members` bash node counts the seated roster first (so the render can gate its
+cold-start shape), then a `render` node carries a declarative `memory: { recall }`
+block (querying the project's governed ledger for "team decisions and lessons,"
+capped at 50 items) and a prompt turn that renders the recalled rows into the
+board. That recall-then-render shape
 costs one paid agent turn per publish, which is why this key carries no
 cadence on the surface: a heartbeat would spend a turn every cycle whether or
 not anything changed.
