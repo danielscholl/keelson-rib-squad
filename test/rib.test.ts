@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import type { RibContext } from "@keelson/shared";
+import { columnRegions, type RibContext } from "@keelson/shared";
 import rib from "../src/index.ts";
 import {
   CAST_KEY,
@@ -271,7 +271,7 @@ describe("rib-squad", () => {
     const view = rib.views?.find((v) => v.key === DECISIONS_KEY);
     expect(view?.canvasKind).toBe("view");
     const region = rib.surfaces?.[0]?.layout.rows
-      ?.flatMap((r) => r.columns)
+      ?.flatMap((r) => r.columns.flatMap(columnRegions))
       .find((c) => c.key === DECISIONS_KEY);
     expect(region?.workflow).toBe("squad-decisions");
     expect(region?.hideWhenEmpty).toBe(true);
@@ -349,7 +349,7 @@ describe("rib-squad", () => {
     const view = rib.views?.find((v) => v.key === CAST_KEY);
     expect(view?.canvasKind).toBe("view");
     const region = rib.surfaces?.[0]?.layout.rows
-      ?.flatMap((r) => r.columns)
+      ?.flatMap((r) => r.columns.flatMap(columnRegions))
       .find((c) => c.key === CAST_KEY);
     expect(region?.workflow).toBe("squad-cast");
     expect(region?.hideWhenEmpty).toBe(true);
@@ -399,7 +399,7 @@ describe("rib-squad", () => {
 
   it("promotes the Run loop to a live, cadence-bearing, uncollapsed row region", () => {
     const region = rib.surfaces?.[0]?.layout.rows
-      ?.flatMap((r) => r.columns)
+      ?.flatMap((r) => r.columns.flatMap(columnRegions))
       .find((c) => c.key === COORDINATOR_KEY);
     expect(region?.workflow).toBe("squad-coordinator");
     expect(region?.hideWhenEmpty).toBe(true);
@@ -412,7 +412,7 @@ describe("rib-squad", () => {
     const view = rib.views?.find((v) => v.key === SQUAD_RUNS_KEY);
     expect(view?.canvasKind).toBe("view");
     const region = rib.surfaces?.[0]?.layout.rows
-      ?.flatMap((r) => r.columns)
+      ?.flatMap((r) => r.columns.flatMap(columnRegions))
       .find((c) => c.key === SQUAD_RUNS_KEY);
     expect(region?.workflow).toBe("squad-runs");
     expect(region?.hideWhenEmpty).toBe(true);
