@@ -6,7 +6,7 @@ import {
   SHORT_ACKNOWLEDGMENT_RE,
   type VerificationRecord,
 } from "../coordinator.ts";
-import { formatTokens, formatUsageTail } from "../format.ts";
+import { formatTokens } from "../format.ts";
 import type { ToolTrace } from "../turn-runner.ts";
 
 // Pure: a coordinator run ledger -> a canvas `board` (the Run-loop panel). No ledger — no run
@@ -103,6 +103,11 @@ export function personFor(speaker: string | undefined, tones?: IdentityTones): P
   if (name === "coordinator") return { name, tone: "brand", face: "◆" };
   const initial = /\p{L}|\p{N}/u.exec(name)?.[0]?.toUpperCase() ?? "·";
   return { name, tone: identityTone(name, tones), face: initial };
+}
+
+function gateChip(e: CoordinatorEntry): { label: string; tone: CanvasTone } {
+  const tone = outcomeTone(e);
+  return { label: tone === "error" ? "red" : tone === "ok" ? "green" : "gate", tone };
 }
 
 function gatePerson(e: CoordinatorEntry): Person {
@@ -217,14 +222,20 @@ export function buildRunDetailBoard(
   const body = sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId).filter(
     (s) => !(titled && s.kind === "rows" && s.title === "Goal"),
   );
-  const detailBody = body.filter((s) => s.kind !== "stats");
-  const sections: Section[] = [pulseSection(ledger), runReportSection(id)];
-  pushIf(sections, tokensPerRoundChartSection(ledger.transcript));
-  sections.push(...detailBody);
+  const detailBody: Section[] = body.filter((s) => s.kind !== "stats");
+  const chart = tokensPerRoundChartSection(ledger.transcript);
+  const costAt = detailBody.findIndex(
+    (s) => s.kind === "rows" && (s.title === "Minds" || s.title?.startsWith("Ledger")),
+  );
+  if (chart) detailBody.splice(costAt < 0 ? detailBody.length : costAt, 0, chart);
+  const sections: Section[] = [pulseSection(ledger), runReportSection(id), ...detailBody];
   return {
     view: "board",
     title: stripMd(truncate(ledger.task, RUN_TITLE_CAP)) || "Run",
-    header: { status: statusPill(ledger.status), chip: runWhen(ledger.createdAt) ?? id },
+    header: {
+      status: statusPill(ledger.status),
+      chip: runSpan(ledger.createdAt, ledger.updatedAt) ?? id,
+    },
     sections,
   };
 }
@@ -569,8 +580,11 @@ function abortedSections(
 // The pulse `stats` strip: round (n or n/budget with escalating tone), the two loop
 // counters, and — when entries carry usage — the run's token total. A zero count
 // tones neutral so an early or calm run doesn't shout.
+// A settled run reports what happened, not how close it came to a budget or the
+// stall and re-plan counters that stayed at zero.
 function pulseSection(ledger: CoordinatorLedger): Section {
   const toned = (n: number, tone: CanvasTone): CanvasTone => (n > 0 ? tone : "neutral");
+  const settled = ledger.status !== "active";
   const findingsCount = visibleFindings(ledger).length;
   const tokens = ledger.transcript.reduce(
     (sum, e) => sum + (e.usage ? e.usage.inputTokens + e.usage.outputTokens : 0),
@@ -579,10 +593,28 @@ function pulseSection(ledger: CoordinatorLedger): Section {
   return {
     kind: "stats",
     items: [
-      { label: "Round", value: roundStatValue(ledger), tone: roundStatTone(ledger) },
+      settled
+        ? {
+            label: ledger.round === 1 ? "Round" : "Rounds",
+            value: ledger.round,
+            tone: "neutral" as CanvasTone,
+          }
+        : { label: "Round", value: roundStatValue(ledger), tone: roundStatTone(ledger) },
       { label: "Findings", value: findingsCount, tone: toned(findingsCount, "brand") },
-      { label: "Stalls", value: ledger.stallCount, tone: toned(ledger.stallCount, "caution") },
-      { label: "Re-plans", value: ledger.resetCount, tone: toned(ledger.resetCount, "caution") },
+      ...(settled && ledger.stallCount === 0
+        ? []
+        : [
+            {
+              label: "Stalls",
+              value: ledger.stallCount,
+              tone: toned(ledger.stallCount, "caution"),
+            },
+          ]),
+      ...(settled && ledger.resetCount === 0
+        ? []
+        : [
+            { label: "Re-plans", value: ledger.resetCount, tone: toned(ledger.resetCount, "info") },
+          ]),
       ...(tokens > 0
         ? [{ label: "Tokens", value: formatTokens(tokens), tone: "info" as CanvasTone }]
         : []),
@@ -601,21 +633,16 @@ function tokensPerRoundChartSection(transcript: readonly CoordinatorEntry[]): Se
     }
     byRound.set(e.round, agg);
   }
-  if ([...byRound.values()].filter((round) => round.hasUsage).length < 2) return undefined;
-  const rounds = [...byRound.entries()].sort(([a], [b]) => a - b);
+  const rounds = [...byRound.entries()].filter(([, agg]) => agg.hasUsage).sort(([a], [b]) => a - b);
+  if (rounds.length < 2) return undefined;
   return {
     kind: "chart",
     title: "Tokens per round",
     mark: "bar",
-    yLabel: "tokens",
     series: [
       {
-        label: "input",
-        points: rounds.map(([round, agg]) => ({ x: round, y: agg.input })),
-      },
-      {
-        label: "output",
-        points: rounds.map(([round, agg]) => ({ x: round, y: agg.output })),
+        label: "tokens",
+        points: rounds.map(([round, agg]) => ({ x: round, y: agg.input + agg.output })),
       },
     ],
   };
@@ -737,6 +764,7 @@ function findingsSection(facts: readonly string[]): Section {
     items: facts.slice(-MAX_FINDINGS).map((fact) => {
       const normalized = normalizeSpeakerPrefixes(fact);
       return {
+        glyph: "brand" as CanvasTone,
         text: stripMd(truncate(normalized, STEP_CAP)) || "(no detail)",
         ...detailWhenTruncated(normalized, STEP_CAP),
       };
@@ -896,6 +924,7 @@ function mindsSection(
       inputTokens: number;
       outputTokens: number;
       providers: Set<string>;
+      rounds: Set<number>;
       last: CoordinatorEntry;
     }
   >();
@@ -909,9 +938,11 @@ function mindsSection(
       inputTokens: 0,
       outputTokens: 0,
       providers: new Set<string>(),
+      rounds: new Set<number>(),
       last: e,
     };
     agg.turns += 1;
+    agg.rounds.add(e.round);
     if (e.usage) {
       agg.tokens += e.usage.inputTokens + e.usage.outputTokens;
       agg.inputTokens += e.usage.inputTokens;
@@ -926,24 +957,19 @@ function mindsSection(
     kind: "rows",
     title: "Minds",
     items: [...bySpeaker.entries()].map(([speaker, agg]) => {
+      const rounds = [...agg.rounds].sort((a, b) => a - b);
       const meta = [
         ...[...agg.providers],
-        `${agg.turns} ${agg.turns === 1 ? "turn" : "turns"}`,
-        ...(agg.tokens > 0 ? [`${formatTokens(agg.tokens)} tok`] : []),
+        ...(agg.tokens > 0
+          ? [`${formatTokens(agg.inputTokens)} in · ${formatTokens(agg.outputTokens)} out`]
+          : []),
       ];
-      const usage =
-        agg.tokens > 0
-          ? `tokens: ${formatUsageTail({ inputTokens: agg.inputTokens, outputTokens: agg.outputTokens })}`
-          : "";
       const last = stripMd(agg.last.text).trim();
-      const detail = [usage, last.length > STEP_CAP ? `latest: ${truncate(last, DETAIL_CAP)}` : ""]
-        .filter(Boolean)
-        .join("\n\n");
       return {
         person: personFor(speaker, tones),
-        text: truncate(last, STEP_CAP) || "(no detail)",
-        trailing: meta.join(" · "),
-        ...(detail ? { detail } : {}),
+        text: `${agg.turns} ${agg.turns === 1 ? "turn" : "turns"} · ${rounds.length === 1 ? "round" : "rounds"} ${rounds.join(", ")}`,
+        ...(meta.length > 0 ? { trailing: meta.join(" · ") } : {}),
+        ...(last ? { detail: `latest: ${truncate(last, DETAIL_CAP)}` } : {}),
       };
     }),
   };
@@ -1038,6 +1064,7 @@ function ledgerRow(e: CoordinatorEntry, tones?: IdentityTones): RowItem {
   const trailing = transcriptTrailing(e);
   return {
     person: e.kind === "verify" ? gatePerson(e) : personFor(e.speaker, tones),
+    ...(e.kind === "verify" ? { chip: gateChip(e) } : {}),
     text: stripMd(truncate(firstLine(text), LEDGER_ROW_CAP)) || "(no detail)",
     ...(trailing ? { trailing } : {}),
     ...entryDetail(e),
@@ -1114,6 +1141,15 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 
 // "Nov 3, 14:10" from an ISO timestamp, read off the string itself (no timezone
 // conversion) so the board matches the ledger it was rendered from.
+function runSpan(from: string, to: string): string | undefined {
+  const ms = Date.parse(to) - Date.parse(from);
+  if (!Number.isFinite(ms) || ms < 0) return undefined;
+  const min = Math.round(ms / 60_000);
+  if (min < 1) return "under a minute";
+  if (min < 60) return `${min} min`;
+  return `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
 export function runWhen(iso: string): string | undefined {
   const m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}:\d{2})/.exec(iso);
   const month = m ? MONTHS[Number(m[1]) - 1] : undefined;

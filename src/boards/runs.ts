@@ -124,6 +124,7 @@ function runActions(r: RunSummary, scopeId?: string): CardAction[] {
       glyph: "↶",
       tone: "warn",
       destructive: true,
+      inline: true,
       payload: { run: r.id, confirm: false, scopeId: scopeId ?? r.scopeId ?? "default" },
       confirm: {
         title: "Preview rollback manifest?",

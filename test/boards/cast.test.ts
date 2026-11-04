@@ -301,7 +301,7 @@ describe("buildCastBoard picking", () => {
     });
   });
 
-  test("a dropped seat loses its ring and hue but keeps its capability and purpose", () => {
+  test("a dropped seat loses its ring and hue but keeps its role, capability and purpose", () => {
     const board = buildCastBoard(
       proposal({
         members: [
@@ -321,7 +321,8 @@ describe("buildCastBoard picking", () => {
     const atlas = benchCards(board)[0];
     expect(atlas?.selected).toBe(false);
     expect(atlas?.dot).toBe("neutral");
-    expect(atlas?.pill).toEqual({ label: "dropped", tone: "warn" });
+    expect(atlas?.pill).toEqual({ label: "Engineer" });
+    expect(atlas?.fields?.at(-1)).toEqual({ value: "dropped · click to restore", tone: "warn" });
     // The reason to pick it back has to survive dropping it.
     expect(atlas?.reason?.text).toBe("Build.");
     expect(atlas?.fields?.[0]?.value).toBe("✎ edits code");
@@ -425,20 +426,19 @@ describe("buildCastBoard card verbs", () => {
     expect(a?.fields?.[0]?.modelPicker?.providerDefault).toBe("copilot");
   });
 
-  test("the charter verb is an icon with a hover hint, carrying the stale-click guard", () => {
+  test("the charter verb is labelled, carrying the stale-click guard", () => {
     const a = cardAction(buildCastBoard(proposal()), "Atlas", VIEW_CHARTER_ACTION);
-    expect(a?.label).toBe("▤");
-    expect(a?.hint).toBe("Charter");
+    expect(a?.label).toBe("Charter");
+    expect(a?.glyph).toBe("▤");
     expect(a?.payload).toEqual({ slug: "atlas", castAt: "2026-06-27T00:00:00.000Z" });
   });
 
-  test("both card verbs ride every seat, dropped included", () => {
+  test("a picked seat carries Model and Charter; a dropped seat keeps only Charter", () => {
     const p = proposal();
     p.members[1]!.picked = false;
-    const board = buildCastBoard(p);
-    for (const card of benchCards(board)) {
-      expect(card.actions?.map((a) => a.type)).toEqual([CAST_MODEL_ACTION, VIEW_CHARTER_ACTION]);
-    }
+    const [picked, dropped] = benchCards(buildCastBoard(p));
+    expect(picked?.actions?.map((a) => a.type)).toEqual([CAST_MODEL_ACTION, VIEW_CHARTER_ACTION]);
+    expect(dropped?.actions?.map((a) => a.type)).toEqual([VIEW_CHARTER_ACTION]);
   });
 });
 

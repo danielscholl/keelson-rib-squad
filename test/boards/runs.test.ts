@@ -64,7 +64,7 @@ describe("buildRunsBoard", () => {
     expect(doneCards.items[0]?.actions?.some((a) => a.type === "stop-coordinate")).toBe(false);
   });
 
-  test("rollback appears only on aborted and failed cards, in the overflow, with preview payload", () => {
+  test("rollback appears only on aborted and failed cards, inline, with preview payload", () => {
     const board = buildRunsBoard(
       [
         run({ id: "done", task: "done", status: "done" }),
@@ -89,7 +89,7 @@ describe("buildRunsBoard", () => {
     for (const id of ["aborted", "verify", "quality"]) {
       const rollback = byTitle.get(id)?.actions?.find((a) => a.type === ROLLBACK_RUN_ACTION);
       expect(rollback?.destructive).toBe(true);
-      expect(rollback?.inline).toBeUndefined();
+      expect(rollback?.inline).toBe(true);
       expect(rollback?.payload).toEqual({ run: id, confirm: false, scopeId: "beta" });
       expect(rollback?.confirm?.confirmLabel).toBe("Preview rollback");
       expect(rollback?.confirm?.body).toContain("C/M/D manifest");
@@ -126,9 +126,9 @@ describe("buildRunDetailBoard", () => {
   test("renders the archived run's sections without the task composer", () => {
     const board = buildRunDetailBoard(ledger(), "r1");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    // The drawer is titled by its task and dated by when the run started.
+    // The drawer is titled by its task; the chip says how long the run took.
     expect(board.title).toBe("ship it");
-    expect(board.header?.chip).toBe("Jul 1, 00:00");
+    expect(board.header?.chip).toBe("30 min");
     expect(board.header?.status?.label).toBe("done");
     // Stats lead, then the report opener; exactly one stats strip.
     expect(board.sections[0]?.kind).toBe("stats");
@@ -160,12 +160,52 @@ describe("buildRunDetailBoard", () => {
     expect(titles).toContain("Goal");
   });
 
+  test("a settled run reports its round count and drops counters that stayed at zero", () => {
+    const board = buildRunDetailBoard(ledger({ roundBudget: 12 }), "r1");
+    const stats = board.sections[0];
+    if (stats?.kind !== "stats") throw new Error("no stats");
+    expect(stats.items.map((i) => i.label)).toEqual(["Rounds", "Findings"]);
+    expect(stats.items[0]?.value).toBe(3);
+    const replanned = buildRunDetailBoard(ledger({ resetCount: 2 }), "r1").sections[0];
+    if (replanned?.kind !== "stats") throw new Error("no stats");
+    expect(replanned.items.map((i) => i.label)).toContain("Re-plans");
+  });
+
+  test("puts the tokens chart after the verdict, ahead of Minds and the Ledger", () => {
+    const board = buildRunDetailBoard(
+      ledger({
+        transcript: [
+          {
+            round: 1,
+            kind: "code",
+            speaker: "atlas",
+            text: "a",
+            usage: { inputTokens: 9, outputTokens: 1 },
+          },
+          {
+            round: 2,
+            kind: "code",
+            speaker: "atlas",
+            text: "b",
+            usage: { inputTokens: 9, outputTokens: 1 },
+          },
+          { round: 3, kind: "verify", text: "verification passed", verdict: "pass" },
+        ],
+      }),
+      "r1",
+    );
+    const kinds = board.sections.map((s) => ("title" in s && s.title ? s.title : s.kind));
+    const chartAt = kinds.indexOf("Tokens per round");
+    expect(chartAt).toBeGreaterThan(kinds.indexOf("Gate history"));
+    expect(chartAt).toBe(kinds.indexOf("Minds") - 1);
+  });
+
   test("falls back to the raw id when createdAt isn't a timestamp", () => {
     const board = buildRunDetailBoard(ledger({ createdAt: "garbage" }), "r1");
     expect(board.header?.chip).toBe("r1");
   });
 
-  test("renders a two-series tokens chart aggregated by numeric round", () => {
+  test("renders one tokens series aggregated by numeric round", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -203,20 +243,13 @@ describe("buildRunDetailBoard", () => {
     if (chart?.kind !== "chart") throw new Error("no chart section");
     expect(chart.title).toBe("Tokens per round");
     expect(chart.mark).toBe("bar");
-    expect(chart.yLabel).toBe("tokens");
+    expect(chart.yLabel).toBeUndefined();
     expect(chart.series).toEqual([
       {
-        label: "input",
+        label: "tokens",
         points: [
-          { x: 1, y: 100 },
-          { x: 2, y: 75 },
-        ],
-      },
-      {
-        label: "output",
-        points: [
-          { x: 1, y: 20 },
-          { x: 2, y: 15 },
+          { x: 1, y: 120 },
+          { x: 2, y: 90 },
         ],
       },
     ]);
@@ -244,7 +277,7 @@ describe("buildRunDetailBoard", () => {
     expect(board.sections.some((s) => s.kind === "chart")).toBe(false);
   });
 
-  test("counts missing round usage as zero without NaN points", () => {
+  test("skips rounds that spent no tokens instead of plotting an empty slot", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -271,15 +304,10 @@ describe("buildRunDetailBoard", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     const chart = board.sections.find((s) => s.kind === "chart");
     if (chart?.kind !== "chart") throw new Error("no chart section");
+    expect(chart.series).toHaveLength(1);
     expect(chart.series[0]?.points).toEqual([
-      { x: 1, y: 100 },
-      { x: 2, y: 0 },
-      { x: 3, y: 50 },
-    ]);
-    expect(chart.series[1]?.points).toEqual([
-      { x: 1, y: 20 },
-      { x: 2, y: 0 },
-      { x: 3, y: 10 },
+      { x: 1, y: 120 },
+      { x: 3, y: 60 },
     ]);
     for (const series of chart.series) {
       for (const point of series.points) {

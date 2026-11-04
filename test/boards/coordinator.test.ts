@@ -367,7 +367,7 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(plan.every((r) => r.glyph === undefined)).toBe(true);
     const findings = rowsTitled(board, "Findings");
     expect(findings.some((i) => i.text.includes("uses bun"))).toBe(true);
-    expect(findings.every((r) => r.glyph === undefined)).toBe(true);
+    expect(findings.every((r) => r.glyph === "brand")).toBe(true);
     expect(
       rowsTitled(board, "Abandoned — do not resume").some((i) => i.text.includes("atlas: do X")),
     ).toBe(true);
@@ -1016,7 +1016,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     for (const status of noRollbackStatuses) expect(hasRollback(status)).toBe(false);
   });
 
-  test("Minds aggregates one row per member: face, provider + turn/token trailing, last act", () => {
+  test("Minds summarizes each member: face, turns and rounds, provider + token split, latest act disclosed", () => {
     const board = buildCoordinatorBoard(
       ledger({
         transcript: [
@@ -1032,6 +1032,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
             speaker: "atlas",
             text: "fixed the test",
             provider: "claude",
+            round: 2,
             usage: { inputTokens: 3000, outputTokens: 500 },
           }),
           entry({ kind: "dispatch", speaker: "vera", text: "reviewed", provider: "copilot" }),
@@ -1042,12 +1043,12 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     const minds = rowsTitled(board, "Minds");
     const atlas = minds.find((r) => r.person?.name === "atlas");
     expect(atlas?.person?.face).toBe("A");
-    expect(atlas?.trailing).toBe("claude · 2 turns · 9k tok");
-    expect(atlas?.detail).toContain("8k in / 1k out");
-    expect(atlas?.text).toContain("fixed the test");
+    expect(atlas?.text).toBe("2 turns · rounds 0, 2");
+    expect(atlas?.trailing).toBe("claude · 8k in · 1k out");
+    expect(atlas?.detail).toBe("latest: fixed the test");
     const vera = minds.find((r) => r.person?.name === "vera");
-    expect(vera?.trailing).toBe("copilot · 1 turn");
-    expect(vera?.detail).toBeUndefined();
+    expect(vera?.text).toBe("1 turn · round 0");
+    expect(vera?.trailing).toBe("copilot");
   });
 
   test("verify entries never become Minds lanes (the gate is the harness, not a member)", () => {

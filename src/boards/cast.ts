@@ -154,7 +154,9 @@ function benchSection(proposal: CastProposalRecord, showCast: boolean): Section 
   const anyPicked = proposal.members.some(isPicked);
   return {
     kind: "cards",
-    title: anyPicked ? "The bench — click a seat to drop it" : "Click a seat to pick it back",
+    title: anyPicked
+      ? "The bench — click a seat to drop or restore it"
+      : "Click a seat to pick it back",
     grid: true,
     columns: 3,
     items: proposal.members.map((m) => cardFor(m, proposal.createdAt, showCast)),
@@ -175,12 +177,11 @@ function cardFor(member: Member, castAt: string, showCast: boolean) {
   const cast = showCast ? castLabel(member) : undefined;
   if (cast) fields.push({ label: "cast", value: cast });
   fields.push(capabilityField(member));
+  if (!picked) fields.push({ value: "dropped · click to restore", tone: "warn" as CanvasTone });
   return {
     title: name,
     dot: picked ? identityToneForSlot(member.identitySlot) : ("neutral" as CanvasTone),
-    pill: picked
-      ? { label: member.role.trim() || "Member" }
-      : { label: "dropped", tone: "warn" as CanvasTone },
+    pill: { label: member.role.trim() || "Member" },
     fields,
     reason: { text: reasonFor(member) },
     selected: picked,
@@ -188,7 +189,7 @@ function cardFor(member: Member, castAt: string, showCast: boolean) {
       type: CAST_PICK_ACTION,
       payload: { slug: member.slug, picked: !picked, castAt },
     },
-    actions: cardActions(member, castAt),
+    actions: picked ? cardActions(member, castAt) : [charterAction(member, castAt)],
   };
 }
 
@@ -229,13 +230,17 @@ function cardActions(member: Member, castAt: string) {
         },
       ],
     },
-    {
-      type: VIEW_CHARTER_ACTION,
-      label: "▤",
-      hint: "Charter",
-      payload: { slug: member.slug, castAt },
-    },
+    charterAction(member, castAt),
   ];
+}
+
+function charterAction(member: Member, castAt: string) {
+  return {
+    type: VIEW_CHARTER_ACTION,
+    label: "Charter",
+    glyph: "▤",
+    payload: { slug: member.slug, castAt },
+  };
 }
 
 // validateProviderPin admits a provider with no model (that vendor's own default), and
