@@ -364,9 +364,9 @@ function activeSections(
   if (ledger.failedSteps?.length) sections.push(abandonedSection(ledger.failedSteps));
   if (ledger.teamGaps?.length) sections.push(teamGapsSection(ledger.teamGaps));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
+  pushIf(sections, gateHistorySection(ledgerEntries(ledger), ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones, true));
+  sections.push(...ledgerSections(ledgerEntries(ledger), ledgerRounds, tones, true));
   return sections;
 }
 
@@ -483,9 +483,9 @@ function doneSections(
   if (ledger.summary?.trim()) sections.push(standupSection(ledger.summary));
   if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
+  pushIf(sections, gateHistorySection(ledgerEntries(ledger), ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(...ledgerSections(ledgerEntries(ledger), ledgerRounds, tones));
   return sections;
 }
 
@@ -503,9 +503,9 @@ function maxRoundsSections(
   ];
   if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
+  pushIf(sections, gateHistorySection(ledgerEntries(ledger), ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(...ledgerSections(ledgerEntries(ledger), ledgerRounds, tones));
   return sections;
 }
 
@@ -520,9 +520,9 @@ function maxTokensSections(
   ];
   if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
+  pushIf(sections, gateHistorySection(ledgerEntries(ledger), ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(...ledgerSections(ledgerEntries(ledger), ledgerRounds, tones));
   return sections;
 }
 
@@ -540,9 +540,9 @@ function failedSections(
       "The done-gate came back red — the artifact does not pass; there is no accept path. Inspect the failures and re-dispatch.",
     ),
   );
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
+  pushIf(sections, gateHistorySection(ledgerEntries(ledger), ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(...ledgerSections(ledgerEntries(ledger), ledgerRounds, tones));
   return sections;
 }
 
@@ -567,7 +567,7 @@ function gaveUpSections(
   }
 
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(...ledgerSections(ledgerEntries(ledger), ledgerRounds, tones));
   return sections;
 }
 
@@ -582,7 +582,7 @@ function abortedSections(
     advisorySection("neutral", "Stopped by the operator. The transcript is intact."),
   ];
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(...ledgerSections(ledgerEntries(ledger), ledgerRounds, tones));
   return sections;
 }
 
@@ -614,7 +614,7 @@ function pulseSection(ledger: CoordinatorLedger): Section {
         value: findingsCount,
         tone: "neutral" as CanvasTone,
       },
-      ...(settled && ledger.stallCount === 0
+      ...(ledger.stallCount === 0
         ? []
         : [
             {
@@ -698,7 +698,7 @@ function roundRailSection(ledger: CoordinatorLedger, tones?: IdentityTones): Sec
   const cells: { label: string; badge: RoundBadge }[] = [];
   for (let r = first; r <= last; r++) {
     if (ledger.inFlight && ledger.inFlight.round === r && ledger.status === "active") {
-      cells.push({ label: `R${r}`, badge: { text: "▶ now", tone: "info" } });
+      cells.push({ label: `R${r}`, badge: { text: inFlightBadge(ledger.inFlight), tone: "info" } });
       continue;
     }
     const badge = badges.get(r);
@@ -706,6 +706,19 @@ function roundRailSection(ledger: CoordinatorLedger, tones?: IdentityTones): Sec
   }
   if (cells.length === 0) return undefined;
   return { kind: "grid", title: "Rounds", cells };
+}
+
+function inFlightBadge(turn: InFlightTurn): string {
+  const event =
+    turn.action === "coding"
+      ? "code"
+      : turn.action === "authoring a workflow"
+        ? "workflow"
+        : turn.action === "planning"
+          ? "plan"
+          : "team";
+  const who = turn.speaker?.trim();
+  return `▶ ${event}${who ? ` · ${who}` : ""}`;
 }
 
 type RoundBadge = { text: string; tone?: CanvasTone };
@@ -750,7 +763,7 @@ function roundBadge(
   const mark = gateRed ? " ✕" : gates.includes("ok") ? " ✓" : "";
   const work = workOf(entries);
   const replan = entries.some((e) => e.kind === "replan");
-  const who = work ? work.speaker?.trim() : gates.length > 0 ? lastWorker : undefined;
+  const who = work ? work.speaker?.trim() : gates.length > 0 ? lastWorker : "coordinator";
   const event = replan
     ? "re-plan"
     : work
@@ -1062,6 +1075,13 @@ function verificationSection(v: VerificationRecord): Section {
 // older rounds compress to a one-line stub instead of silently vanishing — the current
 // board's worst honesty gap (r11 hid 17 of its 29 entries). The run-detail board
 // passes Infinity so the archive drill-down really is the full record.
+// The Verification section already reports its round's gate, so the Ledger leaves it out.
+function ledgerEntries(ledger: CoordinatorLedger): readonly CoordinatorEntry[] {
+  const at = ledger.verification?.atRound;
+  if (at === undefined) return ledger.transcript;
+  return ledger.transcript.filter((e) => !(e.kind === "verify" && e.round === at));
+}
+
 function ledgerSections(
   transcript: readonly CoordinatorEntry[],
   roundsShown = LEDGER_ROUNDS_SHOWN,
@@ -1104,11 +1124,23 @@ function ledgerSections(
           glyph: "neutral" as CanvasTone,
           text: `${span} · ${olderEntries} earlier ${olderEntries === 1 ? "entry" : "entries"}`,
           ...(live ? {} : { trailing: "full run in Runs" }),
+          detail: truncate(
+            older
+              .flatMap((r) => (byRound.get(r) ?? []).map((e) => `R${r} · ${olderHeadline(e)}`))
+              .join("\n"),
+            DETAIL_CAP,
+          ),
         },
       ],
     });
   }
   return sections;
+}
+
+function olderHeadline(e: CoordinatorEntry): string {
+  if (e.kind === "verify") return gateHeadline(e);
+  const who = e.speaker?.trim() || "coordinator";
+  return `${who}: ${stripMd(truncate(firstLine(normalizeSpeakerPrefixes(e.text)), LEDGER_ROW_CAP))}`;
 }
 
 function ledgerRow(e: CoordinatorEntry, tones?: IdentityTones): RowItem {

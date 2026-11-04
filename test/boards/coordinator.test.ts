@@ -521,8 +521,8 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(byLabel.get("R1")?.text).toBe("gate · atlas ✕");
     expect(byLabel.get("R1")?.tone).toBe("error");
     expect(byLabel.get("R2")?.tone).toBe("caution");
-    expect(byLabel.get("R2")?.text).toBe("re-plan");
-    expect(byLabel.get("R3")?.text).toContain("now");
+    expect(byLabel.get("R2")?.text).toBe("re-plan · coordinator");
+    expect(byLabel.get("R3")?.text).toBe("▶ code · atlas");
     // Without a tones map the member cell folds to neutral — never a hash.
     const bare = buildCoordinatorBoard(
       ledger({
@@ -563,6 +563,43 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(row?.detail).toContain("✕ Bash bun test");
   });
 
+  test("the Ledger leaves out the gate the Verification section already reports", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "done",
+        round: 2,
+        transcript: [
+          entry({ round: 1, kind: "code", speaker: "atlas", text: "edited" }),
+          entry({
+            round: 2,
+            kind: "verify",
+            text: "verification passed: bun test",
+            verdict: "pass",
+          }),
+        ],
+        verification: {
+          atRound: 2,
+          passed: true,
+          command: "bun test",
+          exitCode: 0,
+          summary: "",
+        },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const titles = board.sections.map((s) => s.title);
+    expect(titles).toContain("Verification · round 2");
+    expect(titles).toContain("Ledger · round 1");
+    expect(titles.some((t) => t?.includes("round 2") && t.startsWith("Ledger"))).toBe(false);
+  });
+
+  test("an active run shows Stalls only once one happens", () => {
+    const quiet = buildCoordinatorBoard(ledger({ round: 2 }));
+    expect(statsItems(quiet).some((i) => i.label.startsWith("Stall"))).toBe(false);
+    const stuck = buildCoordinatorBoard(ledger({ round: 2, stallCount: 1 }));
+    expect(statsItems(stuck).find((i) => i.label === "Stall")?.value).toBe(1);
+  });
+
   test("older rounds compress to a stub naming the span instead of vanishing", () => {
     const transcript = Array.from({ length: 6 }, (_, r) =>
       entry({ round: r, kind: "coordinator", text: `round ${r} thinking` }),
@@ -574,8 +611,11 @@ describe("buildCoordinatorBoard active layout", () => {
       .flatMap((s) => (s.kind === "rows" ? s.items : []))
       .find((r) => r.text.includes("earlier"));
     expect(stub?.text).toBe("Rounds 0–2 · 3 earlier entries");
-    // A live run isn't in Runs yet, so the stub doesn't point there.
+    // A live run isn't in Runs yet, so the stub doesn't point there; its detail lists them.
     expect(stub?.trailing).toBeUndefined();
+    expect(stub?.detail).toBe(
+      "R2 · coordinator: round 2 thinking\nR1 · coordinator: round 1 thinking\nR0 · coordinator: round 0 thinking",
+    );
     const settled = buildCoordinatorBoard(ledger({ status: "done", round: 6, transcript }));
     const settledStub = settled.sections
       .flatMap((s) => (s.kind === "rows" ? s.items : []))
