@@ -122,8 +122,6 @@ function runActions(r: RunSummary, scopeId?: string): CardAction[] {
       type: ROLLBACK_RUN_ACTION,
       label: "Rollback",
       glyph: "↶",
-      tone: "warn",
-      destructive: true,
       inline: true,
       payload: { run: r.id, confirm: false, scopeId: scopeId ?? r.scopeId ?? "default" },
       confirm: {

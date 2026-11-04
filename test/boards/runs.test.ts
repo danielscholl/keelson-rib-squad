@@ -88,7 +88,8 @@ describe("buildRunsBoard", () => {
 
     for (const id of ["aborted", "verify", "quality"]) {
       const rollback = byTitle.get(id)?.actions?.find((a) => a.type === ROLLBACK_RUN_ACTION);
-      expect(rollback?.destructive).toBe(true);
+      // The card's Rollback only opens a preview, so it isn't styled as the destructive step.
+      expect(rollback?.destructive).toBeUndefined();
       expect(rollback?.inline).toBe(true);
       expect(rollback?.payload).toEqual({ run: id, confirm: false, scopeId: "beta" });
       expect(rollback?.confirm?.confirmLabel).toBe("Preview rollback");
@@ -276,7 +277,7 @@ describe("buildRunDetailBoard", () => {
     expect(board.sections.some((s) => s.kind === "chart")).toBe(false);
   });
 
-  test("skips rounds that spent no tokens instead of plotting an empty slot", () => {
+  test("plots every round, a round that spent no tokens at zero", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -306,6 +307,7 @@ describe("buildRunDetailBoard", () => {
     expect(chart.series).toHaveLength(1);
     expect(chart.series[0]?.points).toEqual([
       { x: "R1", y: 120 },
+      { x: "R2", y: 0 },
       { x: "R3", y: 60 },
     ]);
     for (const series of chart.series) {

@@ -492,7 +492,8 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(r2[0]?.person).toEqual({ name: "atlas", tone: "neutral", face: "A" });
     expect(r2[0]?.trailing).toBe("10k tok · +30 −4");
     const r3 = rowsTitled(board, titles[0] ?? "");
-    expect(r3[0]?.person).toEqual({ name: "gate", face: "✓" });
+    expect(r3[0]?.person).toBeUndefined();
+    expect(r3[0]?.glyph).toBe("ok");
     const r1 = rowsTitled(board, titles[2] ?? "");
     expect(r1[0]?.person).toEqual({ name: "coordinator", tone: "brand", face: "◆" });
   });
@@ -516,7 +517,7 @@ describe("buildCoordinatorBoard active layout", () => {
     if (rail?.kind !== "grid") throw new Error("no round rail");
     const byLabel = new Map(rail.cells.map((c) => [c.label, c.badge]));
     expect(byLabel.get("R0")?.tone).toBe("id-teal");
-    expect(byLabel.get("R0")?.text).toContain("atlas");
+    expect(byLabel.get("R0")?.text).toBe("code");
     expect(byLabel.get("R1")?.tone).toBe("error");
     expect(byLabel.get("R2")?.tone).toBe("caution");
     expect(byLabel.get("R3")?.text).toContain("now");
@@ -569,15 +570,15 @@ describe("buildCoordinatorBoard active layout", () => {
     const stub = board.sections
       .filter((s) => s.kind === "rows")
       .flatMap((s) => (s.kind === "rows" ? s.items : []))
-      .find((r) => r.trailing?.includes("earlier"));
-    expect(stub?.text).toBe("Rounds 0–2");
+      .find((r) => r.text.includes("earlier"));
+    expect(stub?.text).toBe("Rounds 0–2 · 3 earlier entries");
     // A live run isn't in Runs yet, so the stub doesn't point there.
-    expect(stub?.trailing).toBe("3 earlier entries");
+    expect(stub?.trailing).toBeUndefined();
     const settled = buildCoordinatorBoard(ledger({ status: "done", round: 6, transcript }));
     const settledStub = settled.sections
       .flatMap((s) => (s.kind === "rows" ? s.items : []))
-      .find((r) => r.trailing?.includes("earlier"));
-    expect(settledStub?.trailing).toBe("3 earlier entries · full run in Runs");
+      .find((r) => r.text.includes("earlier"));
+    expect(settledStub?.trailing).toBe("full run in Runs");
   });
 
   test("a gate row shows its verdict, not the command chain it ran", () => {
@@ -603,11 +604,9 @@ describe("buildCoordinatorBoard active layout", () => {
       "verification failed · exit 2",
       "verification passed",
     ]);
-    const ledgerGates = ledgerRowsOf(board).filter((r) => r.person?.name === "gate");
-    expect(ledgerGates.map((r) => JSON.stringify(r.chip))).toEqual([
-      JSON.stringify({ label: "green", tone: "ok" }),
-      JSON.stringify({ label: "red", tone: "error" }),
-    ]);
+    const ledgerGates = ledgerRowsOf(board).filter((r) => r.text.startsWith("verification"));
+    expect(ledgerGates.map((r) => r.glyph)).toEqual(["ok", "error"]);
+    expect(ledgerGates.every((r) => r.person === undefined && r.chip === undefined)).toBe(true);
     expect(ledgerGates[1]?.detail).toContain("src/a.ts: bad type");
   });
 
@@ -1062,7 +1061,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(board.header?.status).toEqual({ label: "aborted", tone: "neutral" });
     expect(rowsTitled(board, "Advisory")[0]?.glyph).toBe("neutral");
     expect(
-      rowsTitled(board, "Ledger · round 0 · team").some((i) => i.text.includes("partially done")),
+      rowsTitled(board, "Ledger · round 0").some((i) => i.text.includes("partially done")),
     ).toBe(true);
   });
 

@@ -301,7 +301,7 @@ describe("buildCastBoard picking", () => {
     });
   });
 
-  test("a dropped seat loses its ring and hue but keeps its role, capability and purpose", () => {
+  test("a dropped seat loses its ring and hue, wears a dropped pill, keeps capability and purpose", () => {
     const board = buildCastBoard(
       proposal({
         members: [
@@ -321,11 +321,11 @@ describe("buildCastBoard picking", () => {
     const atlas = benchCards(board)[0];
     expect(atlas?.selected).toBe(false);
     expect(atlas?.dot).toBe("neutral");
-    expect(atlas?.pill).toEqual({ label: "Engineer" });
-    expect(atlas?.fields?.at(-1)).toEqual({ value: "dropped · click to restore", tone: "warn" });
+    expect(atlas?.pill).toEqual({ label: "dropped", tone: "warn" });
+    expect(atlas?.fields?.[0]).toEqual({ value: "Engineer" });
     // The reason to pick it back has to survive dropping it.
     expect(atlas?.reason?.text).toBe("Build.");
-    expect(atlas?.fields?.[0]?.value).toBe("✎ edits code");
+    expect(atlas?.fields?.at(-1)?.value).toBe("✎ edits code");
     // Picking it back declares picked: true.
     expect(atlas?.action?.payload).toEqual({
       slug: "atlas",

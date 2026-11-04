@@ -177,11 +177,13 @@ function cardFor(member: Member, castAt: string, showCast: boolean) {
   const cast = showCast ? castLabel(member) : undefined;
   if (cast) fields.push({ label: "cast", value: cast });
   fields.push(capabilityField(member));
-  if (!picked) fields.push({ value: "dropped · click to restore", tone: "warn" as CanvasTone });
+  if (!picked) fields.unshift({ value: member.role.trim() || "Member" });
   return {
     title: name,
     dot: picked ? identityToneForSlot(member.identitySlot) : ("neutral" as CanvasTone),
-    pill: { label: member.role.trim() || "Member" },
+    pill: picked
+      ? { label: member.role.trim() || "Member" }
+      : { label: "dropped", tone: "warn" as CanvasTone },
     fields,
     reason: { text: reasonFor(member) },
     selected: picked,

@@ -65,7 +65,7 @@ export function buildRosterBoard(
 
   if (members.length === 0 && !pending) {
     if (proposal) {
-      sections.push(awaitingSection(proposal.members.length));
+      sections.push(awaitingSection());
     } else {
       sections.push(castSection(project?.name));
       sections.push(authorSection());
@@ -85,7 +85,7 @@ export function buildRosterBoard(
     });
     if (!pending) {
       if (proposal) {
-        sections.push(awaitingSection(proposal.members.length));
+        sections.push(awaitingSection());
       } else {
         sections.push(hireSection());
       }
@@ -306,13 +306,13 @@ function nextFreeSlot(members: readonly Member[]): number {
 // The hand-off row while a proposal awaits review: the Proposed-squad panel below
 // carries Approve/Discard, so the roster says where the moment lives and offers
 // nothing that could fork it.
-function awaitingSection(count: number): Section {
+function awaitingSection(): Section {
   return {
     kind: "rows",
     items: [
       {
         glyph: "brand",
-        text: `A proposed squad of ${count} member${count === 1 ? "" : "s"} awaits review below — Approve & scaffold to seat it, or Discard to cast again.`,
+        text: "A proposed squad awaits review below. Approve & scaffold to seat it, or Discard to cast again.",
       },
     ],
   };

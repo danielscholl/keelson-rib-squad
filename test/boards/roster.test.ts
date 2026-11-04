@@ -644,7 +644,7 @@ describe("buildRosterBoard proposal awaiting review", () => {
     expect(board.sections.map((s) => s.kind)).toEqual(["rows"]);
     expect(actionItems(board)).toEqual([]);
     const row = board.sections[0]?.kind === "rows" ? board.sections[0].items[0] : undefined;
-    expect(row?.text).toContain("proposed squad of 5 members awaits review");
+    expect(row?.text).toContain("proposed squad awaits review below");
   });
 
   test("a populated roster with a pending proposal withholds add/manage for the hand-off row", () => {
@@ -658,7 +658,7 @@ describe("buildRosterBoard proposal awaiting review", () => {
     expect(actionItems(board)).toEqual([]);
     const rows = board.sections[1];
     const row = rows?.kind === "rows" ? rows.items[0] : undefined;
-    expect(row?.text).toContain("proposed squad of 1 member awaits");
+    expect(row?.text).toContain("proposed squad awaits review below");
   });
 
   test("a genesis in flight outranks the proposal — the boot card carries the moment", () => {
