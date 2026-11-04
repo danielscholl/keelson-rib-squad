@@ -403,7 +403,7 @@ describe("buildCoordinatorBoard active layout", () => {
     );
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(statsItems(board).find((i) => i.label === "Findings")?.value).toBe(1);
+    expect(statsItems(board).find((i) => i.label === "Finding")?.value).toBe(1);
     const findings = rowsTitled(board, "Findings");
     expect(findings).toHaveLength(1);
     expect(findings[0]?.text).toBe("atlas: uses bun");
@@ -518,9 +518,10 @@ describe("buildCoordinatorBoard active layout", () => {
     const byLabel = new Map(rail.cells.map((c) => [c.label, c.badge]));
     expect(byLabel.get("R0")?.tone).toBe("id-teal");
     expect(byLabel.get("R0")?.text).toBe("code · atlas");
-    expect(byLabel.get("R1")?.text).toBe("gate ✕");
+    expect(byLabel.get("R1")?.text).toBe("gate · atlas ✕");
     expect(byLabel.get("R1")?.tone).toBe("error");
     expect(byLabel.get("R2")?.tone).toBe("caution");
+    expect(byLabel.get("R2")?.text).toBe("re-plan");
     expect(byLabel.get("R3")?.text).toContain("now");
     // Without a tones map the member cell folds to neutral — never a hash.
     const bare = buildCoordinatorBoard(
@@ -877,7 +878,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     const verify = rowsTitled(board, "Verification");
     expect(verify[0]?.icon).toBeUndefined();
     expect(verify[0]?.glyph).toBe("ok");
-    expect(verify[0]?.trailing).toBeUndefined();
+    expect(verify[0]?.trailing).toBe("passed");
     expect(rowsTitled(board, "Minds").length).toBeGreaterThan(0);
   });
 

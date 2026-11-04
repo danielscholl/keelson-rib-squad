@@ -245,8 +245,8 @@ describe("buildRunDetailBoard", () => {
     if (section?.kind !== "bars") throw new Error("no bars section");
     expect(section.title).toBe("Tokens per round");
     expect(section.items).toEqual([
-      { label: "Round 1", value: 120, total: 120, trailing: "120 tok" },
-      { label: "Round 2", value: 90, total: 120, trailing: "90 tok" },
+      { label: "R1 · code · atlas", value: 120, total: 120, tone: "brand", trailing: "120 tok" },
+      { label: "R2 · code · nova", value: 90, total: 120, tone: "brand", trailing: "90 tok" },
     ]);
   });
 
@@ -271,7 +271,7 @@ describe("buildRunDetailBoard", () => {
     expect(board.sections.some((s) => s.kind === "bars")).toBe(false);
   });
 
-  test("lists every round, one that spent no tokens at zero", () => {
+  test("lists every round, one that logged no usage at zero", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -299,9 +299,9 @@ describe("buildRunDetailBoard", () => {
     const section = board.sections.find((s) => s.kind === "bars");
     if (section?.kind !== "bars") throw new Error("no bars section");
     expect(section.items.map((i) => [i.label, i.value, i.trailing])).toEqual([
-      ["Round 1", 120, "120 tok"],
-      ["Round 2", 0, "0 tok"],
-      ["Round 3", 60, "60 tok"],
+      ["R1 · code · atlas", 120, "120 tok"],
+      ["R2 · team · nova", 0, "no usage"],
+      ["R3 · workflow · atlas", 60, "60 tok"],
     ]);
   });
 

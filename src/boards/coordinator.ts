@@ -193,7 +193,10 @@ export function buildCoordinatorBoard(
   return {
     view: "board",
     title: "Run loop",
-    header: { status: statusPill(ledger.status), chip: `round ${ledger.round}` },
+    header: {
+      status: statusPill(ledger.status),
+      ...(ledger.status === "active" ? { chip: `round ${ledger.round}` } : {}),
+    },
     sections,
   };
 }
@@ -231,7 +234,7 @@ export function buildRunDetailBoard(
     (s) => !(titled && s.kind === "rows" && s.title === "Goal"),
   );
   const detailBody: Section[] = body.filter((s) => s.kind !== "stats");
-  const tokens = tokensPerRoundSection(ledger.transcript);
+  const tokens = tokensPerRoundSection(ledger.transcript, tones);
   const ledgerAt = detailBody.findIndex((s) => s.kind === "rows" && s.title?.startsWith("Ledger"));
   if (tokens) detailBody.splice(ledgerAt < 0 ? detailBody.length : ledgerAt, 0, tokens);
   const sections: Section[] = [pulseSection(ledger), runReportSection(id), ...detailBody];
@@ -606,19 +609,29 @@ function pulseSection(ledger: CoordinatorLedger): Section {
             tone: "neutral" as CanvasTone,
           }
         : { label: "Round", value: roundStatValue(ledger), tone: roundStatTone(ledger) },
-      { label: "Findings", value: findingsCount, tone: "neutral" as CanvasTone },
+      {
+        label: findingsCount === 1 ? "Finding" : "Findings",
+        value: findingsCount,
+        tone: "neutral" as CanvasTone,
+      },
       ...(settled && ledger.stallCount === 0
         ? []
         : [
             {
-              label: "Stalls",
+              label: ledger.stallCount === 1 ? "Stall" : "Stalls",
               value: ledger.stallCount,
               tone: toned(ledger.stallCount, "caution"),
             },
           ]),
       ...(settled && ledger.resetCount === 0
         ? []
-        : [{ label: "Re-plans", value: ledger.resetCount, tone: "neutral" as CanvasTone }]),
+        : [
+            {
+              label: ledger.resetCount === 1 ? "Re-plan" : "Re-plans",
+              value: ledger.resetCount,
+              tone: "neutral" as CanvasTone,
+            },
+          ]),
       ...(tokens > 0
         ? [{ label: "Tokens", value: formatTokens(tokens), tone: "neutral" as CanvasTone }]
         : []),
@@ -626,30 +639,35 @@ function pulseSection(ledger: CoordinatorLedger): Section {
   };
 }
 
-function tokensPerRoundSection(transcript: readonly CoordinatorEntry[]): Section | undefined {
-  const byRound = new Map<number, { input: number; output: number; hasUsage: boolean }>();
+function tokensPerRoundSection(
+  transcript: readonly CoordinatorEntry[],
+  tones?: IdentityTones,
+): Section | undefined {
+  const byRound = new Map<number, { total: number; hasUsage: boolean }>();
   for (const e of transcript) {
-    const agg = byRound.get(e.round) ?? { input: 0, output: 0, hasUsage: false };
+    const agg = byRound.get(e.round) ?? { total: 0, hasUsage: false };
     if (e.usage) {
-      agg.input += e.usage.inputTokens;
-      agg.output += e.usage.outputTokens;
+      agg.total += e.usage.inputTokens + e.usage.outputTokens;
       agg.hasUsage = true;
     }
     byRound.set(e.round, agg);
   }
   if ([...byRound.values()].filter((round) => round.hasUsage).length < 2) return undefined;
+  const badges = roundBadges(transcript, tones);
   const rounds = [...byRound.entries()].sort(([a], [b]) => a - b);
-  const peak = Math.max(...rounds.map(([, agg]) => agg.input + agg.output));
+  const peak = Math.max(...rounds.map(([, agg]) => agg.total));
   return {
     kind: "bars",
     title: "Tokens per round",
     items: rounds.map(([round, agg]) => {
-      const total = agg.input + agg.output;
+      const badge = badges.get(round);
+      const memberTone = badge?.tone?.startsWith("id-") ? badge.tone : "brand";
       return {
-        label: `Round ${round}`,
-        value: total,
+        label: badge ? `R${round} · ${badge.text}` : `R${round}`,
+        value: agg.total,
         total: peak,
-        trailing: `${formatTokens(total)} tok`,
+        tone: memberTone as CanvasTone,
+        trailing: agg.hasUsage ? `${formatTokens(agg.total)} tok` : "no usage",
       };
     }),
   };
@@ -674,51 +692,82 @@ function roundStatTone(ledger: CoordinatorLedger): CanvasTone {
 // transcript has at least one entry.
 function roundRailSection(ledger: CoordinatorLedger, tones?: IdentityTones): Section | undefined {
   if (ledger.transcript.length === 0 && !ledger.inFlight) return undefined;
-  const byRound = new Map<number, CoordinatorEntry[]>();
-  for (const e of ledger.transcript) {
-    const list = byRound.get(e.round) ?? [];
-    list.push(e);
-    byRound.set(e.round, list);
-  }
-  const last = Math.max(ledger.round, ...byRound.keys());
+  const badges = roundBadges(ledger.transcript, tones);
+  const last = Math.max(ledger.round, ...badges.keys());
   const first = Math.max(0, last - MAX_RAIL_ROUNDS + 1);
-  const cells: { label: string; badge: { text: string; tone?: CanvasTone } }[] = [];
+  const cells: { label: string; badge: RoundBadge }[] = [];
   for (let r = first; r <= last; r++) {
-    const entries = byRound.get(r) ?? [];
     if (ledger.inFlight && ledger.inFlight.round === r && ledger.status === "active") {
       cells.push({ label: `R${r}`, badge: { text: "▶ now", tone: "info" } });
       continue;
     }
-    if (entries.length === 0) continue;
-    cells.push({ label: `R${r}`, badge: roundBadge(entries, tones) });
+    const badge = badges.get(r);
+    if (badge) cells.push({ label: `R${r}`, badge });
   }
   if (cells.length === 0) return undefined;
   return { kind: "grid", title: "Rounds", cells };
 }
 
+type RoundBadge = { text: string; tone?: CanvasTone };
+
+// Each round's rail label, in round order. A gate-only round names the member whose
+// work it checked, so the badge needs the rounds before it.
+function roundBadges(
+  transcript: readonly CoordinatorEntry[],
+  tones?: IdentityTones,
+): Map<number, RoundBadge> {
+  const byRound = new Map<number, CoordinatorEntry[]>();
+  for (const e of transcript) {
+    const list = byRound.get(e.round) ?? [];
+    list.push(e);
+    byRound.set(e.round, list);
+  }
+  const badges = new Map<number, RoundBadge>();
+  let lastWorker: string | undefined;
+  for (const r of [...byRound.keys()].sort((a, b) => a - b)) {
+    const entries = byRound.get(r) ?? [];
+    const badge = roundBadge(entries, lastWorker, tones);
+    badges.set(r, badge);
+    lastWorker = workOf(entries)?.speaker?.trim() || lastWorker;
+  }
+  return badges;
+}
+
+function workOf(entries: readonly CoordinatorEntry[]): CoordinatorEntry | undefined {
+  return (
+    entries.find((e) => e.kind === "code") ??
+    entries.find((e) => e.kind === "dispatch" || e.kind === "workflow")
+  );
+}
+
 function roundBadge(
   entries: readonly CoordinatorEntry[],
+  lastWorker: string | undefined,
   tones?: IdentityTones,
-): { text: string; tone?: CanvasTone } {
+): RoundBadge {
   const gates = entries.filter((e) => e.kind === "verify").map(outcomeTone);
   const gateRed = gates.includes("error");
   const mark = gateRed ? " ✕" : gates.includes("ok") ? " ✓" : "";
-  // The cell reads "<event> · <who>" plus the round's gate verdict; red stays reserved
-  // for a failed gate, and a member's round otherwise wears that member's hue.
-  const work =
-    entries.find((e) => e.kind === "code") ??
-    entries.find((e) => e.kind === "dispatch" || e.kind === "workflow");
-  if (work) {
-    const event = work.kind === "code" ? "code" : work.kind === "workflow" ? "workflow" : "team";
-    const who = work.speaker?.trim();
-    return {
-      text: `${event}${who ? ` · ${who}` : ""}${mark}`,
-      tone: gateRed ? "error" : who ? identityTone(who, tones) : "info",
-    };
-  }
-  if (gates.length > 0) return { text: `gate${mark}`, tone: gateRed ? "error" : "ok" };
-  if (entries.some((e) => e.kind === "replan")) return { text: "re-plan", tone: "caution" };
-  return { text: "plan", tone: "neutral" };
+  const work = workOf(entries);
+  const replan = entries.some((e) => e.kind === "replan");
+  const who = work ? work.speaker?.trim() : gates.length > 0 ? lastWorker : undefined;
+  const event = replan
+    ? "re-plan"
+    : work
+      ? work.kind === "code"
+        ? "code"
+        : work.kind === "workflow"
+          ? "workflow"
+          : "team"
+      : gates.length > 0
+        ? "gate"
+        : "plan";
+  const text = `${event}${who ? ` · ${who}` : ""}${mark}`;
+  // Red stays reserved for a failed gate; a member's round otherwise wears their hue.
+  if (gateRed) return { text, tone: "error" };
+  if (work) return { text, tone: who ? identityTone(who, tones) : "info" };
+  if (gates.length > 0) return { text, tone: "ok" };
+  return { text, tone: replan ? "caution" : "neutral" };
 }
 
 function goalSection(task: string): Section {
@@ -998,11 +1047,9 @@ function verificationSection(v: VerificationRecord): Section {
     items: checks.map((check) => ({
       glyph: check.passed ? ("ok" as CanvasTone) : ("error" as CanvasTone),
       text: truncate(check.command, STEP_CAP) || "verification",
-      ...(check.passed
-        ? {}
-        : {
-            trailing: `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
-          }),
+      trailing: check.passed
+        ? "passed"
+        : `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
       ...(check.passed || !check.summary.trim()
         ? {}
         : { detail: truncate(check.summary, DETAIL_CAP) }),
