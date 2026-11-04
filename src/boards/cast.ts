@@ -1,5 +1,5 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
-import { type CastProposalRecord, MAX_CAST_MEMBERS, type ScanReceipt } from "../cast.ts";
+import type { CastProposalRecord, ScanReceipt } from "../cast.ts";
 import { themeLabel } from "../casting/themes.ts";
 import { identityToneForSlot } from "../types.ts";
 import { charterDisplay } from "./coordinator.ts";
@@ -41,7 +41,7 @@ export function buildCastBoard(proposal: CastProposalRecord | undefined): Canvas
       chip: proposal.projectName,
     },
     sections: [
-      briefSection(proposal, picked.length, ensemble.title),
+      briefSection(proposal, ensemble.title),
       provenanceSection(proposal),
       benchSection(proposal, !ensemble.hoisted),
       decideSection(proposal, picked.length),
@@ -67,7 +67,7 @@ function ensembleFor(members: Member[], projectName: string): { title: string; h
 // The scan's claim, as a card: the same anatomy as the seats it proposes, so the board
 // reads as one grammar — the squad's card, then its members'. The ask rides as the
 // footnote; its ABSENCE is the signal worth toning, so that gets a provenance row.
-function briefSection(proposal: CastProposalRecord, pickedCount: number, title: string): Section {
+function briefSection(proposal: CastProposalRecord, title: string): Section {
   const mission = proposal.mission?.trim();
   const thesis = proposal.summary?.trim();
   return {
@@ -75,7 +75,6 @@ function briefSection(proposal: CastProposalRecord, pickedCount: number, title: 
     items: [
       {
         title,
-        pill: { label: `${pickedCount} of ${MAX_CAST_MEMBERS} seats` },
         ...(mission ? { footnote: `your ask: ${mission}` } : {}),
         ...(thesis ? { reason: { text: thesis } } : {}),
       },
@@ -201,9 +200,10 @@ export function capabilityField(member: { tools?: readonly string[] }): {
   tone?: CanvasTone;
 } {
   const tools = member.tools ?? [];
-  if (tools.includes("code"))
-    return { value: `✎ ${tools.join(", ")}`, tone: "caution" as CanvasTone };
-  return { value: tools.length > 0 ? tools.join(", ") : "text-only" };
+  if (tools.includes("code")) return { value: "✎ edits code", tone: "caution" as CanvasTone };
+  if (tools.length === 0) return { value: "text-only" };
+  if (tools.every((t) => t === "read")) return { value: "reads the repo" };
+  return { value: tools.join(", ") };
 }
 
 function cardActions(member: Member, castAt: string) {

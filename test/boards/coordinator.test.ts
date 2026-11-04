@@ -6,6 +6,7 @@ import {
   outcomeTone,
   RESET_SQUAD_ACTION,
   ROLLBACK_RUN_ACTION,
+  STEER_COORDINATOR_ACTION,
   STOP_COORDINATOR_ACTION,
   transcriptTrailing,
 } from "../../src/boards/coordinator.ts";
@@ -37,8 +38,10 @@ type RowItem = {
   icon?: string;
   glyph?: string;
   chip?: { label: string };
+  person?: { name: string; tone?: string; face?: string };
   text: string;
   trailing?: string;
+  detail?: string;
 };
 type StatItem = {
   label: string;
@@ -49,6 +52,27 @@ type StatItem = {
 function rowsTitled(board: Board, title: string): RowItem[] {
   const section = board.sections.find((s) => s.kind === "rows" && s.title === title);
   return section?.kind === "rows" ? (section.items as RowItem[]) : [];
+}
+
+function liveControls(board: Board) {
+  const section = board.sections.find(
+    (s) => s.kind === "actions" && s.items.some((a) => a.type === STOP_COORDINATOR_ACTION),
+  );
+  if (section?.kind !== "actions") throw new Error("no live controls section");
+  return section;
+}
+
+function stopPayloadOf(board: Board): unknown {
+  return liveControls(board).items.find((a) => a.type === STOP_COORDINATOR_ACTION)?.payload;
+}
+
+function ledgerRowsOf(board: Board): RowItem[] {
+  return board.sections
+    .filter(
+      (s) =>
+        s.kind === "rows" && (s.title?.startsWith("Ledger") || /^Round \d/.test(s.title ?? "")),
+    )
+    .flatMap((s) => (s.kind === "rows" ? (s.items as RowItem[]) : []));
 }
 
 function sectionTitles(board: Board): (string | undefined)[] {
@@ -216,18 +240,23 @@ describe("identityTone / outcomeTone helpers", () => {
     expect(outcomeTone(entry({ kind: "verify", text: "passport check unrelated" }))).toBe("info");
   });
 
-  test("transcriptTrailing renders round always, provider/diff only when present", () => {
-    expect(transcriptTrailing(entry({ round: 3 }))).toBe("R3");
-    expect(transcriptTrailing(entry({ round: 3, provider: "claude" }))).toBe("R3 · claude");
+  test("transcriptTrailing carries only per-turn tokens and diff, undefined when neither", () => {
+    expect(transcriptTrailing(entry({ round: 3 }))).toBeUndefined();
+    expect(transcriptTrailing(entry({ round: 3, provider: "claude" }))).toBeUndefined();
     expect(
       transcriptTrailing(
         entry({ round: 3, provider: "claude", touched: { files: 1, insertions: 0, deletions: 0 } }),
       ),
-    ).toBe("R3 · claude");
+    ).toBeUndefined();
     const full = transcriptTrailing(
-      entry({ round: 3, provider: "claude", touched: { files: 2, insertions: 7, deletions: 2 } }),
+      entry({
+        round: 3,
+        provider: "claude",
+        touched: { files: 2, insertions: 7, deletions: 2 },
+        usage: { inputTokens: 22000, outputTokens: 2000 },
+      }),
     );
-    expect(full).toBe("R3 · claude · +7/−2");
+    expect(full).toBe("24k tok · +7 −2");
     expect(full).toContain("−");
   });
 });
@@ -242,13 +271,27 @@ describe("buildCoordinatorBoard active layout", () => {
 
   test("active runs expose a confirmed destructive stop action scoped to the ledger", () => {
     const board = buildCoordinatorBoard(ledger({ status: "active", round: 3, scopeId: "alpha" }));
-    const section = board.sections.find((s) => s.kind === "actions" && s.title === "Live run");
-    if (section?.kind !== "actions") throw new Error("no live run actions section");
-    const stop = section.items[0];
-    expect(stop?.type).toBe(STOP_COORDINATOR_ACTION);
+    const section = liveControls(board);
+    // Steer and Stop share one compact strip; Stop sits at its trailing edge.
+    expect(section.title).toBeUndefined();
+    expect(section.wrap).toBe(true);
+    expect(section.items.map((a) => a.type)).toEqual([
+      STEER_COORDINATOR_ACTION,
+      STOP_COORDINATOR_ACTION,
+    ]);
+    const stop = section.items[1];
     expect(stop?.destructive).toBe(true);
+    expect(stop?.inline).toBe(true);
+    expect(stop?.align).toBe("end");
     expect(stop?.payload).toEqual({ scopeId: "alpha" });
     expect(stop?.confirm?.confirmLabel).toBe("Stop run");
+    expect(section.items[0]?.payload).toEqual({ scopeId: "alpha" });
+  });
+
+  test("the active board leads with the Goal, then the pulse stats", () => {
+    const board = buildCoordinatorBoard(ledger({ status: "active", round: 3 }));
+    expect(board.sections[0]?.kind === "rows" && board.sections[0].title).toBe("Goal");
+    expect(board.sections[1]?.kind).toBe("stats");
   });
 
   test("active runs do not expose rollback", () => {
@@ -258,11 +301,7 @@ describe("buildCoordinatorBoard active layout", () => {
   });
 
   test("the caller's scopeId wins over the ledger's, covering pre-scopeId ledgers", () => {
-    const stopPayload = (board: ReturnType<typeof buildCoordinatorBoard>) => {
-      const section = board.sections.find((s) => s.kind === "actions" && s.title === "Live run");
-      if (section?.kind !== "actions") throw new Error("no live run actions section");
-      return section.items[0]?.payload;
-    };
+    const stopPayload = stopPayloadOf;
     const legacy = buildCoordinatorBoard(ledger({ status: "active", round: 3 }), undefined, "beta");
     expect(stopPayload(legacy)).toEqual({ scopeId: "beta" });
     const stale = buildCoordinatorBoard(
@@ -309,7 +348,7 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(atCap?.tone).toBe("caution");
   });
 
-  test("renders the goal, plan, findings, and abandoned steps", () => {
+  test("renders the goal, plan, findings, and abandoned steps (plan numbered, no dots)", () => {
     const board = buildCoordinatorBoard(
       ledger({
         plan: ["investigate", "implement"],
@@ -321,8 +360,14 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(rowsTitled(board, "Goal").some((i) => i.text.includes("ship the search rib"))).toBe(
       true,
     );
-    expect(rowsTitled(board, "Plan")).toHaveLength(2);
-    expect(rowsTitled(board, "Findings").some((i) => i.text.includes("uses bun"))).toBe(true);
+    const plan = rowsTitled(board, "Plan");
+    expect(plan).toHaveLength(2);
+    expect(plan.map((r) => r.icon)).toEqual(["1", "2"]);
+    expect(plan.map((r) => r.text)).toEqual(["investigate", "implement"]);
+    expect(plan.every((r) => r.glyph === undefined)).toBe(true);
+    const findings = rowsTitled(board, "Findings");
+    expect(findings.some((i) => i.text.includes("uses bun"))).toBe(true);
+    expect(findings.every((r) => r.glyph === undefined)).toBe(true);
     expect(
       rowsTitled(board, "Abandoned — do not resume").some((i) => i.text.includes("atlas: do X")),
     ).toBe(true);
@@ -359,15 +404,12 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]?.text).toBe("atlas: uses bun");
 
-    const ledgerRows = board.sections
-      .filter(
-        (s) => s.kind === "rows" && (s.title?.startsWith("Ledger") || /^R\d/.test(s.title ?? "")),
-      )
-      .flatMap((s) => (s.kind === "rows" ? (s.items as RowItem[]) : []));
+    const ledgerRows = ledgerRowsOf(board);
     expect(ledgerRows.some((row) => row.text === "atlas: I will inspect the target")).toBe(true);
     expect(ledgerRows.some((row) => row.text === "atlas: (no synthesis)")).toBe(true);
     expect(ledgerRows.some((row) => row.text.includes("[atlas]"))).toBe(false);
-    expect(ledgerRows.filter((row) => row.glyph === "neutral")).toHaveLength(2);
+    expect(ledgerRows).toHaveLength(2);
+    expect(ledgerRows.every((row) => row.glyph === undefined)).toBe(true);
   });
 
   test("normalizes bracketed speaker prefixes in visible finding rows", () => {
@@ -411,7 +453,7 @@ describe("buildCoordinatorBoard active layout", () => {
     ).toBe(true);
   });
 
-  test("the Ledger is the hero: round groups newest-first, speaker chips, trailing detail", () => {
+  test("the Ledger is the hero: round groups newest-first, speaker faces, trailing detail", () => {
     const board = buildCoordinatorBoard(
       ledger({
         round: 4,
@@ -434,20 +476,21 @@ describe("buildCoordinatorBoard active layout", () => {
 
     // Newest round leads and carries the Ledger title; older rounds follow.
     const titles = sectionTitles(board).filter(
-      (t) => t?.startsWith("Ledger · R") || /^R\d/.test(t ?? ""),
+      (t) => t?.startsWith("Ledger · round") || /^Round \d/.test(t ?? ""),
     );
-    expect(titles[0]).toContain("Ledger · R3");
-    expect(titles[1]).toContain("R2");
-    expect(titles[2]).toContain("R1");
+    expect(titles[0]).toContain("Ledger · round 3");
+    expect(titles[1]).toContain("Round 2");
+    expect(titles[2]).toContain("Round 1");
 
     const r2 = rowsTitled(board, titles[1] ?? "");
-    expect(r2[0]?.chip?.label).toBe("atlas");
-    expect(r2[0]?.trailing).toContain("R2");
-    expect(r2[0]?.trailing).toContain("claude");
-    expect(r2[0]?.trailing).toContain("10k tok");
-    expect(r2[0]?.trailing).toContain("+30/−4");
+    expect(r2[0]?.chip).toBeUndefined();
+    expect(r2[0]?.glyph).toBeUndefined();
+    expect(r2[0]?.person).toEqual({ name: "atlas", tone: "neutral", face: "A" });
+    expect(r2[0]?.trailing).toBe("10k tok · +30 −4");
     const r3 = rowsTitled(board, titles[0] ?? "");
-    expect(r3[0]?.glyph).toBe("ok");
+    expect(r3[0]?.person).toEqual({ name: "gate", face: "✓" });
+    const r1 = rowsTitled(board, titles[2] ?? "");
+    expect(r1[0]?.person).toEqual({ name: "coordinator", tone: "brand", face: "◆" });
   });
 
   test("the round rail tones member cells by identity; gate red and re-plan stay status", () => {
@@ -506,12 +549,7 @@ describe("buildCoordinatorBoard active layout", () => {
       }),
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const rows = board.sections
-      .filter((s) => s.kind === "rows")
-      .flatMap((s) => (s.kind === "rows" ? s.items : []));
-    const row = rows.find((r) => r.chip?.label === "atlas") as
-      | (RowItem & { detail?: string })
-      | undefined;
+    const row = ledgerRowsOf(board).find((r) => r.person?.name === "atlas");
     expect(row?.detail).toContain("instruction: edit the loader");
     expect(row?.detail).toContain(longText.slice(0, 120));
     expect(row?.detail).toContain("✓ Edit src/loader.ts");
@@ -528,7 +566,7 @@ describe("buildCoordinatorBoard active layout", () => {
       .filter((s) => s.kind === "rows")
       .flatMap((s) => (s.kind === "rows" ? s.items : []))
       .find((r) => r.text.includes("earlier"));
-    expect(stub?.text).toContain("R0–R2");
+    expect(stub?.text).toContain("Rounds 0–2");
     expect(stub?.text).toContain("3 earlier entries");
   });
 
@@ -556,7 +594,8 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(gates).toHaveLength(3);
     expect(gates[0]?.glyph).toBe("ok");
     expect(gates[1]?.glyph).toBe("error");
-    expect(gates[1]?.trailing).toBe("R2");
+    expect(gates[1]?.trailing).toBe("round 2");
+    expect(gates.every((g) => g.icon === undefined)).toBe(true);
   });
 
   test("surfaces Verification while still active (a failed done-gate keeps the run going)", () => {
@@ -577,20 +616,20 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     const verify = rowsTitled(board, "Verification");
     expect(verify).toHaveLength(1);
-    expect(verify[0]?.icon).toBe("✕");
+    expect(verify[0]?.icon).toBeUndefined();
+    expect(verify[0]?.glyph).toBe("error");
   });
 
-  test("an empty-string speaker never yields a schema-invalid empty chip label", () => {
+  test("an empty-string speaker never yields a schema-invalid empty person name", () => {
     const board = buildCoordinatorBoard(
       ledger({
         transcript: [{ round: 1, kind: "code", speaker: "", text: "edited", provider: "claude" }],
       }),
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(rowsTitled(board, "Worked by").every((i) => (i.chip?.label.length ?? 0) > 0)).toBe(true);
-    expect(rowsTitled(board, "Transcript").every((i) => (i.chip?.label.length ?? 0) > 0)).toBe(
-      true,
-    );
+    const rows = ledgerRowsOf(board);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.person?.name).toBe("coordinator");
   });
 
   test("omits empty sections with a bare ledger", () => {
@@ -606,8 +645,13 @@ describe("buildCoordinatorBoard active layout", () => {
 type CardItem = {
   title: string;
   dot?: string;
+  edge?: string;
   pill?: { label: string; tone?: string };
-  fields?: { label?: string; value: string | number | boolean | null }[];
+  fields?: {
+    label?: string;
+    value?: string | number | boolean | null;
+    clock?: { at: string; mode: string };
+  }[];
   reason?: { label?: string; text: string };
 };
 
@@ -631,9 +675,10 @@ describe("buildCoordinatorBoard in-flight card", () => {
     const cards = cardsTitled(board, "In flight");
     expect(cards).toHaveLength(1);
     expect(cards[0]?.title).toBe("atlas");
-    expect(cards[0]?.pill?.label).toBe("coding");
-    expect(cards[0]?.fields?.some((f) => f.value === "R3")).toBe(true);
-    expect(cards[0]?.reason?.text).toContain("edit the loader");
+    expect(cards[0]?.pill).toEqual({ label: "coding", tone: "info" });
+    expect(cards[0]?.edge).toBe("neutral");
+    expect(cards[0]?.fields?.some((f) => f.label === "round")).toBe(false);
+    expect(cards[0]?.reason).toEqual({ text: "edit the loader" });
 
     // "What's happening now" sits above the run history (the newest Ledger group).
     const titles = sectionTitles(board);
@@ -662,8 +707,11 @@ describe("buildCoordinatorBoard in-flight card", () => {
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     const card = cardsTitled(board, "In flight")[0];
-    expect(card?.fields?.some((f) => f.label === "started" && f.value === "20:01")).toBe(true);
-    expect(card?.fields?.some((f) => f.label === "tools" && f.value === 4)).toBe(true);
+    expect(card?.fields?.find((f) => f.label === "started")?.clock).toEqual({
+      at: "2026-07-02T20:01:30.000Z",
+      mode: "since",
+    });
+    expect(card?.fields?.some((f) => f.label === "tool calls" && f.value === 4)).toBe(true);
     // The trace rows show the LAST three calls; the unpaired final call reads as running.
     const inFlightIdx = sectionTitles(board).indexOf("In flight");
     const trace = board.sections[inFlightIdx + 1];
@@ -672,7 +720,32 @@ describe("buildCoordinatorBoard in-flight card", () => {
     expect(trace.items[0]?.text).toBe("Edit a.ts");
     expect(trace.items[2]?.text).toBe("Bash bun test");
     expect(trace.items[2]?.trailing).toBe("running");
-    expect(trace.items[2]?.icon).toBe("⟳");
+    expect(trace.items[2]?.glyph).toBe("info");
+    expect(trace.items.every((t) => t.icon === undefined)).toBe(true);
+    expect(trace.items[0]?.trailing).toBeUndefined();
+  });
+
+  test("a failed trace call reads as failed", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "active",
+        inFlight: {
+          round: 1,
+          action: "coding",
+          tools: [
+            { name: "Bash", target: "bun test", ok: false },
+            { name: "Read", target: "a.ts" },
+          ],
+        },
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const inFlightIdx = sectionTitles(board).indexOf("In flight");
+    const trace = board.sections[inFlightIdx + 1];
+    if (trace?.kind !== "rows") throw new Error("no trace rows after the In flight card");
+    expect(trace.items[0]?.glyph).toBe("error");
+    expect(trace.items[0]?.trailing).toBe("failed");
+    expect(trace.items[1]?.trailing).toBe("running");
   });
 
   test("an in-flight card with no speaker falls back to coordinator and omits a reason without instruction", () => {
@@ -705,7 +778,7 @@ describe("buildCoordinatorBoard in-flight card", () => {
 });
 
 describe("buildCoordinatorBoard terminal layouts", () => {
-  test("done leads with the Standup, shows a green Verification and worked-by", () => {
+  test("done leads with the Goal and Standup, shows a green Verification and Minds", () => {
     const board = buildCoordinatorBoard(
       ledger({
         status: "done",
@@ -723,18 +796,49 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status?.label).toBe("done");
-    // A terminal board leads with the task composer (start another run), then the Standup.
-    expect(sectionTitles(board)[0]).toBe("Give the squad a task");
-    expect(sectionTitles(board)[1]).toBe("Standup");
-    expect(rowsTitled(board, "Standup").some((i) => i.text.includes("shipped it"))).toBe(true);
+    // A terminal board leads with the task composer (start another run), then the Goal it
+    // ran against, then the Standup.
+    expect(sectionTitles(board).slice(0, 3)).toEqual(["Give the squad a task", "Goal", "Standup"]);
+    const body = sectionTitles(board).filter((t) => t && !t.startsWith("Ledger"));
+    expect(body).toEqual(["Give the squad a task", "Goal", "Standup", "Verification", "Minds"]);
+    const standup = rowsTitled(board, "Standup");
+    expect(standup.some((i) => i.text.includes("shipped it"))).toBe(true);
+    expect(standup[0]?.glyph).toBe("ok");
+    expect(standup[0]?.icon).toBeUndefined();
 
     const verify = rowsTitled(board, "Verification");
-    expect(verify[0]?.icon).toBe("✓");
+    expect(verify[0]?.icon).toBeUndefined();
     expect(verify[0]?.glyph).toBe("ok");
-    expect(cardsTitled(board, "Minds").length).toBeGreaterThan(0);
+    expect(verify[0]?.trailing).toBe("passed");
+    expect(rowsTitled(board, "Minds").length).toBeGreaterThan(0);
   });
 
-  test("a done Verification section is boxed", () => {
+  test("done orders Goal, Standup, Verification, Gate history, Minds, Findings, Ledger", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        status: "done",
+        summary: "shipped it",
+        round: 2,
+        facts: ["the retry path drops its cap"],
+        verification: { command: "bun test", exitCode: 0, passed: true, summary: "", atRound: 2 },
+        transcript: [
+          entry({ round: 1, kind: "code", speaker: "atlas", text: "edited", provider: "claude" }),
+          entry({ round: 2, kind: "verify", text: "checks passed", verdict: "pass" }),
+        ],
+      }),
+    );
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const titles = sectionTitles(board);
+    const order = ["Goal", "Standup", "Verification", "Gate history", "Minds", "Findings"].map(
+      (t) => titles.indexOf(t),
+    );
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    const ledgerIdx = titles.findIndex((t) => t?.startsWith("Ledger"));
+    expect(ledgerIdx).toBeGreaterThan(order.at(-1) ?? -1);
+  });
+
+  test("a done Verification section is a plain row list, not boxed", () => {
     const board = buildCoordinatorBoard(
       ledger({
         status: "done",
@@ -743,7 +847,8 @@ describe("buildCoordinatorBoard terminal layouts", () => {
       }),
     );
     const section = board.sections.find((s) => s.kind === "rows" && s.title === "Verification");
-    expect(section?.kind === "rows" && section.boxed).toBe(true);
+    expect(section?.kind).toBe("rows");
+    expect(section?.kind === "rows" && section.boxed).toBeFalsy();
   });
 
   test("an old-shape VerificationRecord without checks renders the fallback row", () => {
@@ -763,10 +868,10 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     const verify = rowsTitled(board, "Verification");
     expect(verify).toHaveLength(1);
-    expect(verify[0]?.icon).toBe("✕");
+    expect(verify[0]?.icon).toBeUndefined();
     expect(verify[0]?.glyph).toBe("error");
     expect(verify[0]?.text).toBe("bun test");
-    expect(verify[0]?.trailing).toContain("exit 1");
+    expect(verify[0]?.trailing).toBe("exit 1 · 1 failing");
   });
 
   test("max-rounds shows an Advisory + green Verification, led by the task composer", () => {
@@ -786,18 +891,19 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status?.label).toBe("max rounds");
     expect(rowsTitled(board, "Advisory").length).toBe(1);
-    expect(rowsTitled(board, "Verification")[0]?.icon).toBe("✓");
+    expect(rowsTitled(board, "Verification")[0]?.glyph).toBe("ok");
     // A terminal board is framed by two actions sections — the task composer (start
     // another run) leads, the teardown verb closes; the run ledger itself carries no
     // interactive actions between them.
     const actions = board.sections.filter((s) => s.kind === "actions");
     expect(actions).toHaveLength(2);
-    expect(actions[0]?.kind === "actions" ? actions[0].title : undefined).toBe(
-      "Give the squad a task",
-    );
-    expect(actions.at(-1)?.kind === "actions" ? actions.at(-1)?.title : undefined).toBe(
-      "Reset squad",
-    );
+    const composer = actions[0];
+    expect(composer?.kind === "actions" ? composer.title : undefined).toBe("Give the squad a task");
+    expect(composer?.kind === "actions" ? composer.tabs : undefined).toBe(true);
+    const reset = actions.at(-1);
+    expect(reset?.kind === "actions" ? reset.title : "titled").toBeUndefined();
+    expect(reset?.kind === "actions" ? reset.wrap : undefined).toBe(true);
+    expect(reset?.kind === "actions" ? reset.items[0]?.type : undefined).toBe(RESET_SQUAD_ACTION);
   });
 
   test("max-tokens shows a caution pill and token-budget advisory", () => {
@@ -832,10 +938,15 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(board.header?.status?.label).toBe("verification failed");
 
     const verify = rowsTitled(board, "Verification");
-    expect(verify[0]?.icon).toBe("✕");
+    expect(verify[0]?.icon).toBeUndefined();
     expect(verify[0]?.glyph).toBe("error");
     expect(verify[0]?.trailing).toContain("exit 1");
     expect(rowsTitled(board, "Advisory").length).toBe(1);
+    const rollbackSection = board.sections.find(
+      (s) => s.kind === "actions" && s.items.some((a) => a.type === ROLLBACK_RUN_ACTION),
+    );
+    expect(rollbackSection?.kind === "actions" ? rollbackSection.title : "titled").toBeUndefined();
+    expect(rollbackSection?.kind === "actions" ? rollbackSection.wrap : undefined).toBe(true);
     const rollback = board.sections
       .flatMap((s) => (s.kind === "actions" ? s.items : []))
       .find((a) => a.type === ROLLBACK_RUN_ACTION);
@@ -863,7 +974,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(
       rowsTitled(board, "Summary").some((i) => i.text.includes("could not make progress")),
     ).toBe(true);
-    expect(cardsTitled(board, "Minds").length).toBeGreaterThan(0);
+    expect(rowsTitled(board, "Minds").length).toBeGreaterThan(0);
   });
 
   test("aborted is a calm terminal state with an intact transcript", () => {
@@ -877,7 +988,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(board.header?.status).toEqual({ label: "aborted", tone: "neutral" });
     expect(rowsTitled(board, "Advisory")[0]?.glyph).toBe("neutral");
     expect(
-      rowsTitled(board, "Ledger · R0 · team").some((i) => i.text.includes("partially done")),
+      rowsTitled(board, "Ledger · round 0 · team").some((i) => i.text.includes("partially done")),
     ).toBe(true);
   });
 
@@ -905,7 +1016,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     for (const status of noRollbackStatuses) expect(hasRollback(status)).toBe(false);
   });
 
-  test("Minds aggregates one lane per member: provider pill, turn/token counts, last act", () => {
+  test("Minds aggregates one row per member: face, provider + turn/token trailing, last act", () => {
     const board = buildCoordinatorBoard(
       ledger({
         transcript: [
@@ -927,18 +1038,16 @@ describe("buildCoordinatorBoard terminal layouts", () => {
         ],
       }),
     );
-    const minds = cardsTitled(board, "Minds");
-    const atlas = minds.find((c) => c.title === "atlas");
-    expect(atlas?.pill?.label).toBe("claude");
-    expect(atlas?.fields?.some((f) => f.label === "turns" && f.value === 2)).toBe(true);
-    expect(atlas?.fields?.some((f) => f.label === "tok" && f.value === "9k")).toBe(true);
-    expect(atlas?.fields?.some((f) => f.label === "in/out" && f.value === "8k in / 1k out")).toBe(
-      true,
-    );
-    expect(atlas?.reason?.text).toContain("fixed the test");
-    const vera = minds.find((c) => c.title === "vera");
-    expect(vera?.pill?.label).toBe("copilot");
-    expect(vera?.fields?.some((f) => f.label === "turns" && f.value === 1)).toBe(true);
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    const minds = rowsTitled(board, "Minds");
+    const atlas = minds.find((r) => r.person?.name === "atlas");
+    expect(atlas?.person?.face).toBe("A");
+    expect(atlas?.trailing).toBe("claude · 2 turns · 9k tok");
+    expect(atlas?.detail).toContain("8k in / 1k out");
+    expect(atlas?.text).toContain("fixed the test");
+    const vera = minds.find((r) => r.person?.name === "vera");
+    expect(vera?.trailing).toBe("copilot · 1 turn");
+    expect(vera?.detail).toBeUndefined();
   });
 
   test("verify entries never become Minds lanes (the gate is the harness, not a member)", () => {
@@ -957,9 +1066,9 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     );
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const minds = cardsTitled(board, "Minds");
+    const minds = rowsTitled(board, "Minds");
     expect(minds).toHaveLength(1);
-    expect(minds[0]?.title).toBe("atlas");
+    expect(minds[0]?.person?.name).toBe("atlas");
   });
 
   test("every terminal status produces a schema-valid board", () => {

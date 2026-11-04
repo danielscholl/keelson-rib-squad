@@ -132,7 +132,7 @@ describe("buildCastBoard capability", () => {
     const cards = benchCards(buildCastBoard(proposal()));
     const atlas = cards.find((c) => c.title === "Atlas")?.fields?.[0];
     // Write access is the one thing the governance floor exists to bound.
-    expect(atlas).toEqual({ value: "✎ code, read", tone: "caution" });
+    expect(atlas).toEqual({ value: "✎ edits code", tone: "caution" });
     const vera = cards.find((c) => c.title === "Vera")?.fields?.[0];
     // `dim` is not in canvasToneSchema: toning the norm here fails the whole board.
     expect(vera?.tone).toBeUndefined();
@@ -144,7 +144,24 @@ describe("buildCastBoard capability", () => {
     ).toEqual({ value: "text-only" });
   });
 
-  test("a read-only seat with tags lists them unmarked", () => {
+  test("a non-code seat with other tags lists them unmarked", () => {
+    const board = buildCastBoard(
+      proposal({
+        members: [
+          {
+            slug: "vera",
+            name: "Vera",
+            role: "Reviewer",
+            charter: "# Vera",
+            tools: ["read", "workflow"],
+          },
+        ],
+      }),
+    );
+    expect(benchCards(board)[0]?.fields?.[0]).toEqual({ value: "read, workflow" });
+  });
+
+  test("a read-only seat reads the repo, unmarked", () => {
     const board = buildCastBoard(
       proposal({
         members: [
@@ -153,7 +170,7 @@ describe("buildCastBoard capability", () => {
       }),
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(benchCards(board)[0]?.fields?.[0]).toEqual({ value: "read" });
+    expect(benchCards(board)[0]?.fields?.[0]).toEqual({ value: "reads the repo" });
   });
 });
 
@@ -237,10 +254,11 @@ describe("buildCastBoard the ensemble hoist", () => {
 });
 
 describe("buildCastBoard the briefing card", () => {
-  test("the claim wears a card: the ensemble, the capacity, the thesis", () => {
+  test("the claim wears a card: the ensemble and the thesis; the count rides the header", () => {
     const board = buildCastBoard(proposal({ summary: "an engineer and a reviewer" }));
     const card = briefCard(board);
-    expect(card?.pill?.label).toBe("2 of 6 seats");
+    expect(card?.pill).toBeUndefined();
+    expect(board.header?.status).toEqual({ label: "2 of 2 picked", tone: "brand" });
     expect(card?.reason?.text).toBe("an engineer and a reviewer");
     // No label on the thesis: the card's own rule already divides it from the head.
     expect(card?.reason?.label).toBeUndefined();
@@ -257,10 +275,12 @@ describe("buildCastBoard the briefing card", () => {
     expect(warn?.glyph).toBe("warn");
   });
 
-  test("the pill counts the picked seats against capacity, not the bench", () => {
+  test("the header status counts the picked seats against the bench", () => {
     const p = proposal();
     p.members[1]!.picked = false;
-    expect(briefCard(buildCastBoard(p))?.pill?.label).toBe("1 of 6 seats");
+    expect(buildCastBoard(p).header?.status).toEqual({ label: "1 of 2 picked", tone: "brand" });
+    p.members[0]!.picked = false;
+    expect(buildCastBoard(p).header?.status).toEqual({ label: "0 of 2 picked", tone: "warn" });
   });
 
   test("a thesis-less scan renders the card without an empty reason", () => {
@@ -304,7 +324,7 @@ describe("buildCastBoard picking", () => {
     expect(atlas?.pill).toEqual({ label: "dropped", tone: "warn" });
     // The reason to pick it back has to survive dropping it.
     expect(atlas?.reason?.text).toBe("Build.");
-    expect(atlas?.fields?.[0]?.value).toBe("✎ code, read");
+    expect(atlas?.fields?.[0]?.value).toBe("✎ edits code");
     // Picking it back declares picked: true.
     expect(atlas?.action?.payload).toEqual({
       slug: "atlas",

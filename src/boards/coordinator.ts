@@ -15,6 +15,7 @@ import type { ToolTrace } from "../turn-runner.ts";
 
 type Section = CanvasBoardView["sections"][number];
 type RowItem = Extract<Section, { kind: "rows" }>["items"][number];
+type Person = NonNullable<RowItem["person"]>;
 
 // The two "assign work" verbs the Run-loop composer offers. Shared with onAction so
 // the action types can't drift from their handlers. Coordinate runs the full
@@ -31,6 +32,7 @@ export const REPORT_RUN_ACTION = "squad-report";
 export const RESET_SQUAD_ACTION = "reset-squad";
 
 const GOAL_CAP = 280;
+const RUN_TITLE_CAP = 90;
 const STEP_CAP = 200;
 const LEDGER_ROW_CAP = 200;
 const DETAIL_CAP = 4000;
@@ -83,14 +85,29 @@ export function outcomeTone(e: CoordinatorEntry): CanvasTone {
   }
 }
 
-export function transcriptTrailing(e: CoordinatorEntry): string {
-  let trailing = `R${e.round}`;
-  if (e.provider) trailing += ` · ${e.provider}`;
-  if (e.usage) trailing += ` · ${formatTokens(e.usage.inputTokens + e.usage.outputTokens)} tok`;
+// The round is the ledger group's own title, and the provider rides the Minds lane, so a
+// row's trailing carries only what is particular to that one turn.
+export function transcriptTrailing(e: CoordinatorEntry): string | undefined {
+  const parts: string[] = [];
+  if (e.usage) parts.push(`${formatTokens(e.usage.inputTokens + e.usage.outputTokens)} tok`);
   if (e.touched && (e.touched.insertions || e.touched.deletions)) {
-    trailing += ` · +${e.touched.insertions}/−${e.touched.deletions}`;
+    parts.push(`+${e.touched.insertions} −${e.touched.deletions}`);
   }
-  return trailing;
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+// Who acted, as a face in the member's identity tone. The coordinator wears the brand
+// diamond and the done-gate wears its verdict, so every ledger line leads with an actor.
+export function personFor(speaker: string | undefined, tones?: IdentityTones): Person {
+  const name = speaker?.trim() || "coordinator";
+  if (name === "coordinator") return { name, tone: "brand", face: "◆" };
+  const initial = /\p{L}|\p{N}/u.exec(name)?.[0]?.toUpperCase() ?? "·";
+  return { name, tone: identityTone(name, tones), face: initial };
+}
+
+function gatePerson(e: CoordinatorEntry): Person {
+  const tone = outcomeTone(e);
+  return { name: "gate", face: tone === "error" ? "✕" : tone === "ok" ? "✓" : "·" };
 }
 
 // Markdown control characters leak into one-line previews as noise (##, **, `code`);
@@ -194,15 +211,20 @@ export function buildRunDetailBoard(
       ],
     };
   }
-  const body = sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId);
-  const detailBody = body[0]?.kind === "stats" ? body.slice(1) : body;
-  const sections: Section[] = [runReportSection(id), pulseSection(ledger)];
+  // The drawer's title already is the task, so its Goal row would only repeat it — unless
+  // the title had to cut the task short.
+  const titled = ledger.task.trim().length <= RUN_TITLE_CAP;
+  const body = sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId).filter(
+    (s) => !(titled && s.kind === "rows" && s.title === "Goal"),
+  );
+  const detailBody = body.filter((s) => s.kind !== "stats");
+  const sections: Section[] = [pulseSection(ledger), runReportSection(id)];
   pushIf(sections, tokensPerRoundChartSection(ledger.transcript));
   sections.push(...detailBody);
   return {
     view: "board",
-    title: "Run",
-    header: { status: statusPill(ledger.status), chip: id },
+    title: stripMd(truncate(ledger.task, RUN_TITLE_CAP)) || "Run",
+    header: { status: statusPill(ledger.status), chip: runWhen(ledger.createdAt) ?? id },
     sections,
   };
 }
@@ -212,7 +234,16 @@ export function buildRunDetailBoard(
 function runReportSection(id: string): Section {
   return {
     kind: "actions",
-    items: [{ type: REPORT_RUN_ACTION, label: "Report", glyph: "▤", payload: { runId: id } }],
+    wrap: true,
+    items: [
+      {
+        type: REPORT_RUN_ACTION,
+        label: "Open report",
+        glyph: "▤",
+        hint: "The styled run report for this ledger",
+        payload: { runId: id },
+      },
+    ],
   };
 }
 
@@ -223,11 +254,15 @@ export function taskComposerSection(): Section {
   return {
     kind: "actions",
     title: "Give the squad a task",
+    tabs: true,
     items: [
       {
         type: COORDINATE_ACTION,
-        label: "Coordinate on a task",
+        label: "Coordinate a task",
         glyph: "↻",
+        hint: "Plan, delegate one step at a time, and verify until the goal is met",
+        submitLabel: "Start run",
+        submitTone: "brand",
         fields: [
           {
             name: "task",
@@ -242,6 +277,8 @@ export function taskComposerSection(): Section {
         type: DISPATCH_ACTION,
         label: "Ask the team",
         glyph: "✦",
+        hint: "Put one question to every member and get a synthesis",
+        submitLabel: "Ask",
         fields: [
           {
             name: "task",
@@ -295,36 +332,40 @@ function activeSections(
   scopeId?: string,
 ): Section[] {
   const sections: Section[] = [
+    goalSection(ledger.task),
     pulseSection(ledger),
-    steerSection(ledger, scopeId),
-    stopSection(ledger, scopeId),
+    liveControlsSection(ledger, scopeId),
   ];
   const findings = visibleFindings(ledger);
   pushIf(sections, roundRailSection(ledger, tones));
-  sections.push(goalSection(ledger.task));
-  if (ledger.plan.length > 0) sections.push(planSection(ledger.plan));
   if (ledger.inFlight) sections.push(...nowSections(ledger.inFlight, tones));
+  if (ledger.plan.length > 0) sections.push(planSection(ledger.plan));
   if (findings.length > 0) sections.push(findingsSection(findings));
-  if (ledger.verification) sections.push(verificationSection(ledger.verification));
   if (ledger.failedSteps?.length) sections.push(abandonedSection(ledger.failedSteps));
   if (ledger.teamGaps?.length) sections.push(teamGapsSection(ledger.teamGaps));
+  if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
 
-// Inject an operator instruction the live run folds into its facts and honors next round.
-function steerSection(ledger: CoordinatorLedger, scopeId?: string): Section {
+// The live run's two verbs on one strip: Steer opens its instruction form below the
+// strip, Stop sits at the trailing edge. The caller's scopeId is authoritative (the
+// collector knows which scope it rendered); ledger.scopeId only covers ledgers persisted
+// before scopeId existed.
+function liveControlsSection(ledger: CoordinatorLedger, scopeId?: string): Section {
+  const scope = scopeId ?? ledger.scopeId ?? "default";
   return {
     kind: "actions",
-    title: "Steer the run",
+    wrap: true,
     items: [
       {
         type: STEER_COORDINATOR_ACTION,
-        label: "Steer",
+        label: "Steer the run",
         glyph: "➤",
-        payload: { scopeId: scopeId ?? ledger.scopeId ?? "default" },
+        hint: "Add a fact or course-correction the next round folds in",
+        payload: { scopeId: scope },
         fields: [
           {
             name: "instruction",
@@ -334,18 +375,8 @@ function steerSection(ledger: CoordinatorLedger, scopeId?: string): Section {
             multiline: true,
           },
         ],
+        submitLabel: "Steer",
       },
-    ],
-  };
-}
-
-// The caller's scopeId is authoritative (the collector knows which scope it rendered);
-// ledger.scopeId only covers ledgers persisted before scopeId existed.
-function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
-  return {
-    kind: "actions",
-    title: "Live run",
-    items: [
       {
         type: STOP_COORDINATOR_ACTION,
         label: "Stop run",
@@ -353,7 +384,8 @@ function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
         tone: "warn",
         destructive: true,
         inline: true,
-        payload: { scopeId: scopeId ?? ledger.scopeId ?? "default" },
+        align: "end",
+        payload: { scopeId: scope },
         confirm: {
           title: "Stop this coordinator run?",
           body: `Round ${ledger.round} will be marked aborted. The transcript stays intact.`,
@@ -367,7 +399,7 @@ function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
 function rollbackSection(ledger: CoordinatorLedger, scopeId?: string): Section {
   return {
     kind: "actions",
-    title: "Rollback",
+    wrap: true,
     items: [
       {
         type: ROLLBACK_RUN_ACTION,
@@ -401,7 +433,7 @@ function rollbackSection(ledger: CoordinatorLedger, scopeId?: string): Section {
 function resetSection(): Section {
   return {
     kind: "actions",
-    title: "Reset squad",
+    wrap: true,
     items: [
       {
         type: RESET_SQUAD_ACTION,
@@ -426,14 +458,13 @@ function doneSections(
   ledgerRounds: number,
   tones?: IdentityTones,
 ): Section[] {
-  const sections: Section[] = [];
+  const sections: Section[] = [goalSection(ledger.task)];
   const findings = visibleFindings(ledger);
   if (ledger.summary?.trim()) sections.push(standupSection(ledger.summary));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript, tones));
   if (findings.length > 0) sections.push(findingsSection(findings));
-  sections.push(goalSection(ledger.task));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
@@ -575,6 +606,7 @@ function tokensPerRoundChartSection(transcript: readonly CoordinatorEntry[]): Se
   return {
     kind: "chart",
     title: "Tokens per round",
+    mark: "bar",
     yLabel: "tokens",
     series: [
       {
@@ -642,7 +674,7 @@ function roundBadge(
   const code = entries.find((e) => e.kind === "code");
   if (code) {
     return code.speaker
-      ? { text: `${code.speaker} ⌥`, tone: identityTone(code.speaker, tones) }
+      ? { text: `${code.speaker} ✎`, tone: identityTone(code.speaker, tones) }
       : { text: "code", tone: "accent" };
   }
   const verified = entries.some((e) => e.kind === "verify" && outcomeTone(e) === "ok");
@@ -662,7 +694,6 @@ function goalSection(task: string): Section {
     title: "Goal",
     items: [
       {
-        glyph: "info",
         text: stripMd(truncate(task, GOAL_CAP)) || "(no goal)",
         ...detailWhenTruncated(task, GOAL_CAP),
       },
@@ -676,8 +707,7 @@ function standupSection(summary: string): Section {
     title: "Standup",
     items: [
       {
-        glyph: "brand",
-        icon: "◆",
+        glyph: "ok",
         text: stripMd(truncate(summary, GOAL_CAP)) || "(no summary)",
         ...detailWhenTruncated(summary, GOAL_CAP),
       },
@@ -694,8 +724,8 @@ function planSection(plan: readonly string[]): Section {
     kind: "rows",
     title: "Plan",
     items: plan.map((step, i) => ({
-      glyph: "neutral" as CanvasTone,
-      text: `${i + 1}. ${truncate(step, STEP_CAP)}`,
+      icon: `${i + 1}`,
+      text: truncate(step, STEP_CAP) || "(no detail)",
     })),
   };
 }
@@ -707,7 +737,6 @@ function findingsSection(facts: readonly string[]): Section {
     items: facts.slice(-MAX_FINDINGS).map((fact) => {
       const normalized = normalizeSpeakerPrefixes(fact);
       return {
-        glyph: "brand" as CanvasTone,
         text: stripMd(truncate(normalized, STEP_CAP)) || "(no detail)",
         ...detailWhenTruncated(normalized, STEP_CAP),
       };
@@ -771,6 +800,7 @@ function teamGapsSection(teamGaps: readonly string[]): Section {
 // live relay has streamed any) the tail of its tool trace, so the operator watches the
 // mind work instead of a frozen instruction. Active layout is the only caller.
 function nowSections(inFlight: InFlightTurn, tones?: IdentityTones): Section[] {
+  const startedAt = clockAt(inFlight.startedAt);
   const sections: Section[] = [
     {
       kind: "cards",
@@ -779,16 +809,23 @@ function nowSections(inFlight: InFlightTurn, tones?: IdentityTones): Section[] {
         {
           title: inFlight.speaker ?? "coordinator",
           dot: identityTone(inFlight.speaker, tones),
-          pill: { label: inFlight.action, tone: "accent" },
+          edge: identityTone(inFlight.speaker, tones),
+          pill: { label: inFlight.action, tone: "info" },
           fields: [
-            { label: "round", value: `R${inFlight.round}` },
-            ...(inFlight.startedAt
-              ? [{ label: "started", value: shortTime(inFlight.startedAt) }]
+            ...(startedAt
+              ? [{ label: "started", clock: { at: startedAt, mode: "since" as const } }]
               : []),
-            ...(inFlight.tools?.length ? [{ label: "tools", value: inFlight.tools.length }] : []),
+            ...(inFlight.tools?.length
+              ? [
+                  {
+                    label: inFlight.tools.length === 1 ? "tool call" : "tool calls",
+                    value: inFlight.tools.length,
+                  },
+                ]
+              : []),
           ],
           ...(inFlight.instruction
-            ? { reason: { label: "now", text: truncate(inFlight.instruction, STEP_CAP) } }
+            ? { reason: { text: truncate(inFlight.instruction, STEP_CAP) } }
             : {}),
         },
       ],
@@ -797,15 +834,24 @@ function nowSections(inFlight: InFlightTurn, tones?: IdentityTones): Section[] {
   if (inFlight.tools?.length) {
     sections.push({
       kind: "rows",
-      items: inFlight.tools.slice(-NOW_TRACE_SHOWN).map((t, i, shown) => ({
-        glyph: toolGlyph(t, i === shown.length - 1),
-        icon: t.ok === false ? "✕" : t.ok === true ? "✓" : "⟳",
-        text: t.target ? `${t.name} ${t.target}` : t.name,
-        ...(i === shown.length - 1 && t.ok === undefined ? { trailing: "running" } : {}),
-      })),
+      items: inFlight.tools.slice(-NOW_TRACE_SHOWN).map((t, i, shown) => {
+        const running = i === shown.length - 1 && t.ok === undefined;
+        return {
+          glyph: toolGlyph(t, i === shown.length - 1),
+          text: t.target ? `${t.name} ${t.target}` : t.name,
+          ...(running ? { trailing: "running" } : t.ok === false ? { trailing: "failed" } : {}),
+        };
+      }),
     });
   }
   return sections;
+}
+
+// A clock needs a real offset timestamp; a hand-edited or legacy value degrades to no clock.
+function clockAt(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
 }
 
 function toolGlyph(t: ToolTrace, isLast: boolean): CanvasTone {
@@ -827,9 +873,8 @@ function gateHistorySection(transcript: readonly CoordinatorEntry[]): Section | 
       const tone = outcomeTone(e);
       return {
         glyph: tone,
-        icon: tone === "error" ? "✕" : tone === "ok" ? "✓" : "·",
         text: stripMd(truncate(firstLine(e.text), STEP_CAP)),
-        trailing: `R${e.round}`,
+        trailing: `round ${e.round}`,
         ...entryDetail(e),
       };
     }),
@@ -878,70 +923,48 @@ function mindsSection(
   }
   if (bySpeaker.size === 0) return undefined;
   return {
-    kind: "cards",
+    kind: "rows",
     title: "Minds",
-    items: [...bySpeaker.entries()].map(([speaker, agg]) => ({
-      title: speaker,
-      dot: identityTone(speaker, tones),
-      ...(agg.providers.size > 0 ? { pill: { label: [...agg.providers].join("+") } } : {}),
-      fields: [
-        { label: "turns", value: agg.turns },
-        ...(agg.tokens > 0
-          ? [
-              { label: "tok", value: formatTokens(agg.tokens) },
-              {
-                label: "in/out",
-                value: formatUsageTail({
-                  inputTokens: agg.inputTokens,
-                  outputTokens: agg.outputTokens,
-                }),
-              },
-            ]
-          : []),
-        ...(agg.last.touched && (agg.last.touched.insertions || agg.last.touched.deletions)
-          ? [
-              {
-                label: "Δ",
-                value: `+${agg.last.touched.insertions}/−${agg.last.touched.deletions}`,
-              },
-            ]
-          : []),
-      ],
-      reason: { label: "last", text: stripMd(truncate(agg.last.text, STEP_CAP)) || "(no detail)" },
-    })),
+    items: [...bySpeaker.entries()].map(([speaker, agg]) => {
+      const meta = [
+        ...[...agg.providers],
+        `${agg.turns} ${agg.turns === 1 ? "turn" : "turns"}`,
+        ...(agg.tokens > 0 ? [`${formatTokens(agg.tokens)} tok`] : []),
+      ];
+      const usage =
+        agg.tokens > 0
+          ? `tokens: ${formatUsageTail({ inputTokens: agg.inputTokens, outputTokens: agg.outputTokens })}`
+          : "";
+      const last = stripMd(agg.last.text).trim();
+      const detail = [usage, last.length > STEP_CAP ? `latest: ${truncate(last, DETAIL_CAP)}` : ""]
+        .filter(Boolean)
+        .join("\n\n");
+      return {
+        person: personFor(speaker, tones),
+        text: truncate(last, STEP_CAP) || "(no detail)",
+        trailing: meta.join(" · "),
+        ...(detail ? { detail } : {}),
+      };
+    }),
   };
 }
 
 function verificationSection(v: VerificationRecord): Section {
-  const checks = v.checks;
+  const checks: readonly { command: string; passed: boolean; exitCode: number; summary: string }[] =
+    v.checks && v.checks.length > 0 ? v.checks : [v];
   return {
     kind: "rows",
-    boxed: true,
     title: "Verification",
-    items:
-      checks && checks.length > 0
-        ? checks.map((check) => ({
-            glyph: check.passed ? ("ok" as CanvasTone) : ("error" as CanvasTone),
-            icon: check.passed ? "✓" : "✕",
-            text: truncate(check.command, STEP_CAP) || "verification",
-            trailing: check.passed
-              ? `passed · exit ${check.exitCode}`
-              : `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
-            ...(check.passed || !check.summary.trim()
-              ? {}
-              : { detail: truncate(check.summary, DETAIL_CAP) }),
-          }))
-        : [
-            {
-              glyph: v.passed ? ("ok" as CanvasTone) : ("error" as CanvasTone),
-              icon: v.passed ? "✓" : "✕",
-              text: truncate(v.command, STEP_CAP) || "verification",
-              trailing: v.passed
-                ? `passed · exit ${v.exitCode}`
-                : `exit ${v.exitCode} · ${truncate(v.summary, VERIFY_SUMMARY_CAP)}`,
-              ...(v.passed || !v.summary.trim() ? {} : { detail: truncate(v.summary, DETAIL_CAP) }),
-            },
-          ],
+    items: checks.map((check) => ({
+      glyph: check.passed ? ("ok" as CanvasTone) : ("error" as CanvasTone),
+      text: truncate(check.command, STEP_CAP) || "verification",
+      trailing: check.passed
+        ? "passed"
+        : `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
+      ...(check.passed || !check.summary.trim()
+        ? {}
+        : { detail: truncate(check.summary, DETAIL_CAP) }),
+    })),
   };
 }
 
@@ -956,7 +979,6 @@ function ledgerSections(
   tones?: IdentityTones,
 ): Section[] {
   if (transcript.length === 0) return [];
-  const speakers = knownSpeakerLabels(transcript);
   const rounds: number[] = [];
   const byRound = new Map<number, CoordinatorEntry[]>();
   for (const e of transcript) {
@@ -974,8 +996,11 @@ function ledgerSections(
     const entries = byRound.get(r) ?? [];
     return {
       kind: "rows",
-      title: i === 0 ? `Ledger · R${r}${roundCaption(entries)}` : `R${r}${roundCaption(entries)}`,
-      items: entries.map((e) => ledgerRow(e, speakers, tones)),
+      title:
+        i === 0
+          ? `Ledger · round ${r}${roundCaption(entries)}`
+          : `Round ${r}${roundCaption(entries)}`,
+      items: entries.map((e) => ledgerRow(e, tones)),
     };
   });
 
@@ -983,13 +1008,12 @@ function ledgerSections(
     const olderEntries = older.reduce((n, r) => n + (byRound.get(r)?.length ?? 0), 0);
     const span =
       older.length === 1
-        ? `R${older[older.length - 1]}`
-        : `R${older[older.length - 1]}–R${older[0]}`;
+        ? `Round ${older[older.length - 1]}`
+        : `Rounds ${older[older.length - 1]}–${older[0]}`;
     sections.push({
       kind: "rows",
       items: [
         {
-          glyph: "neutral",
           text: `${span} · ${olderEntries} earlier ${olderEntries === 1 ? "entry" : "entries"} — the full run is archived in Runs`,
         },
       ],
@@ -1009,26 +1033,15 @@ function roundCaption(entries: readonly CoordinatorEntry[]): string {
   return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
 }
 
-function ledgerRow(
-  e: CoordinatorEntry,
-  speakers: ReadonlySet<string>,
-  tones?: IdentityTones,
-): RowItem {
-  const speaker = e.speaker?.trim() || "coordinator";
+function ledgerRow(e: CoordinatorEntry, tones?: IdentityTones): RowItem {
   const text = normalizeSpeakerPrefixes(e.text);
+  const trailing = transcriptTrailing(e);
   return {
-    glyph: isQuietLedgerEntry(e, speakers) ? "neutral" : outcomeTone(e),
-    chip: { label: speaker, tone: identityTone(e.speaker?.trim() || undefined, tones) },
+    person: e.kind === "verify" ? gatePerson(e) : personFor(e.speaker, tones),
     text: stripMd(truncate(firstLine(text), LEDGER_ROW_CAP)) || "(no detail)",
-    trailing: transcriptTrailing(e),
+    ...(trailing ? { trailing } : {}),
     ...entryDetail(e),
   };
-}
-
-function isQuietLedgerEntry(e: CoordinatorEntry, speakers: ReadonlySet<string>): boolean {
-  if (e.kind !== "dispatch" && e.kind !== "code" && e.kind !== "workflow") return false;
-  const body = narrationBody(e.text, speakers);
-  return body === "(no synthesis)" || body.startsWith("(no synthesis) ") || isNarrationOnly(body);
 }
 
 // The expandable body behind a ledger row: the instruction the turn ran under, the
@@ -1097,9 +1110,14 @@ function firstLine(text: string): string {
   return idx === -1 ? text : `${text.slice(0, idx)} …`;
 }
 
-function shortTime(iso: string): string {
-  const m = /T(\d{2}:\d{2})/.exec(iso);
-  return m?.[1] ?? iso;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "Nov 3, 14:10" from an ISO timestamp, read off the string itself (no timezone
+// conversion) so the board matches the ledger it was rendered from.
+export function runWhen(iso: string): string | undefined {
+  const m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}:\d{2})/.exec(iso);
+  const month = m ? MONTHS[Number(m[1]) - 1] : undefined;
+  return m && month ? `${month} ${Number(m[2])}, ${m[3]}` : undefined;
 }
 
 function statusPill(status: CoordinatorLedger["status"]): { label: string; tone: CanvasTone } {

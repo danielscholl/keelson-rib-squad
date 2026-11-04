@@ -33,6 +33,7 @@ import {
   REPORT_RUN_ACTION,
   RESET_SQUAD_ACTION,
   ROLLBACK_RUN_ACTION,
+  runWhen,
   STEER_COORDINATOR_ACTION,
   STOP_COORDINATOR_ACTION,
 } from "./boards/coordinator.ts";
@@ -4001,7 +4002,11 @@ async function viewRunAction(action: RibAction): Promise<RibActionResult> {
     await snapshots.recompose(RUN_DETAIL_KEY);
     return {
       ok: true,
-      data: { effect: "open-canvas", key: RUN_DETAIL_KEY, title: `Run ${id}` },
+      data: {
+        effect: "open-canvas",
+        key: RUN_DETAIL_KEY,
+        title: `Run · ${(ledger && runWhen(ledger.createdAt)) ?? id}`,
+      },
     };
   } catch (e) {
     return { ok: false, error: `view-run failed: ${errText(e)}` };

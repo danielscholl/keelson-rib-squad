@@ -50,7 +50,7 @@ export interface RosterProject {
 // (the roster offers no authoring verbs, so a second cast can't start mid-review).
 // Neither → the launchpad (cold start) or the steady-state Hire verb.
 export function buildRosterBoard(
-  members: readonly Member[],
+  seated: readonly Member[],
   pending?: PendingGenesis | null,
   now: number = Date.now(),
   proposal?: CastProposalRecord | null,
@@ -58,6 +58,7 @@ export function buildRosterBoard(
   project?: RosterProject,
 ): CanvasBoardView {
   const sections: Section[] = [];
+  const members = benchOrder(seated);
   const hoisted = hoistedEnsemble(members);
 
   if (liveRunsElsewhere.length > 0) sections.push(liveRunsStrip(liveRunsElsewhere));
@@ -123,6 +124,19 @@ export function buildRosterBoard(
     },
     sections,
   };
+}
+
+// Cast order, so the bench reads lead-first the way it was cast: by identity slot, then
+// by authoring time for members past the five hues or written before slots existed.
+function benchOrder(members: readonly Member[]): Member[] {
+  const slot = (m: Member) =>
+    typeof m.identitySlot === "number" && m.identitySlot >= 0
+      ? m.identitySlot
+      : IDENTITY_SLOT_COUNT;
+  return members
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => slot(a.m) - slot(b.m) || b.i - a.i)
+    .map(({ m }) => m);
 }
 
 // One member -> one card, in the bench's anatomy so an approved seat reads as the member
@@ -308,7 +322,8 @@ function liveRunsStrip(runs: readonly LiveRunElsewhere[]): Section {
   const displayNames = runs.map((run) => run.name ?? run.scopeId);
   return {
     kind: "actions",
-    title: `● ${runs.length} live run${runs.length === 1 ? "" : "s"} in ${displayNames.join(", ")}`,
+    title: `${runs.length} live run${runs.length === 1 ? "" : "s"} in ${displayNames.join(", ")}`,
+    wrap: true,
     items: runs.map((run) => {
       const displayName = run.name ?? run.scopeId;
       return {

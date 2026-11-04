@@ -21,6 +21,7 @@ const run = (over: Partial<RunSummary> = {}): RunSummary => ({
 
 describe("buildRunsBoard", () => {
   test("renders one card per run with a status pill and a View action carrying the id", () => {
+    // (no dot: the pill alone carries the status)
     const board = buildRunsBoard([
       run(),
       run({ id: "r2", status: "max-rounds", round: 16 }),
@@ -35,19 +36,25 @@ describe("buildRunsBoard", () => {
     expect(first?.title).toBe("Implement the usage tab");
     expect(first?.pill?.label).toBe("done");
     expect(first?.pill?.tone).toBe("ok");
+    expect(first?.dot).toBeUndefined();
+    expect(first?.fields).toEqual([
+      { label: "rounds", value: 11 },
+      { label: "ended", value: "Jul 2, 16:54" },
+    ]);
     const view = first?.actions?.[0];
     expect(view?.type).toBe(VIEW_RUN_ACTION);
     expect(view?.payload).toEqual({ id: "2026-07-02T16-14-45-216Z" });
     const report = first?.actions?.find((a) => a.type === REPORT_RUN_ACTION);
     expect(report?.payload).toEqual({ runId: "2026-07-02T16-14-45-216Z" });
-    expect(cards.items[1]?.pill?.tone).toBe("caution");
-    expect(cards.items[2]?.pill?.tone).toBe("caution");
+    expect(cards.items[1]?.pill).toEqual({ label: "max rounds", tone: "caution" });
+    expect(cards.items[2]?.pill).toEqual({ label: "max tokens", tone: "caution" });
   });
 
   test("active cards carry a Stop action targeting the caller's scope", () => {
     const board = buildRunsBoard([run({ status: "active", scopeId: "stale" })], "beta");
     const cards = board.sections.find((s) => s.kind === "cards");
     if (cards?.kind !== "cards") throw new Error("no cards section");
+    expect(cards.items[0]?.fields?.find((f) => f.label === "updated")?.value).toBe("Jul 2, 16:54");
     const stop = cards.items[0]?.actions?.find((a) => a.type === "stop-coordinate");
     expect(stop?.payload).toEqual({ scopeId: "beta" });
     expect(stop?.destructive).toBe(true);
@@ -57,7 +64,7 @@ describe("buildRunsBoard", () => {
     expect(doneCards.items[0]?.actions?.some((a) => a.type === "stop-coordinate")).toBe(false);
   });
 
-  test("rollback appears only on aborted and failed cards with preview payload", () => {
+  test("rollback appears only on aborted and failed cards, in the overflow, with preview payload", () => {
     const board = buildRunsBoard(
       [
         run({ id: "done", task: "done", status: "done" }),
@@ -82,6 +89,7 @@ describe("buildRunsBoard", () => {
     for (const id of ["aborted", "verify", "quality"]) {
       const rollback = byTitle.get(id)?.actions?.find((a) => a.type === ROLLBACK_RUN_ACTION);
       expect(rollback?.destructive).toBe(true);
+      expect(rollback?.inline).toBeUndefined();
       expect(rollback?.payload).toEqual({ run: id, confirm: false, scopeId: "beta" });
       expect(rollback?.confirm?.confirmLabel).toBe("Preview rollback");
       expect(rollback?.confirm?.body).toContain("C/M/D manifest");
@@ -118,20 +126,43 @@ describe("buildRunDetailBoard", () => {
   test("renders the archived run's sections without the task composer", () => {
     const board = buildRunDetailBoard(ledger(), "r1");
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(board.title).toBe("Run");
-    expect(board.header?.chip).toBe("r1");
+    // The drawer is titled by its task and dated by when the run started.
+    expect(board.title).toBe("ship it");
+    expect(board.header?.chip).toBe("Jul 1, 00:00");
     expect(board.header?.status?.label).toBe("done");
+    // Stats lead, then the report opener; exactly one stats strip.
+    expect(board.sections[0]?.kind).toBe("stats");
+    expect(board.sections.filter((s) => s.kind === "stats")).toHaveLength(1);
     // A history drawer is read-only: no composer; the only verb is the run-report opener.
     const actions = board.sections.filter((s) => s.kind === "actions");
     expect(actions).toHaveLength(1);
+    expect(board.sections[1]).toBe(actions[0]);
+    expect(actions[0]?.kind === "actions" ? actions[0].wrap : undefined).toBe(true);
     const report = actions[0]?.kind === "actions" ? actions[0].items[0] : undefined;
     expect(report?.type).toBe(REPORT_RUN_ACTION);
+    expect(report?.label).toBe("Open report");
     expect(report?.payload).toEqual({ runId: "r1" });
     // The full run body is there: standup + gate history + minds + ledger groups.
     const titles = board.sections.map((s) => ("title" in s ? s.title : undefined));
     expect(titles).toContain("Standup");
     expect(titles).toContain("Gate history");
     expect(titles).toContain("Minds");
+    // The task fits the title, so a Goal row would only repeat it.
+    expect(titles).not.toContain("Goal");
+  });
+
+  test("keeps the Goal row when the title had to cut a long task short", () => {
+    const task = `ship the search rib ${"and more ".repeat(20)}`.trim();
+    const board = buildRunDetailBoard(ledger({ task }), "r1");
+    expect(canvasViewSchema.safeParse(board).success).toBe(true);
+    expect(board.title?.endsWith("…")).toBe(true);
+    const titles = board.sections.map((s) => ("title" in s ? s.title : undefined));
+    expect(titles).toContain("Goal");
+  });
+
+  test("falls back to the raw id when createdAt isn't a timestamp", () => {
+    const board = buildRunDetailBoard(ledger({ createdAt: "garbage" }), "r1");
+    expect(board.header?.chip).toBe("r1");
   });
 
   test("renders a two-series tokens chart aggregated by numeric round", () => {
@@ -171,6 +202,7 @@ describe("buildRunDetailBoard", () => {
     const chart = charts[0];
     if (chart?.kind !== "chart") throw new Error("no chart section");
     expect(chart.title).toBe("Tokens per round");
+    expect(chart.mark).toBe("bar");
     expect(chart.yLabel).toBe("tokens");
     expect(chart.series).toEqual([
       {
