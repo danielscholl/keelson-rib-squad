@@ -498,7 +498,7 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(r1[0]?.person).toEqual({ name: "coordinator", tone: "brand", face: "◆" });
   });
 
-  test("the round rail tones member cells by identity; gate red and re-plan stay status", () => {
+  test("the round rail names event and member, toned by identity; gate red and re-plan stay status", () => {
     const board = buildCoordinatorBoard(
       ledger({
         round: 3,
@@ -517,7 +517,8 @@ describe("buildCoordinatorBoard active layout", () => {
     if (rail?.kind !== "grid") throw new Error("no round rail");
     const byLabel = new Map(rail.cells.map((c) => [c.label, c.badge]));
     expect(byLabel.get("R0")?.tone).toBe("id-teal");
-    expect(byLabel.get("R0")?.text).toBe("code");
+    expect(byLabel.get("R0")?.text).toBe("code · atlas");
+    expect(byLabel.get("R1")?.text).toBe("gate ✕");
     expect(byLabel.get("R1")?.tone).toBe("error");
     expect(byLabel.get("R2")?.tone).toBe("caution");
     expect(byLabel.get("R3")?.text).toContain("now");
@@ -599,15 +600,16 @@ describe("buildCoordinatorBoard active layout", () => {
         ],
       }),
     );
-    const gates = rowsTitled(board, "Gate history");
-    expect(gates.map((g) => g.text)).toEqual([
-      "verification failed · exit 2",
+    const ledgerGates = ledgerRowsOf(board).filter((r) => r.glyph !== undefined);
+    expect(ledgerGates.map((r) => r.text)).toEqual([
       "verification passed",
+      "bun run typecheck failed · exit 2 · src/a.ts: bad type",
     ]);
-    const ledgerGates = ledgerRowsOf(board).filter((r) => r.text.startsWith("verification"));
     expect(ledgerGates.map((r) => r.glyph)).toEqual(["ok", "error"]);
     expect(ledgerGates.every((r) => r.person === undefined && r.chip === undefined)).toBe(true);
     expect(ledgerGates[1]?.detail).toContain("src/a.ts: bad type");
+    // Both gates sit in Ledger rounds on screen, so Gate history has nothing to add.
+    expect(rowsTitled(board, "Gate history")).toEqual([]);
   });
 
   test("a lone green gate leaves Gate history out; Verification already says it", () => {
@@ -626,9 +628,10 @@ describe("buildCoordinatorBoard active layout", () => {
     expect(rowsTitled(board, "Gate history")).toEqual([]);
   });
 
-  test("gate history lists every verify entry across the run with round trailing", () => {
+  test("gate history lists the gates scrolled out of the Ledger, with round trailing", () => {
     const board = buildCoordinatorBoard(
       ledger({
+        round: 7,
         transcript: [
           entry({
             round: 2,
@@ -643,6 +646,9 @@ describe("buildCoordinatorBoard active layout", () => {
             text: "review passed (no BLOCK verdict)",
             verdict: "pass",
           }),
+          entry({ round: 5, kind: "coordinator", text: "next" }),
+          entry({ round: 6, kind: "coordinator", text: "next" }),
+          entry({ round: 7, kind: "coordinator", text: "next" }),
         ],
       }),
     );
@@ -852,21 +858,16 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status?.label).toBe("done");
-    // A terminal board leads with the task composer (start another run), then the Goal it
-    // ran against and its stats, then the Standup.
-    expect(sectionTitles(board).slice(0, 4)).toEqual([
-      "Give the squad a task",
-      "Goal",
-      undefined,
-      "Standup",
-    ]);
+    // A settled board reads its result first (Goal, stats, Standup), then offers the
+    // next task.
+    expect(sectionTitles(board).slice(0, 3)).toEqual(["Goal", undefined, "Standup"]);
     const body = sectionTitles(board).filter((t) => t && !t.startsWith("Ledger"));
     expect(body).toEqual([
-      "Give the squad a task",
       "Goal",
       "Standup",
       "Verification · round 5",
       "Minds",
+      "Give the squad a task",
     ]);
     const standup = rowsTitled(board, "Standup");
     expect(standup.some((i) => i.text.includes("shipped it"))).toBe(true);
@@ -892,6 +893,9 @@ describe("buildCoordinatorBoard terminal layouts", () => {
           entry({ round: 1, kind: "code", speaker: "atlas", text: "edited", provider: "claude" }),
           entry({ round: 1, kind: "verify", text: "verification FAILED: bun test (exit 1)" }),
           entry({ round: 2, kind: "verify", text: "checks passed", verdict: "pass" }),
+          entry({ round: 3, kind: "coordinator", text: "wrap" }),
+          entry({ round: 4, kind: "coordinator", text: "wrap" }),
+          entry({ round: 5, kind: "coordinator", text: "wrap" }),
         ],
       }),
     );
@@ -947,7 +951,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(verify[0]?.trailing).toBe("exit 1 · 1 failing");
   });
 
-  test("max-rounds shows an Advisory + green Verification, led by the task composer", () => {
+  test("max-rounds shows an Advisory + green Verification, then the task composer", () => {
     const board = buildCoordinatorBoard(
       ledger({
         status: "max-rounds",
@@ -965,9 +969,8 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(board.header?.status?.label).toBe("max rounds");
     expect(rowsTitled(board, "Advisory").length).toBe(1);
     expect(rowsTitled(board, "Verification")[0]?.glyph).toBe("ok");
-    // A terminal board is framed by two actions sections — the task composer (start
-    // another run) leads, the teardown verb closes; the run ledger itself carries no
-    // interactive actions between them.
+    // A terminal board ends with two actions sections, the task composer (start another
+    // run) and then the teardown verb; the run ledger itself carries no interactive actions.
     const actions = board.sections.filter((s) => s.kind === "actions");
     expect(actions).toHaveLength(2);
     const composer = actions[0];

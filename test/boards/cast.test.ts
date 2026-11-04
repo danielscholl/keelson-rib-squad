@@ -322,7 +322,7 @@ describe("buildCastBoard picking", () => {
     expect(atlas?.selected).toBe(false);
     expect(atlas?.dot).toBe("neutral");
     expect(atlas?.pill).toEqual({ label: "dropped", tone: "warn" });
-    expect(atlas?.fields?.[0]).toEqual({ value: "Engineer" });
+    expect(atlas?.fields?.[0]).toEqual({ label: "role", value: "Engineer" });
     // The reason to pick it back has to survive dropping it.
     expect(atlas?.reason?.text).toBe("Build.");
     expect(atlas?.fields?.at(-1)?.value).toBe("✎ edits code");
@@ -380,7 +380,7 @@ describe("buildCastBoard card verbs", () => {
   test("the model verb is a lone modelPicker field — the host's solo-picker fast path", () => {
     const board = buildCastBoard(proposal());
     const a = cardAction(board, "Atlas", CAST_MODEL_ACTION);
-    expect(a?.label).toBe("Model");
+    expect(a?.label).toBe("Model — default");
     expect(a?.payload).toEqual({ slug: "atlas", castAt: "2026-06-27T00:00:00.000Z" });
     expect(a?.fields).toHaveLength(1);
     expect(a?.fields?.[0]?.modelPicker?.providerField).toBe("provider");

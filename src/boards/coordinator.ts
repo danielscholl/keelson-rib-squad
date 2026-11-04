@@ -37,6 +37,7 @@ const STEP_CAP = 200;
 const LEDGER_ROW_CAP = 200;
 const DETAIL_CAP = 4000;
 const VERIFY_SUMMARY_CAP = 120;
+const GATE_CAUSE_CAP = 90;
 const MAX_FINDINGS = 12;
 // Rounds rendered as full entry groups in the Ledger; older rounds compress to a stub.
 const LEDGER_ROUNDS_SHOWN = 3;
@@ -113,11 +114,15 @@ export function personFor(speaker: string | undefined, tones?: IdentityTones): P
 // A gate entry's stored text leads with its verdict and trails the full command and
 // output; one-line views show only the verdict (and exit code), the rest is disclosed.
 export function gateHeadline(e: CoordinatorEntry): string {
-  const line = firstLine(e.text).trim();
+  const [first = "", ...rest] = e.text.split("\n");
+  const line = first.trim();
   const colon = line.indexOf(": ");
   const head = (colon > 0 ? line.slice(0, colon) : line).replace(/\bFAILED\b/, "failed");
-  const exit = /\(exit (\d+)\)/.exec(line)?.[1];
-  return exit && outcomeTone(e) === "error" ? `${head} · exit ${exit}` : head;
+  const failed = /^verification FAILED: (.+?) \(exit (\d+)\)$/.exec(line);
+  if (!failed || outcomeTone(e) !== "error") return head;
+  const cause = rest.find((l) => l.trim())?.trim();
+  const what = `${failed[1]} failed · exit ${failed[2]}`;
+  return cause ? `${what} · ${truncate(cause, GATE_CAUSE_CAP)}` : what;
 }
 
 // Markdown control characters leak into one-line previews as noise (##, **, `code`);
@@ -180,13 +185,11 @@ export function buildCoordinatorBoard(
   hasMembers = false,
 ): CanvasBoardView {
   if (!ledger) return idleBoard(hasMembers);
-  // Head every non-active board with the task composer so assigning work is one
-  // field away; an ACTIVE run omits it (you're watching, not queuing another).
   const base = sectionsFor(ledger, undefined, tones, scopeId);
-  // A terminal board leads with the composer and ends with the teardown verb; an
-  // ACTIVE run omits both (you Stop a live run before resetting the scope).
+  // A settled board reads its result first, then offers the next task and the teardown
+  // verb; an ACTIVE run omits both (you Stop a live run before resetting the scope).
   const sections =
-    ledger.status === "active" ? base : [taskComposerSection(), ...base, resetSection()];
+    ledger.status === "active" ? base : [...base, taskComposerSection(), resetSection()];
   return {
     view: "board",
     title: "Run loop",
@@ -228,8 +231,10 @@ export function buildRunDetailBoard(
     (s) => !(titled && s.kind === "rows" && s.title === "Goal"),
   );
   const detailBody: Section[] = body.filter((s) => s.kind !== "stats");
+  const tokens = tokensPerRoundSection(ledger.transcript);
+  const ledgerAt = detailBody.findIndex((s) => s.kind === "rows" && s.title?.startsWith("Ledger"));
+  if (tokens) detailBody.splice(ledgerAt < 0 ? detailBody.length : ledgerAt, 0, tokens);
   const sections: Section[] = [pulseSection(ledger), runReportSection(id), ...detailBody];
-  pushIf(sections, tokensPerRoundChartSection(ledger.transcript));
   return {
     view: "board",
     title: stripMd(truncate(ledger.task, RUN_TITLE_CAP)) || "Run",
@@ -356,7 +361,7 @@ function activeSections(
   if (ledger.failedSteps?.length) sections.push(abandonedSection(ledger.failedSteps));
   if (ledger.teamGaps?.length) sections.push(teamGapsSection(ledger.teamGaps));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones, true));
   return sections;
@@ -475,7 +480,7 @@ function doneSections(
   if (ledger.summary?.trim()) sections.push(standupSection(ledger.summary));
   if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
@@ -495,7 +500,7 @@ function maxRoundsSections(
   ];
   if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
@@ -512,7 +517,7 @@ function maxTokensSections(
   ];
   if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
@@ -532,7 +537,7 @@ function failedSections(
       "The done-gate came back red — the artifact does not pass; there is no accept path. Inspect the failures and re-dispatch.",
     ),
   );
-  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
@@ -621,7 +626,7 @@ function pulseSection(ledger: CoordinatorLedger): Section {
   };
 }
 
-function tokensPerRoundChartSection(transcript: readonly CoordinatorEntry[]): Section | undefined {
+function tokensPerRoundSection(transcript: readonly CoordinatorEntry[]): Section | undefined {
   const byRound = new Map<number, { input: number; output: number; hasUsage: boolean }>();
   for (const e of transcript) {
     const agg = byRound.get(e.round) ?? { input: 0, output: 0, hasUsage: false };
@@ -634,16 +639,19 @@ function tokensPerRoundChartSection(transcript: readonly CoordinatorEntry[]): Se
   }
   if ([...byRound.values()].filter((round) => round.hasUsage).length < 2) return undefined;
   const rounds = [...byRound.entries()].sort(([a], [b]) => a - b);
+  const peak = Math.max(...rounds.map(([, agg]) => agg.input + agg.output));
   return {
-    kind: "chart",
+    kind: "bars",
     title: "Tokens per round",
-    mark: "bar",
-    series: [
-      {
-        label: "tokens",
-        points: rounds.map(([round, agg]) => ({ x: `R${round}`, y: agg.input + agg.output })),
-      },
-    ],
+    items: rounds.map(([round, agg]) => {
+      const total = agg.input + agg.output;
+      return {
+        label: `Round ${round}`,
+        value: total,
+        total: peak,
+        trailing: `${formatTokens(total)} tok`,
+      };
+    }),
   };
 }
 
@@ -692,23 +700,24 @@ function roundBadge(
   entries: readonly CoordinatorEntry[],
   tones?: IdentityTones,
 ): { text: string; tone?: CanvasTone } {
-  const gateRed = entries.some((e) => e.kind === "verify" && outcomeTone(e) === "error");
-  if (gateRed) return { text: "gate ✕", tone: "error" };
-  if (entries.some((e) => e.kind === "replan")) return { text: "re-plan", tone: "caution" };
-  // Every cell names the round's event; a member's round wears that member's hue, so
-  // who acted still reads at a glance without mixing names into the labels.
-  const code = entries.find((e) => e.kind === "code");
-  if (code)
-    return { text: "code", tone: code.speaker ? identityTone(code.speaker, tones) : "accent" };
-  const verified = entries.some((e) => e.kind === "verify" && outcomeTone(e) === "ok");
-  if (verified) return { text: "gate ✓", tone: "ok" };
-  const dispatch = entries.find((e) => e.kind === "dispatch" || e.kind === "workflow");
-  if (dispatch) {
+  const gates = entries.filter((e) => e.kind === "verify").map(outcomeTone);
+  const gateRed = gates.includes("error");
+  const mark = gateRed ? " ✕" : gates.includes("ok") ? " ✓" : "";
+  // The cell reads "<event> · <who>" plus the round's gate verdict; red stays reserved
+  // for a failed gate, and a member's round otherwise wears that member's hue.
+  const work =
+    entries.find((e) => e.kind === "code") ??
+    entries.find((e) => e.kind === "dispatch" || e.kind === "workflow");
+  if (work) {
+    const event = work.kind === "code" ? "code" : work.kind === "workflow" ? "workflow" : "team";
+    const who = work.speaker?.trim();
     return {
-      text: dispatch.kind === "workflow" ? "workflow" : "team",
-      tone: dispatch.speaker ? identityTone(dispatch.speaker, tones) : "info",
+      text: `${event}${who ? ` · ${who}` : ""}${mark}`,
+      tone: gateRed ? "error" : who ? identityTone(who, tones) : "info",
     };
   }
+  if (gates.length > 0) return { text: `gate${mark}`, tone: gateRed ? "error" : "ok" };
+  if (entries.some((e) => e.kind === "replan")) return { text: "re-plan", tone: "caution" };
   return { text: "plan", tone: "neutral" };
 }
 
@@ -888,17 +897,19 @@ function toolGlyph(t: ToolTrace, isLast: boolean): CanvasTone {
 // Verification and change-quality verdicts across the whole run, one line per event —
 // the gate's history stays legible even after its entries scroll out of the ledger
 // window's full groups.
+// Gates the board doesn't already show: not the one Verification reports, and not one
+// in a Ledger round still on screen. It keeps a folded-away red gate from vanishing.
 function gateHistorySection(
   transcript: readonly CoordinatorEntry[],
-  verification?: VerificationRecord,
+  verification: VerificationRecord | undefined,
+  ledgerRounds: number,
 ): Section | undefined {
-  const all = transcript.filter((e) => e.kind === "verify");
-  const latest = all.at(-1);
-  const gates = verification && latest?.round === verification.atRound ? all.slice(0, -1) : all;
+  const rounds = [...new Set(transcript.map((e) => e.round))].sort((a, b) => b - a);
+  const visible = new Set(rounds.slice(0, ledgerRounds));
+  const gates = transcript.filter(
+    (e) => e.kind === "verify" && !visible.has(e.round) && e.round !== verification?.atRound,
+  );
   if (gates.length === 0) return undefined;
-  if (!verification && gates.length < 2 && outcomeTone(gates[0] as CoordinatorEntry) !== "error") {
-    return undefined;
-  }
   return {
     kind: "rows",
     title: "Gate history",
@@ -1043,6 +1054,7 @@ function ledgerSections(
       kind: "rows",
       items: [
         {
+          glyph: "neutral" as CanvasTone,
           text: `${span} · ${olderEntries} earlier ${olderEntries === 1 ? "entry" : "entries"}`,
           ...(live ? {} : { trailing: "full run in Runs" }),
         },

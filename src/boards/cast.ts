@@ -177,7 +177,7 @@ function cardFor(member: Member, castAt: string, showCast: boolean) {
   const cast = showCast ? castLabel(member) : undefined;
   if (cast) fields.push({ label: "cast", value: cast });
   fields.push(capabilityField(member));
-  if (!picked) fields.unshift({ value: member.role.trim() || "Member" });
+  if (!picked) fields.unshift({ label: "role", value: member.role.trim() || "Member" });
   return {
     title: name,
     dot: picked ? identityToneForSlot(member.identitySlot) : ("neutral" as CanvasTone),
@@ -246,10 +246,10 @@ function charterAction(member: Member, castAt: string) {
 }
 
 // validateProviderPin admits a provider with no model (that vendor's own default), and
-// this label is the only place that pin is visible; an unpinned seat says plain "Model".
+// this label is the only place that pin is visible.
 export function modelButtonLabel(member: { model?: string; provider?: string }): string {
   if (member.model) return `Model — ${member.model}`;
-  return member.provider ? `Model — ${member.provider} default` : "Model";
+  return `Model — ${member.provider ? `${member.provider} default` : "default"}`;
 }
 
 // What the seat is FOR — what you re-read when deciding whether to seat it. The scan's

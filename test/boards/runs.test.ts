@@ -173,7 +173,7 @@ describe("buildRunDetailBoard", () => {
     expect(replanned.items.map((i) => i.label)).toContain("Re-plans");
   });
 
-  test("closes with the tokens chart, after the Ledger", () => {
+  test("puts tokens per round between Minds and the Ledger", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -197,8 +197,9 @@ describe("buildRunDetailBoard", () => {
       "r1",
     );
     const kinds = board.sections.map((s) => ("title" in s && s.title ? s.title : s.kind));
-    expect(kinds.at(-1)).toBe("Tokens per round");
-    expect(kinds.indexOf("Minds")).toBeLessThan(kinds.length - 1);
+    const at = kinds.indexOf("Tokens per round");
+    expect(at).toBe(kinds.indexOf("Minds") + 1);
+    expect(kinds[at + 1]?.startsWith("Ledger")).toBe(true);
   });
 
   test("falls back to the raw id when createdAt isn't a timestamp", () => {
@@ -206,7 +207,7 @@ describe("buildRunDetailBoard", () => {
     expect(board.header?.chip).toBe("r1");
   });
 
-  test("renders one tokens series per round, labelled R1, R2…", () => {
+  test("renders tokens per round as compact bars scaled to the busiest round", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -238,25 +239,18 @@ describe("buildRunDetailBoard", () => {
     );
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const charts = board.sections.filter((s) => s.kind === "chart");
-    expect(charts).toHaveLength(1);
-    const chart = charts[0];
-    if (chart?.kind !== "chart") throw new Error("no chart section");
-    expect(chart.title).toBe("Tokens per round");
-    expect(chart.mark).toBe("bar");
-    expect(chart.yLabel).toBeUndefined();
-    expect(chart.series).toEqual([
-      {
-        label: "tokens",
-        points: [
-          { x: "R1", y: 120 },
-          { x: "R2", y: 90 },
-        ],
-      },
+    const bars = board.sections.filter((s) => s.kind === "bars");
+    expect(bars).toHaveLength(1);
+    const section = bars[0];
+    if (section?.kind !== "bars") throw new Error("no bars section");
+    expect(section.title).toBe("Tokens per round");
+    expect(section.items).toEqual([
+      { label: "Round 1", value: 120, total: 120, trailing: "120 tok" },
+      { label: "Round 2", value: 90, total: 120, trailing: "90 tok" },
     ]);
   });
 
-  test("omits the tokens chart when fewer than two rounds carry usage", () => {
+  test("omits tokens per round when fewer than two rounds carry usage", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -274,10 +268,10 @@ describe("buildRunDetailBoard", () => {
     );
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(board.sections.some((s) => s.kind === "chart")).toBe(false);
+    expect(board.sections.some((s) => s.kind === "bars")).toBe(false);
   });
 
-  test("plots every round, a round that spent no tokens at zero", () => {
+  test("lists every round, one that spent no tokens at zero", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -302,19 +296,13 @@ describe("buildRunDetailBoard", () => {
     );
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const chart = board.sections.find((s) => s.kind === "chart");
-    if (chart?.kind !== "chart") throw new Error("no chart section");
-    expect(chart.series).toHaveLength(1);
-    expect(chart.series[0]?.points).toEqual([
-      { x: "R1", y: 120 },
-      { x: "R2", y: 0 },
-      { x: "R3", y: 60 },
+    const section = board.sections.find((s) => s.kind === "bars");
+    if (section?.kind !== "bars") throw new Error("no bars section");
+    expect(section.items.map((i) => [i.label, i.value, i.trailing])).toEqual([
+      ["Round 1", 120, "120 tok"],
+      ["Round 2", 0, "0 tok"],
+      ["Round 3", 60, "60 tok"],
     ]);
-    for (const series of chart.series) {
-      for (const point of series.points) {
-        expect(Number.isNaN(point.y)).toBe(false);
-      }
-    }
   });
 
   test("shows every round of the ledger — the archive drill-down never stubs", () => {
