@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.0](https://github.com/scholl-family/keelson-rib-squad/compare/v0.32.1...v0.33.0) (2026-11-04)
+
+
+### Added
+
+* **boards:** UI polish overhaul ([#273](https://github.com/scholl-family/keelson-rib-squad/issues/273)) ([626c892](https://github.com/scholl-family/keelson-rib-squad/commit/626c892cffa41b0ce59cc50365033af7218a0c36))
+
 ## [0.32.1](https://github.com/danielscholl/keelson-rib-squad/compare/v0.32.0...v0.32.1) (2026-07-17)
 
 
