@@ -422,7 +422,7 @@ describe("buildCastBoard card verbs", () => {
       }),
     );
     const a = cardAction(board, "Mal", CAST_MODEL_ACTION);
-    expect(a?.label).toBe("Model — copilot default");
+    expect(a?.label).toBe("Model — copilot · inherited");
     expect(a?.fields?.[0]?.modelPicker?.providerDefault).toBe("copilot");
   });
 

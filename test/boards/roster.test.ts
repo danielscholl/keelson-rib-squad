@@ -408,14 +408,14 @@ describe("buildRosterBoard ensemble hoist", () => {
 });
 
 describe("buildRosterBoard live runs elsewhere", () => {
-  test("renders a leading switch strip on the cold-start board", () => {
+  test("renders a trailing switch strip on the cold-start board", () => {
     const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [
       { scopeId: "beta", name: "rib-squad", task: "Ship the cue", round: 2 },
     ]);
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(board.sections[0]?.kind).toBe("actions");
     const strip = liveStrip(board);
+    expect(board.sections.at(-1)).toBe(strip);
     expect(strip?.title).toBe("1 live run in rib-squad");
     expect(strip?.wrap).toBe(true);
     expect(strip?.items[0]).toMatchObject({
@@ -427,7 +427,7 @@ describe("buildRosterBoard live runs elsewhere", () => {
     });
   });
 
-  test("renders a leading switch strip on a populated roster", () => {
+  test("renders a trailing switch strip on a populated roster", () => {
     const board = buildRosterBoard(
       [member()],
       undefined,
@@ -437,8 +437,8 @@ describe("buildRosterBoard live runs elsewhere", () => {
     );
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(board.sections[0]).toBe(liveStrip(board));
-    expect(board.sections[1]?.kind).toBe("cards");
+    expect(board.sections[0]?.kind).toBe("cards");
+    expect(board.sections.at(-1)).toBe(liveStrip(board));
   });
 
   test("omitting or passing an empty live-runs list renders no strip", () => {

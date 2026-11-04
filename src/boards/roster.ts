@@ -61,8 +61,6 @@ export function buildRosterBoard(
   const members = benchOrder(seated);
   const hoisted = hoistedEnsemble(members);
 
-  if (liveRunsElsewhere.length > 0) sections.push(liveRunsStrip(liveRunsElsewhere));
-
   if (members.length === 0 && !pending) {
     if (proposal) {
       sections.push(awaitingSection());
@@ -91,6 +89,8 @@ export function buildRosterBoard(
       }
     }
   }
+
+  if (liveRunsElsewhere.length > 0) sections.push(liveRunsStrip(liveRunsElsewhere));
 
   const chip = hoisted ?? (members.length === 0 ? project?.name?.trim() || undefined : undefined);
 

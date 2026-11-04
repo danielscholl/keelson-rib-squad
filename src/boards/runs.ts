@@ -120,7 +120,7 @@ function runActions(r: RunSummary, scopeId?: string): CardAction[] {
   if (isRollbackableRunStatus(r.status)) {
     actions.push({
       type: ROLLBACK_RUN_ACTION,
-      label: "Rollback",
+      label: "Preview rollback",
       glyph: "↶",
       inline: true,
       payload: { run: r.id, confirm: false, scopeId: scopeId ?? r.scopeId ?? "default" },

@@ -249,7 +249,7 @@ function charterAction(member: Member, castAt: string) {
 // this label is the only place that pin is visible.
 export function modelButtonLabel(member: { model?: string; provider?: string }): string {
   if (member.model) return `Model — ${member.model}`;
-  return `Model — ${member.provider ? `${member.provider} default` : "inherited"}`;
+  return `Model — ${member.provider ? `${member.provider} · inherited` : "inherited"}`;
 }
 
 // What the seat is FOR — what you re-read when deciding whether to seat it. The scan's

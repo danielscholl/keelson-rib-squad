@@ -271,7 +271,7 @@ describe("buildRunDetailBoard", () => {
     expect(board.sections.some((s) => s.kind === "bars")).toBe(false);
   });
 
-  test("lists every round, one that logged no usage at zero", () => {
+  test("leaves out a round that logged no usage", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -300,7 +300,6 @@ describe("buildRunDetailBoard", () => {
     if (section?.kind !== "bars") throw new Error("no bars section");
     expect(section.items.map((i) => [i.label, i.value, i.trailing])).toEqual([
       ["R1 · code · atlas", 120, "120 tok"],
-      ["R2 · team · nova", 0, "no usage"],
       ["R3 · workflow · atlas", 60, "60 tok"],
     ]);
   });
