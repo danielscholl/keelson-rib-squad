@@ -528,13 +528,14 @@ describe("buildCoordinatorBoard active layout", () => {
         transcript: [
           entry({ round: 0, kind: "replan", text: "rebuild" }),
           entry({ round: 0, kind: "code", speaker: "atlas", text: "edited" }),
+          entry({ round: 0, kind: "verify", text: "verification passed", verdict: "pass" }),
         ],
         status: "active",
       }),
     );
     const mixedRail = mixed.sections.find((s) => s.kind === "grid");
     if (mixedRail?.kind !== "grid") throw new Error("no round rail");
-    expect(mixedRail.cells[0]?.badge?.text).toBe("re-plan · code · atlas");
+    expect(mixedRail.cells[0]?.badge?.text).toBe("re-plan · code · atlas · gate ✓");
     expect(byLabel.get("R3")?.text).toBe("▶ code · atlas");
     // Without a tones map the member cell folds to neutral — never a hash.
     const bare = buildCoordinatorBoard(
@@ -664,8 +665,8 @@ describe("buildCoordinatorBoard active layout", () => {
     );
     const ledgerGates = ledgerRowsOf(board).filter((r) => r.glyph !== undefined);
     expect(ledgerGates.map((r) => r.text)).toEqual([
-      "verification passed",
-      "bun run typecheck failed · exit 2 · src/a.ts: bad type",
+      "Gate passed",
+      "Gate failed · bun run typecheck · exit 2 · src/a.ts: bad type",
     ]);
     expect(ledgerGates.map((r) => r.glyph)).toEqual(["ok", "error"]);
     expect(ledgerGates.every((r) => r.person === undefined && r.chip === undefined)).toBe(true);

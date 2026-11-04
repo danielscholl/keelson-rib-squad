@@ -65,8 +65,8 @@ function ensembleFor(members: Member[], projectName: string): { title: string; h
 }
 
 // The scan's claim, as a card: the same anatomy as the seats it proposes, so the board
-// reads as one grammar — the squad's card, then its members'. The ask rides as the
-// footnote; its ABSENCE is the signal worth toning, so that gets a provenance row.
+// reads as one grammar — the squad's card, then its members'. The thesis and the ask
+// share the footnote; the ask's ABSENCE is the signal worth toning, so that gets a provenance row.
 function briefSection(proposal: CastProposalRecord, title: string): Section {
   const mission = proposal.mission?.trim();
   const thesis = proposal.summary?.trim();
@@ -75,8 +75,16 @@ function briefSection(proposal: CastProposalRecord, title: string): Section {
     items: [
       {
         title,
-        ...(mission ? { footnote: `your ask: ${mission}` } : {}),
-        ...(thesis ? { reason: { text: thesis } } : {}),
+        ...(thesis || mission
+          ? {
+              footnote: [
+                thesis && !/[.!?]$/.test(thesis) ? `${thesis}.` : thesis,
+                mission ? `Your ask: ${mission}` : "",
+              ]
+                .filter(Boolean)
+                .join(" "),
+            }
+          : {}),
       },
     ],
   };

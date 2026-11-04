@@ -119,9 +119,10 @@ export function gateHeadline(e: CoordinatorEntry): string {
   const colon = line.indexOf(": ");
   const head = (colon > 0 ? line.slice(0, colon) : line).replace(/\bFAILED\b/, "failed");
   const failed = /^verification FAILED: (.+?) \(exit (\d+)\)$/.exec(line);
-  if (!failed || outcomeTone(e) !== "error") return head;
+  if (!failed || outcomeTone(e) !== "error")
+    return head === "verification passed" ? "Gate passed" : head;
   const cause = rest.find((l) => l.trim())?.trim();
-  const what = `${failed[1]} failed · exit ${failed[2]}`;
+  const what = `Gate failed · ${failed[1]} · exit ${failed[2]}`;
   return cause ? `${what} · ${truncate(cause, GATE_CAUSE_CAP)}` : what;
 }
 
@@ -657,31 +658,38 @@ function tokensPerRoundSection(
   transcript: readonly CoordinatorEntry[],
   tones?: IdentityTones,
 ): Section | undefined {
-  const byRound = new Map<number, { total: number; hasUsage: boolean }>();
+  const byRound = new Map<number, Map<string, number>>();
   for (const e of transcript) {
-    const agg = byRound.get(e.round) ?? { total: 0, hasUsage: false };
-    if (e.usage) {
-      agg.total += e.usage.inputTokens + e.usage.outputTokens;
-      agg.hasUsage = true;
-    }
-    byRound.set(e.round, agg);
+    const spend = byRound.get(e.round) ?? new Map<string, number>();
+    byRound.set(e.round, spend);
+    if (!e.usage) continue;
+    const who = e.speaker?.trim() || "coordinator";
+    spend.set(who, (spend.get(who) ?? 0) + e.usage.inputTokens + e.usage.outputTokens);
   }
-  if ([...byRound.values()].filter((round) => round.hasUsage).length < 2) return undefined;
+  const total = (spend: Map<string, number>) => [...spend.values()].reduce((a, b) => a + b, 0);
+  const rounds = [...byRound.entries()]
+    .filter(([, spend]) => spend.size > 0)
+    .sort(([a], [b]) => a - b);
+  if (rounds.length < 2) return undefined;
   const badges = roundBadges(transcript, tones);
-  const rounds = [...byRound.entries()].filter(([, agg]) => agg.hasUsage).sort(([a], [b]) => a - b);
-  const peak = Math.max(...rounds.map(([, agg]) => agg.total));
+  const peak = Math.max(...rounds.map(([, spend]) => total(spend)));
   return {
     kind: "bars",
-    title: "Tokens per round",
-    items: rounds.map(([round, agg]) => {
+    title:
+      rounds.length < byRound.size ? "Tokens per round · gates spend none" : "Tokens per round",
+    items: rounds.map(([round, spend]) => {
       const badge = badges.get(round);
-      const memberTone = badge?.tone?.startsWith("id-") ? badge.tone : "brand";
+      const sum = total(spend);
       return {
         label: badge ? `R${round} · ${badge.text}` : `R${round}`,
-        value: agg.total,
+        value: sum,
         total: peak,
-        tone: memberTone as CanvasTone,
-        trailing: `${formatTokens(agg.total)} tok`,
+        segments: [...spend].map(([who, n]) => ({
+          label: who,
+          n,
+          tone: who === "coordinator" ? ("brand" as CanvasTone) : identityTone(who, tones),
+        })),
+        trailing: `${formatTokens(sum)} tok`,
       };
     }),
   };
@@ -760,7 +768,7 @@ function workOf(entries: readonly CoordinatorEntry[]): CoordinatorEntry | undefi
 function roundBadge(entries: readonly CoordinatorEntry[], tones?: IdentityTones): RoundBadge {
   const gates = entries.filter((e) => e.kind === "verify").map(outcomeTone);
   const gateRed = gates.includes("error");
-  const mark = gateRed ? " ✕" : gates.includes("ok") ? " ✓" : "";
+  const verdict = gateRed ? "✕" : gates.includes("ok") ? "✓" : "";
   const work = workOf(entries);
   const replan = entries.some((e) => e.kind === "replan");
   const who = work ? work.speaker?.trim() : gates.length > 0 ? undefined : "coordinator";
@@ -774,7 +782,10 @@ function roundBadge(entries: readonly CoordinatorEntry[], tones?: IdentityTones)
   const event =
     [replan ? "re-plan" : undefined, workEvent].filter(Boolean).join(" · ") ||
     (gates.length > 0 ? "gate" : "plan");
-  const text = `${event}${who ? ` · ${who}` : ""}${mark}`;
+  const gateOnly = !work && !replan && gates.length > 0;
+  const text = gateOnly
+    ? `gate ${verdict}`
+    : `${event}${who ? ` · ${who}` : ""}${verdict ? ` · gate ${verdict}` : ""}`;
   // Red stays reserved for a failed gate; a member's round otherwise wears their hue.
   if (gateRed) return { text, tone: "error" };
   if (work) return { text, tone: who ? identityTone(who, tones) : "info" };
@@ -1121,7 +1132,7 @@ function ledgerSections(
       kind: "rows",
       items: [
         {
-          glyph: "neutral" as CanvasTone,
+          icon: "▾",
           text: `Show ${folded} earlier entries · ${span}`,
           ...(live ? {} : { trailing: "full run in Runs" }),
           detail: truncate(

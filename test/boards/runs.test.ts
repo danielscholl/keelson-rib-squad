@@ -197,7 +197,7 @@ describe("buildRunDetailBoard", () => {
       "r1",
     );
     const kinds = board.sections.map((s) => ("title" in s && s.title ? s.title : s.kind));
-    const at = kinds.indexOf("Tokens per round");
+    const at = kinds.findIndex((k) => k.startsWith("Tokens per round"));
     expect(at).toBe(kinds.indexOf("Minds") + 1);
     expect(kinds[at + 1]?.startsWith("Ledger")).toBe(true);
   });
@@ -245,8 +245,23 @@ describe("buildRunDetailBoard", () => {
     if (section?.kind !== "bars") throw new Error("no bars section");
     expect(section.title).toBe("Tokens per round");
     expect(section.items).toEqual([
-      { label: "R1 · code · atlas", value: 120, total: 120, tone: "brand", trailing: "120 tok" },
-      { label: "R2 · code · nova", value: 90, total: 120, tone: "brand", trailing: "90 tok" },
+      {
+        label: "R1 · code · atlas",
+        value: 120,
+        total: 120,
+        segments: [{ label: "atlas", n: 120, tone: "neutral" }],
+        trailing: "120 tok",
+      },
+      {
+        label: "R2 · code · nova",
+        value: 90,
+        total: 120,
+        segments: [
+          { label: "atlas", n: 60, tone: "neutral" },
+          { label: "nova", n: 30, tone: "neutral" },
+        ],
+        trailing: "90 tok",
+      },
     ]);
   });
 

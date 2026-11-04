@@ -259,13 +259,12 @@ describe("buildCastBoard the briefing card", () => {
     const card = briefCard(board);
     expect(card?.pill).toBeUndefined();
     expect(board.header?.status).toEqual({ label: "2 of 2 picked", tone: "brand" });
-    expect(card?.reason?.text).toBe("an engineer and a reviewer");
-    // No label on the thesis: the card's own rule already divides it from the head.
-    expect(card?.reason?.label).toBeUndefined();
+    expect(card?.footnote).toBe("an engineer and a reviewer. Your ask: ship the search rib");
+    expect(card?.reason).toBeUndefined();
   });
 
   test("the ask rides the card; its absence is a provenance row, not a blank", () => {
-    expect(briefCard(buildCastBoard(proposal()))?.footnote).toBe("your ask: ship the search rib");
+    expect(briefCard(buildCastBoard(proposal()))?.footnote).toBe("Your ask: ship the search rib");
     const p = proposal();
     p.mission = undefined;
     const board = buildCastBoard(p);
