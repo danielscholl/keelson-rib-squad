@@ -201,7 +201,7 @@ export function capabilityField(member: { tools?: readonly string[] }): {
   tone?: CanvasTone;
 } {
   const tools = member.tools ?? [];
-  if (tools.includes("code")) return { value: "✎ edits code", tone: "caution" as CanvasTone };
+  if (tools.includes("code")) return { value: "✎ edits code" };
   if (tools.length === 0) return { value: "text-only" };
   if (tools.every((t) => t === "read")) return { value: "reads the repo" };
   return { value: tools.join(", ") };
@@ -214,7 +214,7 @@ function cardActions(member: Member, castAt: string) {
     // the label — the at-rest indicator, since the card carries no model field.
     {
       type: CAST_MODEL_ACTION,
-      label: `Model — ${modelLabel(member)}`,
+      label: modelButtonLabel(member),
       glyph: "⚙",
       payload: { slug: member.slug, castAt },
       fields: [
@@ -244,11 +244,10 @@ function charterAction(member: Member, castAt: string) {
 }
 
 // validateProviderPin admits a provider with no model (that vendor's own default), and
-// this label is the only place that pin is visible now — "default" alone would read as
-// the harness default and hide it.
-export function modelLabel(member: { model?: string; provider?: string }): string {
-  if (member.model) return member.model;
-  return member.provider ? `${member.provider} default` : "default";
+// this label is the only place that pin is visible; an unpinned seat says plain "Model".
+export function modelButtonLabel(member: { model?: string; provider?: string }): string {
+  if (member.model) return `Model — ${member.model}`;
+  return member.provider ? `Model — ${member.provider} default` : "Model";
 }
 
 // What the seat is FOR — what you re-read when deciding whether to seat it. The scan's

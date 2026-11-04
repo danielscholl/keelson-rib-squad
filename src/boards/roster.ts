@@ -9,7 +9,7 @@ import {
   capabilityField,
   castLabel,
   charterExcerpt,
-  modelLabel,
+  modelButtonLabel,
 } from "./cast.ts";
 import { stripMd } from "./coordinator.ts";
 
@@ -176,7 +176,7 @@ function cardFor(member: Member, showCast: boolean) {
       // at-rest indicator now the card carries no model field.
       {
         type: "set-model",
-        label: `Model — ${modelLabel(member)}`,
+        label: modelButtonLabel(member),
         glyph: "⚙",
         payload: { slug: member.slug },
         fields: [

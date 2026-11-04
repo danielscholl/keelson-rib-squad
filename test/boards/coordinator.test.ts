@@ -50,7 +50,9 @@ type StatItem = {
 };
 
 function rowsTitled(board: Board, title: string): RowItem[] {
-  const section = board.sections.find((s) => s.kind === "rows" && s.title === title);
+  const section = board.sections.find(
+    (s) => s.kind === "rows" && (s.title === title || s.title?.startsWith(`${title} · `)),
+  );
   return section?.kind === "rows" ? (section.items as RowItem[]) : [];
 }
 
@@ -78,6 +80,8 @@ function ledgerRowsOf(board: Board): RowItem[] {
 function sectionTitles(board: Board): (string | undefined)[] {
   return board.sections.map((s) => ("title" in s ? s.title : undefined));
 }
+
+const VERIFICATION_ROUND_RE = /^Verification · round \d+$/;
 
 function statsItems(board: Board): StatItem[] {
   const section = board.sections.find((s) => s.kind === "stats");
@@ -565,9 +569,62 @@ describe("buildCoordinatorBoard active layout", () => {
     const stub = board.sections
       .filter((s) => s.kind === "rows")
       .flatMap((s) => (s.kind === "rows" ? s.items : []))
-      .find((r) => r.text.includes("earlier"));
-    expect(stub?.text).toContain("Rounds 0–2");
-    expect(stub?.text).toContain("3 earlier entries");
+      .find((r) => r.trailing?.includes("earlier"));
+    expect(stub?.text).toBe("Rounds 0–2");
+    // A live run isn't in Runs yet, so the stub doesn't point there.
+    expect(stub?.trailing).toBe("3 earlier entries");
+    const settled = buildCoordinatorBoard(ledger({ status: "done", round: 6, transcript }));
+    const settledStub = settled.sections
+      .flatMap((s) => (s.kind === "rows" ? s.items : []))
+      .find((r) => r.trailing?.includes("earlier"));
+    expect(settledStub?.trailing).toBe("3 earlier entries · full run in Runs");
+  });
+
+  test("a gate row shows its verdict, not the command chain it ran", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        transcript: [
+          entry({
+            round: 1,
+            kind: "verify",
+            text: "verification FAILED: bun run typecheck (exit 2)\nsrc/a.ts: bad type",
+          }),
+          entry({
+            round: 2,
+            kind: "verify",
+            text: "verification passed: bun run check && bun test",
+            verdict: "pass",
+          }),
+        ],
+      }),
+    );
+    const gates = rowsTitled(board, "Gate history");
+    expect(gates.map((g) => g.text)).toEqual([
+      "verification failed · exit 2",
+      "verification passed",
+    ]);
+    const ledgerGates = ledgerRowsOf(board).filter((r) => r.person?.name === "gate");
+    expect(ledgerGates.map((r) => JSON.stringify(r.chip))).toEqual([
+      JSON.stringify({ label: "green", tone: "ok" }),
+      JSON.stringify({ label: "red", tone: "error" }),
+    ]);
+    expect(ledgerGates[1]?.detail).toContain("src/a.ts: bad type");
+  });
+
+  test("a lone green gate leaves Gate history out; Verification already says it", () => {
+    const board = buildCoordinatorBoard(
+      ledger({
+        transcript: [
+          entry({
+            round: 2,
+            kind: "verify",
+            text: "verification passed: bun test",
+            verdict: "pass",
+          }),
+        ],
+      }),
+    );
+    expect(rowsTitled(board, "Gate history")).toEqual([]);
   });
 
   test("gate history lists every verify entry across the run with round trailing", () => {
@@ -797,10 +854,21 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
     expect(board.header?.status?.label).toBe("done");
     // A terminal board leads with the task composer (start another run), then the Goal it
-    // ran against, then the Standup.
-    expect(sectionTitles(board).slice(0, 3)).toEqual(["Give the squad a task", "Goal", "Standup"]);
+    // ran against and its stats, then the Standup.
+    expect(sectionTitles(board).slice(0, 4)).toEqual([
+      "Give the squad a task",
+      "Goal",
+      undefined,
+      "Standup",
+    ]);
     const body = sectionTitles(board).filter((t) => t && !t.startsWith("Ledger"));
-    expect(body).toEqual(["Give the squad a task", "Goal", "Standup", "Verification", "Minds"]);
+    expect(body).toEqual([
+      "Give the squad a task",
+      "Goal",
+      "Standup",
+      "Verification · round 5",
+      "Minds",
+    ]);
     const standup = rowsTitled(board, "Standup");
     expect(standup.some((i) => i.text.includes("shipped it"))).toBe(true);
     expect(standup[0]?.glyph).toBe("ok");
@@ -809,11 +877,11 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     const verify = rowsTitled(board, "Verification");
     expect(verify[0]?.icon).toBeUndefined();
     expect(verify[0]?.glyph).toBe("ok");
-    expect(verify[0]?.trailing).toBe("passed");
+    expect(verify[0]?.trailing).toBeUndefined();
     expect(rowsTitled(board, "Minds").length).toBeGreaterThan(0);
   });
 
-  test("done orders Goal, Standup, Verification, Gate history, Minds, Findings, Ledger", () => {
+  test("done orders Goal, stats, Standup, Findings, Verification, Gate history, Minds, Ledger", () => {
     const board = buildCoordinatorBoard(
       ledger({
         status: "done",
@@ -823,13 +891,17 @@ describe("buildCoordinatorBoard terminal layouts", () => {
         verification: { command: "bun test", exitCode: 0, passed: true, summary: "", atRound: 2 },
         transcript: [
           entry({ round: 1, kind: "code", speaker: "atlas", text: "edited", provider: "claude" }),
+          entry({ round: 1, kind: "verify", text: "verification FAILED: bun test (exit 1)" }),
           entry({ round: 2, kind: "verify", text: "checks passed", verdict: "pass" }),
         ],
       }),
     );
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    const titles = sectionTitles(board);
-    const order = ["Goal", "Standup", "Verification", "Gate history", "Minds", "Findings"].map(
+    const titles = sectionTitles(board).map((t) =>
+      t && VERIFICATION_ROUND_RE.test(t) ? "Verification" : t,
+    );
+    expect(board.sections[titles.indexOf("Goal") + 1]?.kind).toBe("stats");
+    const order = ["Goal", "Standup", "Findings", "Verification", "Gate history", "Minds"].map(
       (t) => titles.indexOf(t),
     );
     expect(order.every((i) => i >= 0)).toBe(true);
@@ -846,7 +918,9 @@ describe("buildCoordinatorBoard terminal layouts", () => {
         verification: { command: "bun test", exitCode: 0, passed: true, summary: "", atRound: 1 },
       }),
     );
-    const section = board.sections.find((s) => s.kind === "rows" && s.title === "Verification");
+    const section = board.sections.find(
+      (s) => s.kind === "rows" && VERIFICATION_ROUND_RE.test(s.title ?? ""),
+    );
     expect(section?.kind).toBe("rows");
     expect(section?.kind === "rows" && section.boxed).toBeFalsy();
   });
@@ -1016,7 +1090,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     for (const status of noRollbackStatuses) expect(hasRollback(status)).toBe(false);
   });
 
-  test("Minds summarizes each member: face, turns and rounds, provider + token split, latest act disclosed", () => {
+  test("Minds summarizes each member: face, turns and rounds, provider + token split", () => {
     const board = buildCoordinatorBoard(
       ledger({
         transcript: [
@@ -1045,7 +1119,7 @@ describe("buildCoordinatorBoard terminal layouts", () => {
     expect(atlas?.person?.face).toBe("A");
     expect(atlas?.text).toBe("2 turns · rounds 0, 2");
     expect(atlas?.trailing).toBe("claude · 8k in · 1k out");
-    expect(atlas?.detail).toBe("latest: fixed the test");
+    expect(atlas?.detail).toBeUndefined();
     const vera = minds.find((r) => r.person?.name === "vera");
     expect(vera?.text).toBe("1 turn · round 0");
     expect(vera?.trailing).toBe("copilot");

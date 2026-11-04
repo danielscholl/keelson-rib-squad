@@ -128,11 +128,11 @@ describe("buildCastBoard with a proposal", () => {
 });
 
 describe("buildCastBoard capability", () => {
-  test("code is marked; a read-only seat carries no tone at all", () => {
+  test("code is marked by its glyph; no capability carries a tone", () => {
     const cards = benchCards(buildCastBoard(proposal()));
     const atlas = cards.find((c) => c.title === "Atlas")?.fields?.[0];
-    // Write access is the one thing the governance floor exists to bound.
-    expect(atlas).toEqual({ value: "✎ edits code", tone: "caution" });
+    // Amber is kept for a dropped seat; write access reads by its ✎ alone.
+    expect(atlas).toEqual({ value: "✎ edits code" });
     const vera = cards.find((c) => c.title === "Vera")?.fields?.[0];
     // `dim` is not in canvasToneSchema: toning the norm here fails the whole board.
     expect(vera?.tone).toBeUndefined();
@@ -380,7 +380,7 @@ describe("buildCastBoard card verbs", () => {
   test("the model verb is a lone modelPicker field — the host's solo-picker fast path", () => {
     const board = buildCastBoard(proposal());
     const a = cardAction(board, "Atlas", CAST_MODEL_ACTION);
-    expect(a?.label).toBe("Model — default");
+    expect(a?.label).toBe("Model");
     expect(a?.payload).toEqual({ slug: "atlas", castAt: "2026-06-27T00:00:00.000Z" });
     expect(a?.fields).toHaveLength(1);
     expect(a?.fields?.[0]?.modelPicker?.providerField).toBe("provider");

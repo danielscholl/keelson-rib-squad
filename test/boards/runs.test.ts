@@ -142,10 +142,11 @@ describe("buildRunDetailBoard", () => {
     expect(report?.type).toBe(REPORT_RUN_ACTION);
     expect(report?.label).toBe("Open report");
     expect(report?.payload).toEqual({ runId: "r1" });
-    // The full run body is there: standup + gate history + minds + ledger groups.
+    // The full run body is there: standup + minds + ledger groups. One green gate needs
+    // no Gate history of its own.
     const titles = board.sections.map((s) => ("title" in s ? s.title : undefined));
     expect(titles).toContain("Standup");
-    expect(titles).toContain("Gate history");
+    expect(titles).not.toContain("Gate history");
     expect(titles).toContain("Minds");
     // The task fits the title, so a Goal row would only repeat it.
     expect(titles).not.toContain("Goal");
@@ -171,7 +172,7 @@ describe("buildRunDetailBoard", () => {
     expect(replanned.items.map((i) => i.label)).toContain("Re-plans");
   });
 
-  test("puts the tokens chart after the verdict, ahead of Minds and the Ledger", () => {
+  test("closes with the tokens chart, after the Ledger", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -195,9 +196,8 @@ describe("buildRunDetailBoard", () => {
       "r1",
     );
     const kinds = board.sections.map((s) => ("title" in s && s.title ? s.title : s.kind));
-    const chartAt = kinds.indexOf("Tokens per round");
-    expect(chartAt).toBeGreaterThan(kinds.indexOf("Gate history"));
-    expect(chartAt).toBe(kinds.indexOf("Minds") - 1);
+    expect(kinds.at(-1)).toBe("Tokens per round");
+    expect(kinds.indexOf("Minds")).toBeLessThan(kinds.length - 1);
   });
 
   test("falls back to the raw id when createdAt isn't a timestamp", () => {
@@ -205,7 +205,7 @@ describe("buildRunDetailBoard", () => {
     expect(board.header?.chip).toBe("r1");
   });
 
-  test("renders one tokens series aggregated by numeric round", () => {
+  test("renders one tokens series per round, labelled R1, R2…", () => {
     const board = buildRunDetailBoard(
       ledger({
         transcript: [
@@ -248,12 +248,11 @@ describe("buildRunDetailBoard", () => {
       {
         label: "tokens",
         points: [
-          { x: 1, y: 120 },
-          { x: 2, y: 90 },
+          { x: "R1", y: 120 },
+          { x: "R2", y: 90 },
         ],
       },
     ]);
-    expect(typeof chart.series[0]?.points[0]?.x).toBe("number");
   });
 
   test("omits the tokens chart when fewer than two rounds carry usage", () => {
@@ -306,8 +305,8 @@ describe("buildRunDetailBoard", () => {
     if (chart?.kind !== "chart") throw new Error("no chart section");
     expect(chart.series).toHaveLength(1);
     expect(chart.series[0]?.points).toEqual([
-      { x: 1, y: 120 },
-      { x: 3, y: 60 },
+      { x: "R1", y: 120 },
+      { x: "R3", y: 60 },
     ]);
     for (const series of chart.series) {
       for (const point of series.points) {

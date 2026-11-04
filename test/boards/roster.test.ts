@@ -255,12 +255,11 @@ describe("buildRosterBoard populated", () => {
     expect(cards(buildRosterBoard([member({ role: "" })]))[0]?.pill?.label).toBe("Member");
   });
 
-  test("fields: the capability, marked only when the seat can write; no charter or model field", () => {
+  test("fields: the capability, with no charter or model field", () => {
     const coder = cards(buildRosterBoard([member({ tools: ["code", "read"] })]))[0];
     expect(coder?.fields?.some((f) => f.label === "charter")).toBe(false);
     expect(coder?.fields?.some((f) => f.label === "model")).toBe(false);
-    // `code` is what the governance floor bounds — the only capability toned.
-    expect(coder?.fields?.at(-1)).toEqual({ value: "✎ edits code", tone: "caution" });
+    expect(coder?.fields?.at(-1)).toEqual({ value: "✎ edits code" });
     const textOnly = cards(buildRosterBoard([member({ model: "claude-x" })]))[0];
     expect(textOnly?.fields?.at(-1)).toEqual({ value: "text-only" });
     // The pin is the model action's label now, not a dead field.

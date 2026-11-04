@@ -91,7 +91,12 @@ export function transcriptTrailing(e: CoordinatorEntry): string | undefined {
   const parts: string[] = [];
   if (e.usage) parts.push(`${formatTokens(e.usage.inputTokens + e.usage.outputTokens)} tok`);
   if (e.touched && (e.touched.insertions || e.touched.deletions)) {
-    parts.push(`+${e.touched.insertions} −${e.touched.deletions}`);
+    const { insertions, deletions } = e.touched;
+    parts.push(
+      [insertions ? `+${insertions}` : "", deletions ? `−${deletions}` : ""]
+        .filter(Boolean)
+        .join(" "),
+    );
   }
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
@@ -103,6 +108,16 @@ export function personFor(speaker: string | undefined, tones?: IdentityTones): P
   if (name === "coordinator") return { name, tone: "brand", face: "◆" };
   const initial = /\p{L}|\p{N}/u.exec(name)?.[0]?.toUpperCase() ?? "·";
   return { name, tone: identityTone(name, tones), face: initial };
+}
+
+// A gate entry's stored text leads with its verdict and trails the full command and
+// output; one-line views show only the verdict (and exit code), the rest is disclosed.
+export function gateHeadline(e: CoordinatorEntry): string {
+  const line = firstLine(e.text).trim();
+  const colon = line.indexOf(": ");
+  const head = (colon > 0 ? line.slice(0, colon) : line).replace(/\bFAILED\b/, "failed");
+  const exit = /\(exit (\d+)\)/.exec(line)?.[1];
+  return exit && outcomeTone(e) === "error" ? `${head} · exit ${exit}` : head;
 }
 
 function gateChip(e: CoordinatorEntry): { label: string; tone: CanvasTone } {
@@ -223,12 +238,8 @@ export function buildRunDetailBoard(
     (s) => !(titled && s.kind === "rows" && s.title === "Goal"),
   );
   const detailBody: Section[] = body.filter((s) => s.kind !== "stats");
-  const chart = tokensPerRoundChartSection(ledger.transcript);
-  const costAt = detailBody.findIndex(
-    (s) => s.kind === "rows" && (s.title === "Minds" || s.title?.startsWith("Ledger")),
-  );
-  if (chart) detailBody.splice(costAt < 0 ? detailBody.length : costAt, 0, chart);
   const sections: Section[] = [pulseSection(ledger), runReportSection(id), ...detailBody];
+  pushIf(sections, tokensPerRoundChartSection(ledger.transcript));
   return {
     view: "board",
     title: stripMd(truncate(ledger.task, RUN_TITLE_CAP)) || "Run",
@@ -357,7 +368,7 @@ function activeSections(
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones, true));
   return sections;
 }
 
@@ -469,13 +480,13 @@ function doneSections(
   ledgerRounds: number,
   tones?: IdentityTones,
 ): Section[] {
-  const sections: Section[] = [goalSection(ledger.task)];
+  const sections: Section[] = [goalSection(ledger.task), pulseSection(ledger)];
   const findings = visibleFindings(ledger);
   if (ledger.summary?.trim()) sections.push(standupSection(ledger.summary));
+  if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  if (findings.length > 0) sections.push(findingsSection(findings));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
@@ -492,10 +503,10 @@ function maxRoundsSections(
   const sections: Section[] = [
     advisorySection("caution", `Needs you — the run hit its round budget. ${tail}`),
   ];
+  if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  if (findings.length > 0) sections.push(findingsSection(findings));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
@@ -509,10 +520,10 @@ function maxTokensSections(
   const sections: Section[] = [
     advisorySection("caution", "Needs you — the run hit its token budget."),
   ];
+  if (findings.length > 0) sections.push(findingsSection(findings));
   if (ledger.verification) sections.push(verificationSection(ledger.verification));
   pushIf(sections, gateHistorySection(ledger.transcript));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  if (findings.length > 0) sections.push(findingsSection(findings));
   sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
   return sections;
 }
@@ -600,7 +611,7 @@ function pulseSection(ledger: CoordinatorLedger): Section {
             tone: "neutral" as CanvasTone,
           }
         : { label: "Round", value: roundStatValue(ledger), tone: roundStatTone(ledger) },
-      { label: "Findings", value: findingsCount, tone: toned(findingsCount, "brand") },
+      { label: "Findings", value: findingsCount, tone: "neutral" as CanvasTone },
       ...(settled && ledger.stallCount === 0
         ? []
         : [
@@ -612,11 +623,9 @@ function pulseSection(ledger: CoordinatorLedger): Section {
           ]),
       ...(settled && ledger.resetCount === 0
         ? []
-        : [
-            { label: "Re-plans", value: ledger.resetCount, tone: toned(ledger.resetCount, "info") },
-          ]),
+        : [{ label: "Re-plans", value: ledger.resetCount, tone: "neutral" as CanvasTone }]),
       ...(tokens > 0
-        ? [{ label: "Tokens", value: formatTokens(tokens), tone: "info" as CanvasTone }]
+        ? [{ label: "Tokens", value: formatTokens(tokens), tone: "neutral" as CanvasTone }]
         : []),
     ],
   };
@@ -642,7 +651,7 @@ function tokensPerRoundChartSection(transcript: readonly CoordinatorEntry[]): Se
     series: [
       {
         label: "tokens",
-        points: rounds.map(([round, agg]) => ({ x: round, y: agg.input + agg.output })),
+        points: rounds.map(([round, agg]) => ({ x: `R${round}`, y: agg.input + agg.output })),
       },
     ],
   };
@@ -893,7 +902,7 @@ function toolGlyph(t: ToolTrace, isLast: boolean): CanvasTone {
 // window's full groups.
 function gateHistorySection(transcript: readonly CoordinatorEntry[]): Section | undefined {
   const gates = transcript.filter((e) => e.kind === "verify");
-  if (gates.length === 0) return undefined;
+  if (gates.length < 2 && !gates.some((e) => outcomeTone(e) === "error")) return undefined;
   return {
     kind: "rows",
     title: "Gate history",
@@ -901,7 +910,7 @@ function gateHistorySection(transcript: readonly CoordinatorEntry[]): Section | 
       const tone = outcomeTone(e);
       return {
         glyph: tone,
-        text: stripMd(truncate(firstLine(e.text), STEP_CAP)),
+        text: stripMd(truncate(gateHeadline(e), STEP_CAP)),
         trailing: `round ${e.round}`,
         ...entryDetail(e),
       };
@@ -964,12 +973,10 @@ function mindsSection(
           ? [`${formatTokens(agg.inputTokens)} in · ${formatTokens(agg.outputTokens)} out`]
           : []),
       ];
-      const last = stripMd(agg.last.text).trim();
       return {
         person: personFor(speaker, tones),
         text: `${agg.turns} ${agg.turns === 1 ? "turn" : "turns"} · ${rounds.length === 1 ? "round" : "rounds"} ${rounds.join(", ")}`,
         ...(meta.length > 0 ? { trailing: meta.join(" · ") } : {}),
-        ...(last ? { detail: `latest: ${truncate(last, DETAIL_CAP)}` } : {}),
       };
     }),
   };
@@ -980,13 +987,15 @@ function verificationSection(v: VerificationRecord): Section {
     v.checks && v.checks.length > 0 ? v.checks : [v];
   return {
     kind: "rows",
-    title: "Verification",
+    title: Number.isFinite(v.atRound) ? `Verification · round ${v.atRound}` : "Verification",
     items: checks.map((check) => ({
       glyph: check.passed ? ("ok" as CanvasTone) : ("error" as CanvasTone),
       text: truncate(check.command, STEP_CAP) || "verification",
-      trailing: check.passed
-        ? "passed"
-        : `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
+      ...(check.passed
+        ? {}
+        : {
+            trailing: `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
+          }),
       ...(check.passed || !check.summary.trim()
         ? {}
         : { detail: truncate(check.summary, DETAIL_CAP) }),
@@ -1003,6 +1012,7 @@ function ledgerSections(
   transcript: readonly CoordinatorEntry[],
   roundsShown = LEDGER_ROUNDS_SHOWN,
   tones?: IdentityTones,
+  live = false,
 ): Section[] {
   if (transcript.length === 0) return [];
   const rounds: number[] = [];
@@ -1040,7 +1050,8 @@ function ledgerSections(
       kind: "rows",
       items: [
         {
-          text: `${span} · ${olderEntries} earlier ${olderEntries === 1 ? "entry" : "entries"} — the full run is archived in Runs`,
+          text: span,
+          trailing: `${olderEntries} earlier ${olderEntries === 1 ? "entry" : "entries"}${live ? "" : " · full run in Runs"}`,
         },
       ],
     });
@@ -1062,10 +1073,11 @@ function roundCaption(entries: readonly CoordinatorEntry[]): string {
 function ledgerRow(e: CoordinatorEntry, tones?: IdentityTones): RowItem {
   const text = normalizeSpeakerPrefixes(e.text);
   const trailing = transcriptTrailing(e);
+  const line = e.kind === "verify" ? gateHeadline(e) : firstLine(text);
   return {
     person: e.kind === "verify" ? gatePerson(e) : personFor(e.speaker, tones),
     ...(e.kind === "verify" ? { chip: gateChip(e) } : {}),
-    text: stripMd(truncate(firstLine(text), LEDGER_ROW_CAP)) || "(no detail)",
+    text: stripMd(truncate(line, LEDGER_ROW_CAP)) || "(no detail)",
     ...(trailing ? { trailing } : {}),
     ...entryDetail(e),
   };

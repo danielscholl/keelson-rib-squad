@@ -78,7 +78,7 @@ describe("buildCharterBoard the seat", () => {
   test("repeats the bench card's capability line rather than restating it differently", () => {
     expect(
       seatCard(buildCharterBoard(member({ tools: ["code", "read"] }), "keelson"))?.fields,
-    ).toEqual([{ value: "✎ edits code", tone: "caution" }]);
+    ).toEqual([{ value: "✎ edits code" }]);
     expect(seatCard(buildCharterBoard(member(), "keelson"))?.fields).toEqual([
       { value: "reads the repo" },
     ]);
