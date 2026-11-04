@@ -230,12 +230,12 @@ describe("buildRosterBoard populated", () => {
       member({ slug: "olive", name: "Olive", identitySlot: 4 }),
       member({ slug: "six", name: "Sixth" }),
     ]);
-    // One identity dot per member (names revealed on hover), in list order; a sixth
+    // One identity dot per member (names revealed on hover), in cast order; a sixth
     // past the five hues folds to the neutral tone — mirroring its card dot.
     expect(board.header?.people).toEqual([
-      { name: "Teal", tone: "id-teal" },
       { name: "Blue", tone: "id-blue" },
       { name: "Amber", tone: "id-amber" },
+      { name: "Teal", tone: "id-teal" },
       { name: "Rose", tone: "id-rose" },
       { name: "Olive", tone: "id-olive" },
       { name: "Sixth", tone: "neutral" },
@@ -255,12 +255,11 @@ describe("buildRosterBoard populated", () => {
     expect(cards(buildRosterBoard([member({ role: "" })]))[0]?.pill?.label).toBe("Member");
   });
 
-  test("fields: the capability, marked only when the seat can write; no charter or model field", () => {
+  test("fields: the capability, with no charter or model field", () => {
     const coder = cards(buildRosterBoard([member({ tools: ["code", "read"] })]))[0];
     expect(coder?.fields?.some((f) => f.label === "charter")).toBe(false);
     expect(coder?.fields?.some((f) => f.label === "model")).toBe(false);
-    // `code` is what the governance floor bounds — the only capability toned.
-    expect(coder?.fields?.at(-1)).toEqual({ value: "✎ code, read", tone: "caution" });
+    expect(coder?.fields?.at(-1)).toEqual({ value: "✎ edits code" });
     const textOnly = cards(buildRosterBoard([member({ model: "claude-x" })]))[0];
     expect(textOnly?.fields?.at(-1)).toEqual({ value: "text-only" });
     // The pin is the model action's label now, not a dead field.
@@ -364,7 +363,11 @@ describe("buildRosterBoard ensemble hoist", () => {
     // roster legitimately spans two — the chip would be a lie.
     const roster = [castMember({ slug: "a" }), castMember({ slug: "b", themeId: "flux" })];
     expect(chip(roster)).toBeUndefined();
-    expect(castField(roster)).toBe("The Usual Suspects");
+    const fields = cards(buildRosterBoard(roster)).map(
+      (c) => c.fields?.find((f) => f.label === "cast")?.value,
+    );
+    expect(fields).toContain("The Usual Suspects");
+    expect(fields).toContain("flux");
   });
 
   test("one hand-authored member among a cast roster un-hoists it", () => {
@@ -405,15 +408,16 @@ describe("buildRosterBoard ensemble hoist", () => {
 });
 
 describe("buildRosterBoard live runs elsewhere", () => {
-  test("renders a leading switch strip on the cold-start board", () => {
+  test("renders a trailing switch strip on the cold-start board", () => {
     const board = buildRosterBoard([], null, Date.parse("2026-07-08T00:00:00.000Z"), null, [
       { scopeId: "beta", name: "rib-squad", task: "Ship the cue", round: 2 },
     ]);
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(board.sections[0]?.kind).toBe("actions");
     const strip = liveStrip(board);
-    expect(strip?.title).toBe("● 1 live run in rib-squad");
+    expect(board.sections.at(-1)).toBe(strip);
+    expect(strip?.title).toBe("1 live run in rib-squad");
+    expect(strip?.wrap).toBe(true);
     expect(strip?.items[0]).toMatchObject({
       type: "select-project",
       label: "Switch to rib-squad",
@@ -423,7 +427,7 @@ describe("buildRosterBoard live runs elsewhere", () => {
     });
   });
 
-  test("renders a leading switch strip on a populated roster", () => {
+  test("renders a trailing switch strip on a populated roster", () => {
     const board = buildRosterBoard(
       [member()],
       undefined,
@@ -433,8 +437,8 @@ describe("buildRosterBoard live runs elsewhere", () => {
     );
 
     expect(canvasViewSchema.safeParse(board).success).toBe(true);
-    expect(board.sections[0]).toBe(liveStrip(board));
-    expect(board.sections[1]?.kind).toBe("cards");
+    expect(board.sections[0]?.kind).toBe("cards");
+    expect(board.sections.at(-1)).toBe(liveStrip(board));
   });
 
   test("omitting or passing an empty live-runs list renders no strip", () => {
@@ -459,7 +463,7 @@ describe("buildRosterBoard live runs elsewhere", () => {
     ]);
     const strip = liveStrip(board);
 
-    expect(strip?.title).toBe("● 2 live runs in Beta, gamma");
+    expect(strip?.title).toBe("2 live runs in Beta, gamma");
     expect(strip?.items.map((item) => item.label)).toEqual(["Switch to Beta", "Switch to gamma"]);
     expect(strip?.items.map((item) => item.payload)).toEqual([
       { scopeId: "beta" },
@@ -640,7 +644,7 @@ describe("buildRosterBoard proposal awaiting review", () => {
     expect(board.sections.map((s) => s.kind)).toEqual(["rows"]);
     expect(actionItems(board)).toEqual([]);
     const row = board.sections[0]?.kind === "rows" ? board.sections[0].items[0] : undefined;
-    expect(row?.text).toContain("proposed squad of 5 members awaits review");
+    expect(row?.text).toContain("proposed squad awaits review below");
   });
 
   test("a populated roster with a pending proposal withholds add/manage for the hand-off row", () => {
@@ -654,7 +658,7 @@ describe("buildRosterBoard proposal awaiting review", () => {
     expect(actionItems(board)).toEqual([]);
     const rows = board.sections[1];
     const row = rows?.kind === "rows" ? rows.items[0] : undefined;
-    expect(row?.text).toContain("proposed squad of 1 member awaits");
+    expect(row?.text).toContain("proposed squad awaits review below");
   });
 
   test("a genesis in flight outranks the proposal — the boot card carries the moment", () => {

@@ -1,5 +1,5 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
-import { type CastProposalRecord, MAX_CAST_MEMBERS, type ScanReceipt } from "../cast.ts";
+import type { CastProposalRecord, ScanReceipt } from "../cast.ts";
 import { themeLabel } from "../casting/themes.ts";
 import { identityToneForSlot } from "../types.ts";
 import { charterDisplay } from "./coordinator.ts";
@@ -41,7 +41,7 @@ export function buildCastBoard(proposal: CastProposalRecord | undefined): Canvas
       chip: proposal.projectName,
     },
     sections: [
-      briefSection(proposal, picked.length, ensemble.title),
+      briefSection(proposal, ensemble.title),
       provenanceSection(proposal),
       benchSection(proposal, !ensemble.hoisted),
       decideSection(proposal, picked.length),
@@ -65,9 +65,9 @@ function ensembleFor(members: Member[], projectName: string): { title: string; h
 }
 
 // The scan's claim, as a card: the same anatomy as the seats it proposes, so the board
-// reads as one grammar — the squad's card, then its members'. The ask rides as the
-// footnote; its ABSENCE is the signal worth toning, so that gets a provenance row.
-function briefSection(proposal: CastProposalRecord, pickedCount: number, title: string): Section {
+// reads as one grammar — the squad's card, then its members'. The thesis and the ask
+// share the footnote; the ask's ABSENCE is the signal worth toning, so that gets a provenance row.
+function briefSection(proposal: CastProposalRecord, title: string): Section {
   const mission = proposal.mission?.trim();
   const thesis = proposal.summary?.trim();
   return {
@@ -75,9 +75,16 @@ function briefSection(proposal: CastProposalRecord, pickedCount: number, title: 
     items: [
       {
         title,
-        pill: { label: `${pickedCount} of ${MAX_CAST_MEMBERS} seats` },
-        ...(mission ? { footnote: `your ask: ${mission}` } : {}),
-        ...(thesis ? { reason: { text: thesis } } : {}),
+        ...(thesis || mission
+          ? {
+              footnote: [
+                thesis && !/[.!?]$/.test(thesis) ? `${thesis}.` : thesis,
+                mission ? `Your ask: ${mission}` : "",
+              ]
+                .filter(Boolean)
+                .join(" "),
+            }
+          : {}),
       },
     ],
   };
@@ -155,7 +162,9 @@ function benchSection(proposal: CastProposalRecord, showCast: boolean): Section 
   const anyPicked = proposal.members.some(isPicked);
   return {
     kind: "cards",
-    title: anyPicked ? "The bench — click a seat to drop it" : "Click a seat to pick it back",
+    title: anyPicked
+      ? "The bench — click a seat to drop or restore it"
+      : "Click a seat to pick it back",
     grid: true,
     columns: 3,
     items: proposal.members.map((m) => cardFor(m, proposal.createdAt, showCast)),
@@ -176,6 +185,7 @@ function cardFor(member: Member, castAt: string, showCast: boolean) {
   const cast = showCast ? castLabel(member) : undefined;
   if (cast) fields.push({ label: "cast", value: cast });
   fields.push(capabilityField(member));
+  if (!picked) fields.unshift({ label: "role", value: member.role.trim() || "Member" });
   return {
     title: name,
     dot: picked ? identityToneForSlot(member.identitySlot) : ("neutral" as CanvasTone),
@@ -189,7 +199,7 @@ function cardFor(member: Member, castAt: string, showCast: boolean) {
       type: CAST_PICK_ACTION,
       payload: { slug: member.slug, picked: !picked, castAt },
     },
-    actions: cardActions(member, castAt),
+    actions: picked ? cardActions(member, castAt) : [charterAction(member, castAt)],
   };
 }
 
@@ -201,9 +211,10 @@ export function capabilityField(member: { tools?: readonly string[] }): {
   tone?: CanvasTone;
 } {
   const tools = member.tools ?? [];
-  if (tools.includes("code"))
-    return { value: `✎ ${tools.join(", ")}`, tone: "caution" as CanvasTone };
-  return { value: tools.length > 0 ? tools.join(", ") : "text-only" };
+  if (tools.includes("code")) return { value: "✎ edits code" };
+  if (tools.length === 0) return { value: "text-only" };
+  if (tools.every((t) => t === "read")) return { value: "reads the repo" };
+  return { value: tools.join(", ") };
 }
 
 function cardActions(member: Member, castAt: string) {
@@ -213,7 +224,7 @@ function cardActions(member: Member, castAt: string) {
     // the label — the at-rest indicator, since the card carries no model field.
     {
       type: CAST_MODEL_ACTION,
-      label: `Model — ${modelLabel(member)}`,
+      label: modelButtonLabel(member),
       glyph: "⚙",
       payload: { slug: member.slug, castAt },
       fields: [
@@ -229,21 +240,24 @@ function cardActions(member: Member, castAt: string) {
         },
       ],
     },
-    {
-      type: VIEW_CHARTER_ACTION,
-      label: "▤",
-      hint: "Charter",
-      payload: { slug: member.slug, castAt },
-    },
+    charterAction(member, castAt),
   ];
 }
 
+function charterAction(member: Member, castAt: string) {
+  return {
+    type: VIEW_CHARTER_ACTION,
+    label: "Charter",
+    glyph: "▤",
+    payload: { slug: member.slug, castAt },
+  };
+}
+
 // validateProviderPin admits a provider with no model (that vendor's own default), and
-// this label is the only place that pin is visible now — "default" alone would read as
-// the harness default and hide it.
-export function modelLabel(member: { model?: string; provider?: string }): string {
-  if (member.model) return member.model;
-  return member.provider ? `${member.provider} default` : "default";
+// this label is the only place that pin is visible.
+export function modelButtonLabel(member: { model?: string; provider?: string }): string {
+  if (member.model) return `Model — ${member.model}`;
+  return `Model — ${member.provider ? `${member.provider} · inherited` : "inherited"}`;
 }
 
 // What the seat is FOR — what you re-read when deciding whether to seat it. The scan's

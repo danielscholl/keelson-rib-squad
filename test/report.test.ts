@@ -142,7 +142,9 @@ describe("buildRunReportHtml", () => {
     expect(style.length).toBeGreaterThan(0);
     for (const line of style.split("\n")) {
       if (!/#[0-9a-fA-F]{3,8}\b/.test(line)) continue;
-      expect(line).toMatch(/^\s*(--[a-z0-9-]+:\s*#[0-9a-fA-F]{6};\s*)+$/);
+      expect(line).toMatch(
+        /^\s*(--[a-z0-9-]+:\s*(#[0-9a-fA-F]{6}|var\(--keelson-[a-z0-9-]+,\s*#[0-9a-fA-F]{6}\));\s*)+$/,
+      );
     }
     const markup = html
       .replace(/<style>[\s\S]*?<\/style>/, "")

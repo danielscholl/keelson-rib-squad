@@ -6,7 +6,7 @@ import {
   SHORT_ACKNOWLEDGMENT_RE,
   type VerificationRecord,
 } from "../coordinator.ts";
-import { formatTokens, formatUsageTail } from "../format.ts";
+import { formatTokens } from "../format.ts";
 import type { ToolTrace } from "../turn-runner.ts";
 
 // Pure: a coordinator run ledger -> a canvas `board` (the Run-loop panel). No ledger — no run
@@ -15,6 +15,7 @@ import type { ToolTrace } from "../turn-runner.ts";
 
 type Section = CanvasBoardView["sections"][number];
 type RowItem = Extract<Section, { kind: "rows" }>["items"][number];
+type Person = NonNullable<RowItem["person"]>;
 
 // The two "assign work" verbs the Run-loop composer offers. Shared with onAction so
 // the action types can't drift from their handlers. Coordinate runs the full
@@ -31,10 +32,12 @@ export const REPORT_RUN_ACTION = "squad-report";
 export const RESET_SQUAD_ACTION = "reset-squad";
 
 const GOAL_CAP = 280;
+const RUN_TITLE_CAP = 90;
 const STEP_CAP = 200;
 const LEDGER_ROW_CAP = 200;
 const DETAIL_CAP = 4000;
 const VERIFY_SUMMARY_CAP = 120;
+const GATE_CAUSE_CAP = 90;
 const MAX_FINDINGS = 12;
 // Rounds rendered as full entry groups in the Ledger; older rounds compress to a stub.
 const LEDGER_ROUNDS_SHOWN = 3;
@@ -83,14 +86,44 @@ export function outcomeTone(e: CoordinatorEntry): CanvasTone {
   }
 }
 
-export function transcriptTrailing(e: CoordinatorEntry): string {
-  let trailing = `R${e.round}`;
-  if (e.provider) trailing += ` · ${e.provider}`;
-  if (e.usage) trailing += ` · ${formatTokens(e.usage.inputTokens + e.usage.outputTokens)} tok`;
+// The round is the ledger group's own title, and the provider rides the Minds lane, so a
+// row's trailing carries only what is particular to that one turn.
+export function transcriptTrailing(e: CoordinatorEntry): string | undefined {
+  const parts: string[] = [];
+  if (e.usage) parts.push(`${formatTokens(e.usage.inputTokens + e.usage.outputTokens)} tok`);
   if (e.touched && (e.touched.insertions || e.touched.deletions)) {
-    trailing += ` · +${e.touched.insertions}/−${e.touched.deletions}`;
+    const { insertions, deletions } = e.touched;
+    parts.push(
+      [insertions ? `+${insertions}` : "", deletions ? `−${deletions}` : ""]
+        .filter(Boolean)
+        .join(" "),
+    );
   }
-  return trailing;
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+// Who acted, as a face in the member's identity tone. The coordinator wears the brand
+// diamond and the done-gate wears its verdict, so every ledger line leads with an actor.
+export function personFor(speaker: string | undefined, tones?: IdentityTones): Person {
+  const name = speaker?.trim() || "coordinator";
+  if (name === "coordinator") return { name, tone: "brand", face: "◆" };
+  const initial = /\p{L}|\p{N}/u.exec(name)?.[0]?.toUpperCase() ?? "·";
+  return { name, tone: identityTone(name, tones), face: initial };
+}
+
+// A gate entry's stored text leads with its verdict and trails the full command and
+// output; one-line views show only the verdict (and exit code), the rest is disclosed.
+export function gateHeadline(e: CoordinatorEntry): string {
+  const [first = "", ...rest] = e.text.split("\n");
+  const line = first.trim();
+  const colon = line.indexOf(": ");
+  const head = (colon > 0 ? line.slice(0, colon) : line).replace(/\bFAILED\b/, "failed");
+  const failed = /^verification FAILED: (.+?) \(exit (\d+)\)$/.exec(line);
+  if (!failed || outcomeTone(e) !== "error")
+    return head === "verification passed" ? "Gate passed" : head;
+  const cause = rest.find((l) => l.trim())?.trim();
+  const what = `Gate failed · ${failed[1]} · exit ${failed[2]}`;
+  return cause ? `${what} · ${truncate(cause, GATE_CAUSE_CAP)}` : what;
 }
 
 // Markdown control characters leak into one-line previews as noise (##, **, `code`);
@@ -153,17 +186,18 @@ export function buildCoordinatorBoard(
   hasMembers = false,
 ): CanvasBoardView {
   if (!ledger) return idleBoard(hasMembers);
-  // Head every non-active board with the task composer so assigning work is one
-  // field away; an ACTIVE run omits it (you're watching, not queuing another).
   const base = sectionsFor(ledger, undefined, tones, scopeId);
-  // A terminal board leads with the composer and ends with the teardown verb; an
-  // ACTIVE run omits both (you Stop a live run before resetting the scope).
+  // A settled board reads its result first, then offers the next task and the teardown
+  // verb; an ACTIVE run omits both (you Stop a live run before resetting the scope).
   const sections =
-    ledger.status === "active" ? base : [taskComposerSection(), ...base, resetSection()];
+    ledger.status === "active" ? base : [...base, taskComposerSection(), resetSection()];
   return {
     view: "board",
     title: "Run loop",
-    header: { status: statusPill(ledger.status), chip: `round ${ledger.round}` },
+    header: {
+      status: statusPill(ledger.status),
+      ...(ledger.status === "active" ? { chip: `round ${ledger.round}` } : {}),
+    },
     sections,
   };
 }
@@ -194,15 +228,24 @@ export function buildRunDetailBoard(
       ],
     };
   }
-  const body = sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId);
-  const detailBody = body[0]?.kind === "stats" ? body.slice(1) : body;
-  const sections: Section[] = [runReportSection(id), pulseSection(ledger)];
-  pushIf(sections, tokensPerRoundChartSection(ledger.transcript));
-  sections.push(...detailBody);
+  // The drawer's title already is the task, so its Goal row would only repeat it — unless
+  // the title had to cut the task short.
+  const titled = ledger.task.trim().length <= RUN_TITLE_CAP;
+  const body = sectionsFor(ledger, Number.POSITIVE_INFINITY, tones, scopeId).filter(
+    (s) => !(titled && s.kind === "rows" && s.title === "Goal"),
+  );
+  const detailBody: Section[] = body.filter((s) => s.kind !== "stats");
+  const tokens = tokensPerRoundSection(ledger.transcript, tones);
+  const ledgerAt = detailBody.findIndex((s) => s.kind === "rows" && s.title?.startsWith("Ledger"));
+  if (tokens) detailBody.splice(ledgerAt < 0 ? detailBody.length : ledgerAt, 0, tokens);
+  const sections: Section[] = [pulseSection(ledger), runReportSection(id), ...detailBody];
   return {
     view: "board",
-    title: "Run",
-    header: { status: statusPill(ledger.status), chip: id },
+    title: stripMd(truncate(ledger.task, RUN_TITLE_CAP)) || "Run",
+    header: {
+      status: statusPill(ledger.status),
+      chip: runSpan(ledger.createdAt, ledger.updatedAt) ?? id,
+    },
     sections,
   };
 }
@@ -212,7 +255,16 @@ export function buildRunDetailBoard(
 function runReportSection(id: string): Section {
   return {
     kind: "actions",
-    items: [{ type: REPORT_RUN_ACTION, label: "Report", glyph: "▤", payload: { runId: id } }],
+    wrap: true,
+    items: [
+      {
+        type: REPORT_RUN_ACTION,
+        label: "Open report",
+        glyph: "▤",
+        hint: "The styled run report for this ledger",
+        payload: { runId: id },
+      },
+    ],
   };
 }
 
@@ -223,11 +275,15 @@ export function taskComposerSection(): Section {
   return {
     kind: "actions",
     title: "Give the squad a task",
+    tabs: true,
     items: [
       {
         type: COORDINATE_ACTION,
-        label: "Coordinate on a task",
+        label: "Coordinate a task",
         glyph: "↻",
+        hint: "Plan, delegate one step at a time, and verify until the goal is met",
+        submitLabel: "Start run",
+        submitTone: "brand",
         fields: [
           {
             name: "task",
@@ -242,6 +298,8 @@ export function taskComposerSection(): Section {
         type: DISPATCH_ACTION,
         label: "Ask the team",
         glyph: "✦",
+        hint: "Put one question to every member and get a synthesis",
+        submitLabel: "Ask",
         fields: [
           {
             name: "task",
@@ -295,36 +353,42 @@ function activeSections(
   scopeId?: string,
 ): Section[] {
   const sections: Section[] = [
+    goalSection(ledger.task),
     pulseSection(ledger),
-    steerSection(ledger, scopeId),
-    stopSection(ledger, scopeId),
+    liveControlsSection(ledger, scopeId),
   ];
   const findings = visibleFindings(ledger);
   pushIf(sections, roundRailSection(ledger, tones));
-  sections.push(goalSection(ledger.task));
-  if (ledger.plan.length > 0) sections.push(planSection(ledger.plan));
   if (ledger.inFlight) sections.push(...nowSections(ledger.inFlight, tones));
+  if (ledger.plan.length > 0) sections.push(planSection(ledger.plan));
   if (findings.length > 0) sections.push(findingsSection(findings));
-  if (ledger.verification) sections.push(verificationSection(ledger.verification));
   if (ledger.failedSteps?.length) sections.push(abandonedSection(ledger.failedSteps));
   if (ledger.teamGaps?.length) sections.push(teamGapsSection(ledger.teamGaps));
-  pushIf(sections, gateHistorySection(ledger.transcript));
+  if (ledger.verification) sections.push(verificationSection(ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(
+    ...ledgerSections(ledger.transcript, ledgerRounds, tones, true, ledger.verification),
+  );
   return sections;
 }
 
-// Inject an operator instruction the live run folds into its facts and honors next round.
-function steerSection(ledger: CoordinatorLedger, scopeId?: string): Section {
+// The live run's two verbs on one strip: Steer opens its instruction form below the
+// strip, Stop sits at the trailing edge. The caller's scopeId is authoritative (the
+// collector knows which scope it rendered); ledger.scopeId only covers ledgers persisted
+// before scopeId existed.
+function liveControlsSection(ledger: CoordinatorLedger, scopeId?: string): Section {
+  const scope = scopeId ?? ledger.scopeId ?? "default";
   return {
     kind: "actions",
-    title: "Steer the run",
+    wrap: true,
     items: [
       {
         type: STEER_COORDINATOR_ACTION,
-        label: "Steer",
+        label: "Steer the run",
         glyph: "➤",
-        payload: { scopeId: scopeId ?? ledger.scopeId ?? "default" },
+        hint: "Add a fact or course-correction the next round folds in",
+        payload: { scopeId: scope },
         fields: [
           {
             name: "instruction",
@@ -334,18 +398,8 @@ function steerSection(ledger: CoordinatorLedger, scopeId?: string): Section {
             multiline: true,
           },
         ],
+        submitLabel: "Steer",
       },
-    ],
-  };
-}
-
-// The caller's scopeId is authoritative (the collector knows which scope it rendered);
-// ledger.scopeId only covers ledgers persisted before scopeId existed.
-function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
-  return {
-    kind: "actions",
-    title: "Live run",
-    items: [
       {
         type: STOP_COORDINATOR_ACTION,
         label: "Stop run",
@@ -353,7 +407,8 @@ function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
         tone: "warn",
         destructive: true,
         inline: true,
-        payload: { scopeId: scopeId ?? ledger.scopeId ?? "default" },
+        align: "end",
+        payload: { scopeId: scope },
         confirm: {
           title: "Stop this coordinator run?",
           body: `Round ${ledger.round} will be marked aborted. The transcript stays intact.`,
@@ -367,7 +422,7 @@ function stopSection(ledger: CoordinatorLedger, scopeId?: string): Section {
 function rollbackSection(ledger: CoordinatorLedger, scopeId?: string): Section {
   return {
     kind: "actions",
-    title: "Rollback",
+    wrap: true,
     items: [
       {
         type: ROLLBACK_RUN_ACTION,
@@ -401,7 +456,7 @@ function rollbackSection(ledger: CoordinatorLedger, scopeId?: string): Section {
 function resetSection(): Section {
   return {
     kind: "actions",
-    title: "Reset squad",
+    wrap: true,
     items: [
       {
         type: RESET_SQUAD_ACTION,
@@ -426,15 +481,16 @@ function doneSections(
   ledgerRounds: number,
   tones?: IdentityTones,
 ): Section[] {
-  const sections: Section[] = [];
+  const sections: Section[] = [goalSection(ledger.task), pulseSection(ledger)];
   const findings = visibleFindings(ledger);
   if (ledger.summary?.trim()) sections.push(standupSection(ledger.summary));
-  if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript));
-  pushIf(sections, mindsSection(ledger.transcript, tones));
   if (findings.length > 0) sections.push(findingsSection(findings));
-  sections.push(goalSection(ledger.task));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  if (ledger.verification) sections.push(verificationSection(ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  sections.push(
+    ...ledgerSections(ledger.transcript, ledgerRounds, tones, false, ledger.verification),
+  );
   return sections;
 }
 
@@ -450,11 +506,13 @@ function maxRoundsSections(
   const sections: Section[] = [
     advisorySection("caution", `Needs you — the run hit its round budget. ${tail}`),
   ];
-  if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript));
-  pushIf(sections, mindsSection(ledger.transcript, tones));
   if (findings.length > 0) sections.push(findingsSection(findings));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  if (ledger.verification) sections.push(verificationSection(ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  sections.push(
+    ...ledgerSections(ledger.transcript, ledgerRounds, tones, false, ledger.verification),
+  );
   return sections;
 }
 
@@ -467,11 +525,13 @@ function maxTokensSections(
   const sections: Section[] = [
     advisorySection("caution", "Needs you — the run hit its token budget."),
   ];
-  if (ledger.verification) sections.push(verificationSection(ledger.verification));
-  pushIf(sections, gateHistorySection(ledger.transcript));
-  pushIf(sections, mindsSection(ledger.transcript, tones));
   if (findings.length > 0) sections.push(findingsSection(findings));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  if (ledger.verification) sections.push(verificationSection(ledger.verification));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
+  pushIf(sections, mindsSection(ledger.transcript, tones));
+  sections.push(
+    ...ledgerSections(ledger.transcript, ledgerRounds, tones, false, ledger.verification),
+  );
   return sections;
 }
 
@@ -489,9 +549,11 @@ function failedSections(
       "The done-gate came back red — the artifact does not pass; there is no accept path. Inspect the failures and re-dispatch.",
     ),
   );
-  pushIf(sections, gateHistorySection(ledger.transcript));
+  pushIf(sections, gateHistorySection(ledger.transcript, ledger.verification, ledgerRounds));
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(
+    ...ledgerSections(ledger.transcript, ledgerRounds, tones, false, ledger.verification),
+  );
   return sections;
 }
 
@@ -516,7 +578,9 @@ function gaveUpSections(
   }
 
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(
+    ...ledgerSections(ledger.transcript, ledgerRounds, tones, false, ledger.verification),
+  );
   return sections;
 }
 
@@ -531,15 +595,20 @@ function abortedSections(
     advisorySection("neutral", "Stopped by the operator. The transcript is intact."),
   ];
   pushIf(sections, mindsSection(ledger.transcript, tones));
-  sections.push(...ledgerSections(ledger.transcript, ledgerRounds, tones));
+  sections.push(
+    ...ledgerSections(ledger.transcript, ledgerRounds, tones, false, ledger.verification),
+  );
   return sections;
 }
 
 // The pulse `stats` strip: round (n or n/budget with escalating tone), the two loop
 // counters, and — when entries carry usage — the run's token total. A zero count
 // tones neutral so an early or calm run doesn't shout.
+// A settled run reports what happened, not how close it came to a budget or the
+// stall and re-plan counters that stayed at zero.
 function pulseSection(ledger: CoordinatorLedger): Section {
   const toned = (n: number, tone: CanvasTone): CanvasTone => (n > 0 ? tone : "neutral");
+  const settled = ledger.status !== "active";
   const findingsCount = visibleFindings(ledger).length;
   const tokens = ledger.transcript.reduce(
     (sum, e) => sum + (e.usage ? e.usage.inputTokens + e.usage.outputTokens : 0),
@@ -548,44 +617,81 @@ function pulseSection(ledger: CoordinatorLedger): Section {
   return {
     kind: "stats",
     items: [
-      { label: "Round", value: roundStatValue(ledger), tone: roundStatTone(ledger) },
-      { label: "Findings", value: findingsCount, tone: toned(findingsCount, "brand") },
-      { label: "Stalls", value: ledger.stallCount, tone: toned(ledger.stallCount, "caution") },
-      { label: "Re-plans", value: ledger.resetCount, tone: toned(ledger.resetCount, "caution") },
+      settled
+        ? {
+            label: ledger.round === 1 ? "Round" : "Rounds",
+            value: ledger.round,
+            tone: "neutral" as CanvasTone,
+          }
+        : { label: "Round", value: roundStatValue(ledger), tone: roundStatTone(ledger) },
+      {
+        label: findingsCount === 1 ? "Finding" : "Findings",
+        value: findingsCount,
+        tone: "neutral" as CanvasTone,
+      },
+      ...(ledger.stallCount === 0
+        ? []
+        : [
+            {
+              label: ledger.stallCount === 1 ? "Stall" : "Stalls",
+              value: ledger.stallCount,
+              tone: toned(ledger.stallCount, "caution"),
+            },
+          ]),
+      ...(settled && ledger.resetCount === 0
+        ? []
+        : [
+            {
+              label: ledger.resetCount === 1 ? "Re-plan" : "Re-plans",
+              value: ledger.resetCount,
+              tone: "neutral" as CanvasTone,
+            },
+          ]),
       ...(tokens > 0
-        ? [{ label: "Tokens", value: formatTokens(tokens), tone: "info" as CanvasTone }]
+        ? [{ label: "Tokens", value: formatTokens(tokens), tone: "neutral" as CanvasTone }]
         : []),
     ],
   };
 }
 
-function tokensPerRoundChartSection(transcript: readonly CoordinatorEntry[]): Section | undefined {
-  const byRound = new Map<number, { input: number; output: number; hasUsage: boolean }>();
+function tokensPerRoundSection(
+  transcript: readonly CoordinatorEntry[],
+  tones?: IdentityTones,
+): Section | undefined {
+  const byRound = new Map<number, Map<string, number>>();
   for (const e of transcript) {
-    const agg = byRound.get(e.round) ?? { input: 0, output: 0, hasUsage: false };
-    if (e.usage) {
-      agg.input += e.usage.inputTokens;
-      agg.output += e.usage.outputTokens;
-      agg.hasUsage = true;
-    }
-    byRound.set(e.round, agg);
+    const spend = byRound.get(e.round) ?? new Map<string, number>();
+    byRound.set(e.round, spend);
+    if (!e.usage) continue;
+    const who = e.speaker?.trim() || "coordinator";
+    spend.set(who, (spend.get(who) ?? 0) + e.usage.inputTokens + e.usage.outputTokens);
   }
-  if ([...byRound.values()].filter((round) => round.hasUsage).length < 2) return undefined;
-  const rounds = [...byRound.entries()].sort(([a], [b]) => a - b);
+  const total = (spend: Map<string, number>) => [...spend.values()].reduce((a, b) => a + b, 0);
+  const rounds = [...byRound.entries()]
+    .filter(([, spend]) => spend.size > 0)
+    .sort(([a], [b]) => a - b);
+  if (rounds.length < 2) return undefined;
+  const badges = roundBadges(transcript, tones);
+  const peak = Math.max(...rounds.map(([, spend]) => total(spend)));
   return {
-    kind: "chart",
-    title: "Tokens per round",
-    yLabel: "tokens",
-    series: [
-      {
-        label: "input",
-        points: rounds.map(([round, agg]) => ({ x: round, y: agg.input })),
-      },
-      {
-        label: "output",
-        points: rounds.map(([round, agg]) => ({ x: round, y: agg.output })),
-      },
-    ],
+    kind: "bars",
+    title:
+      rounds.length < byRound.size ? "Tokens per round · gates spend none" : "Tokens per round",
+    items: rounds.map(([round, spend]) => {
+      const badge = badges.get(round);
+      const sum = total(spend);
+      return {
+        label: badge ? `R${round} · ${badge.text}` : `R${round}`,
+        value: sum,
+        total: peak,
+        segments: [...spend].map(([who, n]) => ({
+          label: who,
+          n,
+          tone: who === "coordinator" ? ("brand" as CanvasTone) : identityTone(who, tones),
+        })),
+        trailing: `${formatTokens(sum)} tok`,
+      };
+    }),
   };
 }
 
@@ -608,52 +714,83 @@ function roundStatTone(ledger: CoordinatorLedger): CanvasTone {
 // transcript has at least one entry.
 function roundRailSection(ledger: CoordinatorLedger, tones?: IdentityTones): Section | undefined {
   if (ledger.transcript.length === 0 && !ledger.inFlight) return undefined;
-  const byRound = new Map<number, CoordinatorEntry[]>();
-  for (const e of ledger.transcript) {
-    const list = byRound.get(e.round) ?? [];
-    list.push(e);
-    byRound.set(e.round, list);
-  }
-  const last = Math.max(ledger.round, ...byRound.keys());
+  const badges = roundBadges(ledger.transcript, tones);
+  const last = Math.max(ledger.round, ...badges.keys());
   const first = Math.max(0, last - MAX_RAIL_ROUNDS + 1);
-  const cells: { label: string; badge: { text: string; tone?: CanvasTone } }[] = [];
+  const cells: { label: string; badge: RoundBadge }[] = [];
   for (let r = first; r <= last; r++) {
-    const entries = byRound.get(r) ?? [];
     if (ledger.inFlight && ledger.inFlight.round === r && ledger.status === "active") {
-      cells.push({ label: `R${r}`, badge: { text: "▶ now", tone: "info" } });
+      cells.push({ label: `R${r}`, badge: { text: inFlightBadge(ledger.inFlight), tone: "info" } });
       continue;
     }
-    if (entries.length === 0) continue;
-    cells.push({ label: `R${r}`, badge: roundBadge(entries, tones) });
+    const badge = badges.get(r);
+    if (badge) cells.push({ label: `R${r}`, badge });
   }
   if (cells.length === 0) return undefined;
   return { kind: "grid", title: "Rounds", cells };
 }
 
-function roundBadge(
-  entries: readonly CoordinatorEntry[],
+function inFlightBadge(turn: InFlightTurn): string {
+  const event =
+    turn.action === "coding"
+      ? "code"
+      : turn.action === "authoring a workflow"
+        ? "workflow"
+        : turn.action === "planning"
+          ? "plan"
+          : "team";
+  const who = turn.speaker?.trim();
+  return `▶ ${event}${who ? ` · ${who}` : ""}`;
+}
+
+type RoundBadge = { text: string; tone?: CanvasTone };
+
+function roundBadges(
+  transcript: readonly CoordinatorEntry[],
   tones?: IdentityTones,
-): { text: string; tone?: CanvasTone } {
-  const gateRed = entries.some((e) => e.kind === "verify" && outcomeTone(e) === "error");
-  if (gateRed) return { text: "gate ✕", tone: "error" };
-  if (entries.some((e) => e.kind === "replan")) return { text: "re-plan", tone: "caution" };
-  // A member's rail cell wears that member's identity hue — who acted each
-  // round, at a glance; red stays reserved for the gate above.
-  const code = entries.find((e) => e.kind === "code");
-  if (code) {
-    return code.speaker
-      ? { text: `${code.speaker} ⌥`, tone: identityTone(code.speaker, tones) }
-      : { text: "code", tone: "accent" };
+): Map<number, RoundBadge> {
+  const byRound = new Map<number, CoordinatorEntry[]>();
+  for (const e of transcript) {
+    const list = byRound.get(e.round) ?? [];
+    list.push(e);
+    byRound.set(e.round, list);
   }
-  const verified = entries.some((e) => e.kind === "verify" && outcomeTone(e) === "ok");
-  if (verified) return { text: "verified ✓", tone: "ok" };
-  const dispatch = entries.find((e) => e.kind === "dispatch" || e.kind === "workflow");
-  if (dispatch) {
-    return dispatch.speaker
-      ? { text: dispatch.speaker, tone: identityTone(dispatch.speaker, tones) }
-      : { text: "team", tone: "info" };
-  }
-  return { text: "plan", tone: "neutral" };
+  return new Map([...byRound].map(([r, entries]) => [r, roundBadge(entries, tones)]));
+}
+
+function workOf(entries: readonly CoordinatorEntry[]): CoordinatorEntry | undefined {
+  return (
+    entries.find((e) => e.kind === "code") ??
+    entries.find((e) => e.kind === "dispatch" || e.kind === "workflow")
+  );
+}
+
+function roundBadge(entries: readonly CoordinatorEntry[], tones?: IdentityTones): RoundBadge {
+  const gates = entries.filter((e) => e.kind === "verify").map(outcomeTone);
+  const gateRed = gates.includes("error");
+  const verdict = gateRed ? "✕" : gates.includes("ok") ? "✓" : "";
+  const work = workOf(entries);
+  const replan = entries.some((e) => e.kind === "replan");
+  const who = work ? work.speaker?.trim() : gates.length > 0 ? undefined : "coordinator";
+  const workEvent = work
+    ? work.kind === "code"
+      ? "code"
+      : work.kind === "workflow"
+        ? "workflow"
+        : "team"
+    : undefined;
+  const event =
+    [replan ? "re-plan" : undefined, workEvent].filter(Boolean).join(" · ") ||
+    (gates.length > 0 ? "gate" : "plan");
+  const gateOnly = !work && !replan && gates.length > 0;
+  const text = gateOnly
+    ? `gate ${verdict}`
+    : `${event}${who ? ` · ${who}` : ""}${verdict ? ` · gate ${verdict}` : ""}`;
+  // Red stays reserved for a failed gate; a member's round otherwise wears their hue.
+  if (gateRed) return { text, tone: "error" };
+  if (work) return { text, tone: who ? identityTone(who, tones) : "info" };
+  if (gates.length > 0) return { text, tone: "ok" };
+  return { text, tone: replan ? "caution" : "neutral" };
 }
 
 function goalSection(task: string): Section {
@@ -662,7 +799,6 @@ function goalSection(task: string): Section {
     title: "Goal",
     items: [
       {
-        glyph: "info",
         text: stripMd(truncate(task, GOAL_CAP)) || "(no goal)",
         ...detailWhenTruncated(task, GOAL_CAP),
       },
@@ -676,8 +812,7 @@ function standupSection(summary: string): Section {
     title: "Standup",
     items: [
       {
-        glyph: "brand",
-        icon: "◆",
+        glyph: "ok",
         text: stripMd(truncate(summary, GOAL_CAP)) || "(no summary)",
         ...detailWhenTruncated(summary, GOAL_CAP),
       },
@@ -694,8 +829,8 @@ function planSection(plan: readonly string[]): Section {
     kind: "rows",
     title: "Plan",
     items: plan.map((step, i) => ({
-      glyph: "neutral" as CanvasTone,
-      text: `${i + 1}. ${truncate(step, STEP_CAP)}`,
+      icon: `${i + 1}`,
+      text: truncate(step, STEP_CAP) || "(no detail)",
     })),
   };
 }
@@ -771,6 +906,7 @@ function teamGapsSection(teamGaps: readonly string[]): Section {
 // live relay has streamed any) the tail of its tool trace, so the operator watches the
 // mind work instead of a frozen instruction. Active layout is the only caller.
 function nowSections(inFlight: InFlightTurn, tones?: IdentityTones): Section[] {
+  const startedAt = clockAt(inFlight.startedAt);
   const sections: Section[] = [
     {
       kind: "cards",
@@ -779,16 +915,23 @@ function nowSections(inFlight: InFlightTurn, tones?: IdentityTones): Section[] {
         {
           title: inFlight.speaker ?? "coordinator",
           dot: identityTone(inFlight.speaker, tones),
-          pill: { label: inFlight.action, tone: "accent" },
+          edge: identityTone(inFlight.speaker, tones),
+          pill: { label: inFlight.action, tone: "info" },
           fields: [
-            { label: "round", value: `R${inFlight.round}` },
-            ...(inFlight.startedAt
-              ? [{ label: "started", value: shortTime(inFlight.startedAt) }]
+            ...(startedAt
+              ? [{ label: "started", clock: { at: startedAt, mode: "since" as const } }]
               : []),
-            ...(inFlight.tools?.length ? [{ label: "tools", value: inFlight.tools.length }] : []),
+            ...(inFlight.tools?.length
+              ? [
+                  {
+                    label: inFlight.tools.length === 1 ? "tool call" : "tool calls",
+                    value: inFlight.tools.length,
+                  },
+                ]
+              : []),
           ],
           ...(inFlight.instruction
-            ? { reason: { label: "now", text: truncate(inFlight.instruction, STEP_CAP) } }
+            ? { reason: { text: truncate(inFlight.instruction, STEP_CAP) } }
             : {}),
         },
       ],
@@ -797,15 +940,25 @@ function nowSections(inFlight: InFlightTurn, tones?: IdentityTones): Section[] {
   if (inFlight.tools?.length) {
     sections.push({
       kind: "rows",
-      items: inFlight.tools.slice(-NOW_TRACE_SHOWN).map((t, i, shown) => ({
-        glyph: toolGlyph(t, i === shown.length - 1),
-        icon: t.ok === false ? "✕" : t.ok === true ? "✓" : "⟳",
-        text: t.target ? `${t.name} ${t.target}` : t.name,
-        ...(i === shown.length - 1 && t.ok === undefined ? { trailing: "running" } : {}),
-      })),
+      title: "Tool calls",
+      items: inFlight.tools.slice(-NOW_TRACE_SHOWN).map((t, i, shown) => {
+        const running = i === shown.length - 1 && t.ok === undefined;
+        return {
+          glyph: toolGlyph(t, i === shown.length - 1),
+          text: t.target ? `${t.name} ${t.target}` : t.name,
+          ...(running ? { trailing: "running" } : t.ok === false ? { trailing: "failed" } : {}),
+        };
+      }),
     });
   }
   return sections;
+}
+
+// A clock needs a real offset timestamp; a hand-edited or legacy value degrades to no clock.
+function clockAt(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
 }
 
 function toolGlyph(t: ToolTrace, isLast: boolean): CanvasTone {
@@ -817,8 +970,18 @@ function toolGlyph(t: ToolTrace, isLast: boolean): CanvasTone {
 // Verification and change-quality verdicts across the whole run, one line per event —
 // the gate's history stays legible even after its entries scroll out of the ledger
 // window's full groups.
-function gateHistorySection(transcript: readonly CoordinatorEntry[]): Section | undefined {
-  const gates = transcript.filter((e) => e.kind === "verify");
+// Gates the board doesn't already show: not the one Verification reports, and not one
+// in a Ledger round still on screen. It keeps a folded-away red gate from vanishing.
+function gateHistorySection(
+  transcript: readonly CoordinatorEntry[],
+  verification: VerificationRecord | undefined,
+  ledgerRounds: number,
+): Section | undefined {
+  const rounds = [...new Set(transcript.map((e) => e.round))].sort((a, b) => b - a);
+  const visible = new Set(rounds.slice(0, ledgerRounds));
+  const gates = transcript.filter(
+    (e) => e.kind === "verify" && !visible.has(e.round) && e.round !== verification?.atRound,
+  );
   if (gates.length === 0) return undefined;
   return {
     kind: "rows",
@@ -827,9 +990,8 @@ function gateHistorySection(transcript: readonly CoordinatorEntry[]): Section | 
       const tone = outcomeTone(e);
       return {
         glyph: tone,
-        icon: tone === "error" ? "✕" : tone === "ok" ? "✓" : "·",
-        text: stripMd(truncate(firstLine(e.text), STEP_CAP)),
-        trailing: `R${e.round}`,
+        text: stripMd(truncate(gateHeadline(e), STEP_CAP)),
+        trailing: `round ${e.round}`,
         ...entryDetail(e),
       };
     }),
@@ -851,6 +1013,7 @@ function mindsSection(
       inputTokens: number;
       outputTokens: number;
       providers: Set<string>;
+      rounds: Set<number>;
       last: CoordinatorEntry;
     }
   >();
@@ -864,9 +1027,11 @@ function mindsSection(
       inputTokens: 0,
       outputTokens: 0,
       providers: new Set<string>(),
+      rounds: new Set<number>(),
       last: e,
     };
     agg.turns += 1;
+    agg.rounds.add(e.round);
     if (e.usage) {
       agg.tokens += e.usage.inputTokens + e.usage.outputTokens;
       agg.inputTokens += e.usage.inputTokens;
@@ -878,70 +1043,41 @@ function mindsSection(
   }
   if (bySpeaker.size === 0) return undefined;
   return {
-    kind: "cards",
+    kind: "rows",
     title: "Minds",
-    items: [...bySpeaker.entries()].map(([speaker, agg]) => ({
-      title: speaker,
-      dot: identityTone(speaker, tones),
-      ...(agg.providers.size > 0 ? { pill: { label: [...agg.providers].join("+") } } : {}),
-      fields: [
-        { label: "turns", value: agg.turns },
+    items: [...bySpeaker.entries()].map(([speaker, agg]) => {
+      const rounds = [...agg.rounds].sort((a, b) => a - b);
+      const meta = [
+        ...[...agg.providers],
         ...(agg.tokens > 0
-          ? [
-              { label: "tok", value: formatTokens(agg.tokens) },
-              {
-                label: "in/out",
-                value: formatUsageTail({
-                  inputTokens: agg.inputTokens,
-                  outputTokens: agg.outputTokens,
-                }),
-              },
-            ]
+          ? [`${formatTokens(agg.inputTokens)} in · ${formatTokens(agg.outputTokens)} out`]
           : []),
-        ...(agg.last.touched && (agg.last.touched.insertions || agg.last.touched.deletions)
-          ? [
-              {
-                label: "Δ",
-                value: `+${agg.last.touched.insertions}/−${agg.last.touched.deletions}`,
-              },
-            ]
-          : []),
-      ],
-      reason: { label: "last", text: stripMd(truncate(agg.last.text, STEP_CAP)) || "(no detail)" },
-    })),
+      ];
+      return {
+        person: personFor(speaker, tones),
+        text: `${agg.turns} ${agg.turns === 1 ? "turn" : "turns"} · ${rounds.length === 1 ? "round" : "rounds"} ${rounds.join(", ")}`,
+        ...(meta.length > 0 ? { trailing: meta.join(" · ") } : {}),
+      };
+    }),
   };
 }
 
 function verificationSection(v: VerificationRecord): Section {
-  const checks = v.checks;
+  const checks: readonly { command: string; passed: boolean; exitCode: number; summary: string }[] =
+    v.checks && v.checks.length > 0 ? v.checks : [v];
   return {
     kind: "rows",
-    boxed: true,
-    title: "Verification",
-    items:
-      checks && checks.length > 0
-        ? checks.map((check) => ({
-            glyph: check.passed ? ("ok" as CanvasTone) : ("error" as CanvasTone),
-            icon: check.passed ? "✓" : "✕",
-            text: truncate(check.command, STEP_CAP) || "verification",
-            trailing: check.passed
-              ? `passed · exit ${check.exitCode}`
-              : `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
-            ...(check.passed || !check.summary.trim()
-              ? {}
-              : { detail: truncate(check.summary, DETAIL_CAP) }),
-          }))
-        : [
-            {
-              glyph: v.passed ? ("ok" as CanvasTone) : ("error" as CanvasTone),
-              icon: v.passed ? "✓" : "✕",
-              text: truncate(v.command, STEP_CAP) || "verification",
-              trailing: v.passed
-                ? `passed · exit ${v.exitCode}`
-                : `exit ${v.exitCode} · ${truncate(v.summary, VERIFY_SUMMARY_CAP)}`,
-              ...(v.passed || !v.summary.trim() ? {} : { detail: truncate(v.summary, DETAIL_CAP) }),
-            },
-          ],
+    title: Number.isFinite(v.atRound) ? `Verification · round ${v.atRound}` : "Verification",
+    items: checks.map((check) => ({
+      glyph: check.passed ? ("ok" as CanvasTone) : ("error" as CanvasTone),
+      text: truncate(check.command, STEP_CAP) || "verification",
+      trailing: check.passed
+        ? "passed"
+        : `exit ${check.exitCode} · ${tailTruncate(check.summary, VERIFY_SUMMARY_CAP)}`,
+      ...(check.passed || !check.summary.trim()
+        ? {}
+        : { detail: truncate(check.summary, DETAIL_CAP) }),
+    })),
   };
 }
 
@@ -954,9 +1090,10 @@ function ledgerSections(
   transcript: readonly CoordinatorEntry[],
   roundsShown = LEDGER_ROUNDS_SHOWN,
   tones?: IdentityTones,
+  live = false,
+  verification?: VerificationRecord,
 ): Section[] {
   if (transcript.length === 0) return [];
-  const speakers = knownSpeakerLabels(transcript);
   const rounds: number[] = [];
   const byRound = new Map<number, CoordinatorEntry[]>();
   for (const e of transcript) {
@@ -967,30 +1104,43 @@ function ledgerSections(
     byRound.get(e.round)?.push(e);
   }
   rounds.sort((a, b) => b - a);
-  const shown = rounds.slice(0, roundsShown);
-  const older = rounds.slice(roundsShown);
+  const folded = rounds.slice(roundsShown).reduce((n, r) => n + (byRound.get(r)?.length ?? 0), 0);
+  // Folding a single entry costs as much room as showing it.
+  const keep = folded < 2 ? rounds.length : roundsShown;
+  const shown = rounds.slice(0, keep);
+  const older = rounds.slice(keep);
 
   const sections: Section[] = shown.map((r, i) => {
     const entries = byRound.get(r) ?? [];
     return {
       kind: "rows",
-      title: i === 0 ? `Ledger · R${r}${roundCaption(entries)}` : `R${r}${roundCaption(entries)}`,
-      items: entries.map((e) => ledgerRow(e, speakers, tones)),
+      title: i === 0 ? `Ledger · round ${r}` : `Round ${r}`,
+      items: entries.map((e) =>
+        verification && e.kind === "verify" && e.round === verification.atRound
+          ? gateSummaryRow(e, verification)
+          : ledgerRow(e, tones),
+      ),
     };
   });
 
   if (older.length > 0) {
-    const olderEntries = older.reduce((n, r) => n + (byRound.get(r)?.length ?? 0), 0);
     const span =
       older.length === 1
-        ? `R${older[older.length - 1]}`
-        : `R${older[older.length - 1]}–R${older[0]}`;
+        ? `round ${older[older.length - 1]}`
+        : `rounds ${older[older.length - 1]}–${older[0]}`;
     sections.push({
       kind: "rows",
       items: [
         {
-          glyph: "neutral",
-          text: `${span} · ${olderEntries} earlier ${olderEntries === 1 ? "entry" : "entries"} — the full run is archived in Runs`,
+          icon: "▾",
+          text: `Show ${folded} earlier entries · ${span}`,
+          ...(live ? {} : { trailing: "full run in Runs" }),
+          detail: truncate(
+            older
+              .flatMap((r) => (byRound.get(r) ?? []).map((e) => `R${r} · ${olderHeadline(e)}`))
+              .join("\n"),
+            DETAIL_CAP,
+          ),
         },
       ],
     });
@@ -998,37 +1148,38 @@ function ledgerSections(
   return sections;
 }
 
-function roundCaption(entries: readonly CoordinatorEntry[]): string {
-  const kinds = new Set(entries.map((e) => e.kind));
-  const parts: string[] = [];
-  if (kinds.has("code")) parts.push("code");
-  if (kinds.has("dispatch")) parts.push("team");
-  if (kinds.has("workflow")) parts.push("workflow");
-  if (kinds.has("verify")) parts.push("gate");
-  if (kinds.has("replan")) parts.push("re-plan");
-  return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
-}
-
-function ledgerRow(
-  e: CoordinatorEntry,
-  speakers: ReadonlySet<string>,
-  tones?: IdentityTones,
-): RowItem {
-  const speaker = e.speaker?.trim() || "coordinator";
-  const text = normalizeSpeakerPrefixes(e.text);
+// The Verification section above carries this gate's checks, so its Ledger row only
+// marks when it ran and how it went.
+function gateSummaryRow(e: CoordinatorEntry, v: VerificationRecord): RowItem {
+  const checks = v.checks && v.checks.length > 0 ? v.checks : [v];
+  const failed = checks.filter((c) => !c.passed).length;
+  const n = checks.length;
   return {
-    glyph: isQuietLedgerEntry(e, speakers) ? "neutral" : outcomeTone(e),
-    chip: { label: speaker, tone: identityTone(e.speaker?.trim() || undefined, tones) },
-    text: stripMd(truncate(firstLine(text), LEDGER_ROW_CAP)) || "(no detail)",
-    trailing: transcriptTrailing(e),
-    ...entryDetail(e),
+    glyph: outcomeTone(e),
+    text:
+      failed === 0
+        ? `Gate passed · ${n} ${n === 1 ? "check" : "checks"}`
+        : `Gate failed · ${failed} of ${n} ${n === 1 ? "check" : "checks"}`,
   };
 }
 
-function isQuietLedgerEntry(e: CoordinatorEntry, speakers: ReadonlySet<string>): boolean {
-  if (e.kind !== "dispatch" && e.kind !== "code" && e.kind !== "workflow") return false;
-  const body = narrationBody(e.text, speakers);
-  return body === "(no synthesis)" || body.startsWith("(no synthesis) ") || isNarrationOnly(body);
+function olderHeadline(e: CoordinatorEntry): string {
+  if (e.kind === "verify") return gateHeadline(e);
+  const who = e.speaker?.trim() || "coordinator";
+  return `${who}: ${stripMd(truncate(firstLine(normalizeSpeakerPrefixes(e.text)), LEDGER_ROW_CAP))}`;
+}
+
+function ledgerRow(e: CoordinatorEntry, tones?: IdentityTones): RowItem {
+  const text = normalizeSpeakerPrefixes(e.text);
+  const trailing = transcriptTrailing(e);
+  const gate = e.kind === "verify";
+  const line = gate ? gateHeadline(e) : firstLine(text);
+  return {
+    ...(gate ? { glyph: outcomeTone(e) } : { person: personFor(e.speaker, tones) }),
+    text: stripMd(truncate(line, LEDGER_ROW_CAP)) || "(no detail)",
+    ...(trailing ? { trailing } : {}),
+    ...entryDetail(e),
+  };
 }
 
 // The expandable body behind a ledger row: the instruction the turn ran under, the
@@ -1097,9 +1248,23 @@ function firstLine(text: string): string {
   return idx === -1 ? text : `${text.slice(0, idx)} …`;
 }
 
-function shortTime(iso: string): string {
-  const m = /T(\d{2}:\d{2})/.exec(iso);
-  return m?.[1] ?? iso;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "Nov 3, 14:10" from an ISO timestamp, read off the string itself (no timezone
+// conversion) so the board matches the ledger it was rendered from.
+function runSpan(from: string, to: string): string | undefined {
+  const ms = Date.parse(to) - Date.parse(from);
+  if (!Number.isFinite(ms) || ms < 0) return undefined;
+  const min = Math.round(ms / 60_000);
+  if (min < 1) return "under a minute";
+  if (min < 60) return `${min} min`;
+  return `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+export function runWhen(iso: string): string | undefined {
+  const m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}:\d{2})/.exec(iso);
+  const month = m ? MONTHS[Number(m[1]) - 1] : undefined;
+  return m && month ? `${month} ${Number(m[2])}, ${m[3]}` : undefined;
 }
 
 function statusPill(status: CoordinatorLedger["status"]): { label: string; tone: CanvasTone } {

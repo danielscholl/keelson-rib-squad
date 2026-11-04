@@ -589,31 +589,34 @@ describe("computeRollbackPlan", () => {
         execOpts: {},
         reason: "run-not-rollbackable",
       },
-    ])("confirms a refused event without mutation for $name", async ({
-      ledger,
-      execOpts,
-      reason,
-    }) => {
-      await archiveRun(scopeDataHome(home, "alpha"), ledger);
-      const before = await loadRun(scopeDataHome(home, "alpha"), runId);
-      const { exec, calls } = statefulRollbackExec(execOpts);
+    ])(
+      "confirms a refused event without mutation for $name",
+      async ({ ledger, execOpts, reason }) => {
+        await archiveRun(scopeDataHome(home, "alpha"), ledger);
+        const before = await loadRun(scopeDataHome(home, "alpha"), runId);
+        const { exec, calls } = statefulRollbackExec(execOpts);
 
-      const res = await invoke(rollbackTool(exec), { project: "alpha", run: runId, confirm: true });
+        const res = await invoke(rollbackTool(exec), {
+          project: "alpha",
+          run: runId,
+          confirm: true,
+        });
 
-      expect(res.isError).toBe(true);
-      expect(mutatingGitCalls(calls)).toEqual([]);
-      const rows = await readRollbackRows(scopeDataHome(home, "alpha"), runId);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toEqual({
-        type: "refused",
-        runId,
-        at: expect.any(String),
-        reason,
-        observedHead: "head-after",
-      });
-      expect("rollbackRef" in (rows[0] ?? {})).toBe(false);
-      expect(await loadRun(scopeDataHome(home, "alpha"), runId)).toEqual(before);
-    });
+        expect(res.isError).toBe(true);
+        expect(mutatingGitCalls(calls)).toEqual([]);
+        const rows = await readRollbackRows(scopeDataHome(home, "alpha"), runId);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toEqual({
+          type: "refused",
+          runId,
+          at: expect.any(String),
+          reason,
+          observedHead: "head-after",
+        });
+        expect("rollbackRef" in (rows[0] ?? {})).toBe(false);
+        expect(await loadRun(scopeDataHome(home, "alpha"), runId)).toEqual(before);
+      },
+    );
 
     test("fast-paths an existing performed row without commands or a new event", async () => {
       await archiveRun(scopeDataHome(home, "alpha"), ledger());

@@ -3,6 +3,7 @@ import type { RunSummary } from "../runs-store.ts";
 import {
   REPORT_RUN_ACTION,
   ROLLBACK_RUN_ACTION,
+  runWhen,
   STOP_COORDINATOR_ACTION,
   stripMd,
 } from "./coordinator.ts";
@@ -68,11 +69,13 @@ export function buildRunsBoard(runs: readonly RunSummary[], scopeId?: string): C
         kind: "cards",
         items: shown.map((r) => ({
           title: stripMd(truncate(r.task, TASK_CAP)) || "(no task)",
-          dot: statusTone(r.status),
-          pill: { label: r.status, tone: statusTone(r.status) },
+          pill: { label: r.status.replaceAll("-", " "), tone: statusTone(r.status) },
           fields: [
-            { label: "rounds", value: `r${r.round}` },
-            { label: "when", value: shortTime(r.updatedAt) },
+            { label: r.round === 1 ? "round" : "rounds", value: r.round },
+            {
+              label: r.status === "active" ? "updated" : "ended",
+              value: runWhen(r.updatedAt) ?? r.updatedAt,
+            },
           ],
           actions: runActions(r, scopeId),
         })),
@@ -117,10 +120,8 @@ function runActions(r: RunSummary, scopeId?: string): CardAction[] {
   if (isRollbackableRunStatus(r.status)) {
     actions.push({
       type: ROLLBACK_RUN_ACTION,
-      label: "Rollback",
+      label: "Preview rollback",
       glyph: "↶",
-      tone: "warn",
-      destructive: true,
       inline: true,
       payload: { run: r.id, confirm: false, scopeId: scopeId ?? r.scopeId ?? "default" },
       confirm: {
@@ -146,13 +147,6 @@ function idleBoard(): CanvasBoardView {
     header: { status: { label: "no runs", tone: "neutral" as CanvasTone }, chip: "history" },
     sections: [],
   };
-}
-
-// A compact "YYYY-MM-DD HH:MM" from an ISO timestamp for the run's trailing label;
-// falls back to the raw value if it isn't the expected shape.
-function shortTime(iso: string): string {
-  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(iso);
-  return m ? `${m[1]} ${m[2]}` : iso;
 }
 
 function truncate(text: string, max: number): string {
